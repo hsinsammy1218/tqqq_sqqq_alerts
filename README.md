@@ -33,6 +33,7 @@ This is alert-only software. It does not place orders and has no broker executio
 - `alerts.py`
 - `journal.py`
 - `backtest.py`
+- `backtest_sweep.py`
 - `main.py`
 - `.env.example`
 - `requirements.txt`
@@ -122,6 +123,28 @@ python main.py --backtest
 python main.py --backtest --backtest-bars 250
 python main.py --backtest --backtest-bars 250 --backtest-report-csv reports/backtest_trades.csv
 ```
+
+Parameter sweep (grid search — uses same data window as `--backtest-bars`):
+
+```bash
+python main.py --backtest-sweep --backtest-bars 180
+python main.py --backtest-sweep --backtest-sweep-csv reports/sweep_results.csv
+```
+
+Define grids via comma-separated env vars (omit a variable to sweep only its single value from your normal `.env`):
+
+| Env | Swept parameter |
+|-----|-----------------|
+| `BACKTEST_SWEEP_BULL_ENTRY_THRESHOLD` | `BULL_ENTRY_THRESHOLD` |
+| `BACKTEST_SWEEP_BEAR_ENTRY_THRESHOLD` | `BEAR_ENTRY_THRESHOLD` |
+| `BACKTEST_SWEEP_WEAK_SCORE_THRESHOLD` | `WEAK_SCORE_THRESHOLD` |
+| `BACKTEST_SWEEP_REGIME_RANGING_THRESHOLD_WEIGHT_ADD` | `REGIME_RANGING_THRESHOLD_WEIGHT_ADD` |
+| `BACKTEST_SWEEP_FLIP_MIN_HOLD_TRADING_DAYS` | `FLIP_MIN_HOLD_TRADING_DAYS` |
+| `BACKTEST_SWEEP_FLIP_MARGIN_WEIGHT` | `FLIP_MARGIN_WEIGHT` |
+
+Console output is ranked by a **balanced score** (min-max normalized within the sweep): rewards total return, win rate, and average return per trade; penalizes max drawdown and flip count. `--backtest-sweep-csv` writes the full ranked table.
+
+If both `--backtest` and `--backtest-sweep` are passed, **sweep wins** (single backtest is skipped).
 
 Backtest report now includes:
 - total trades

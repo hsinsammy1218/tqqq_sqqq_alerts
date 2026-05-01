@@ -11,6 +11,7 @@ from typing import Any
 
 from alerts import format_alert_message, send_discord
 from backtest import export_backtest_trades_csv, format_backtest_report, run_backtest
+from backtest_sweep import export_sweep_csv, format_sweep_report, run_parameter_sweep, sweep_grid_from_settings
 from config import ConfigError, load_settings, strategy_params_from_settings
 from data import DataError, load_candles
 from event_calendar import load_merged_blackout_dates
@@ -286,6 +287,17 @@ def run() -> int:
         metavar="PATH",
         help="Optional path to write per-trade backtest CSV report.",
     )
+    parser.add_argument(
+        "--backtest-sweep",
+        action="store_true",
+        help="Run backtests over BACKTEST_SWEEP_* parameter grids (see README).",
+    )
+    parser.add_argument(
+        "--backtest-sweep-csv",
+        default=None,
+        metavar="PATH",
+        help="Optional path to write ranked sweep results CSV.",
+    )
     pos = parser.add_mutually_exclusive_group()
     pos.add_argument(
         "--flat",
@@ -322,6 +334,8 @@ def run() -> int:
         health_check=bool(args.health_check),
         no_technical=bool(args.no_technical),
         backtest_report_csv=args.backtest_report_csv,
+        backtest_sweep=args.backtest_sweep,
+        backtest_sweep_csv=args.backtest_sweep_csv,
     )
 
     if args.set_position is not None and args.entry_price is not None and args.entry_price <= 0:
@@ -465,6 +479,43 @@ def run() -> int:
         blocked_dates_count=len(blocked_dates),
         risk_notes=risk_notes,
     )
+    if args.backtest_sweep:
+        try:
+            grid = sweep_grid_from_settings(settings)
+            n_combo = grid.combination_count
+            if n_combo > 400:
+                print(f"Warning: sweep has {n_combo} combinations — expect a long run.")
+            sweep_rows = run_parameter_sweep(
+                candles,
+                anchor_date=settings.anchor_date or None,
+                blocked_dates=blocked_dates,
+                base_params=strategy_params,
+                bars=args.backtest_bars,
+                grid=grid,
+            )
+        except ConfigError as exc:
+            print(f"Sweep config error: {exc}")
+            return 1
+        except ValueError as exc:
+            print(f"Backtest error: {exc}")
+            return 1
+        print(
+            format_sweep_report(
+                sweep_rows,
+                ticker=settings.qqq_ticker,
+                bars=args.backtest_bars,
+                combo_count=n_combo,
+            )
+        )
+        if args.backtest_sweep_csv:
+            try:
+                export_sweep_csv(args.backtest_sweep_csv, sweep_rows)
+                print(f"Backtest sweep CSV written: {args.backtest_sweep_csv}")
+            except OSError as exc:
+                print(f"Backtest sweep export error: {exc}")
+                return 1
+        return 0
+
     if args.backtest:
         try:
             bt = run_backtest(
