@@ -31,6 +31,7 @@ This is alert-only software. It does not place orders and has no broker executio
 - `.env.example`
 - `requirements.txt`
 - `events.example.json`
+- `position_state.example.json` (schema reference; runtime file `position_state.json` is gitignored)
 
 ## Setup
 
@@ -110,17 +111,45 @@ python main.py --set-position SQQQ --entry-price 14.20 --entry-time 2026-05-01T1
 
 Only **which symbol** you hold is required. **`--entry-price`** (your ETF average cost) and **`--entry-time`** are optional: if you skip price, stop/target math uses **QQQ’s daily close** as a stand-in; if you skip time, **max hold** starts from the **first bot run** that finishes after this sync.
 
-You can also edit [`position_state.json`](position_state.json) by hand:
+Persistent position memory lives in `position_state.json` (path via env var `POSITION_STATE_JSON`). The bot writes canonical keys:
+
+| Field | Meaning |
+|-------|---------|
+| `symbol` | `"TQQQ"`, `"SQQQ"`, or `null` when flat |
+| `entry_price` | ETF average cost or `null` (QQQ close proxy for exits) |
+| `entry_time` | ISO timestamp when opened or `null` |
+| `last_signal` | Last alert-side transition (`BUY`, `SELL`, `FLIP`, `CASH`, `MANUAL_SET`, `MANUAL_FLAT`, …) |
+| `updated_at` | UTC ISO8601 when this record was last saved |
+
+Legacy keys `active_symbol` / `entry_timestamp` are still read on load for backward compatibility.
+
+Manual sync examples match [`position_state.example.json`](position_state.example.json):
 
 ```json
 {
-  "active_symbol": "TQQQ",
+  "symbol": "TQQQ",
   "entry_price": 72.5,
-  "entry_timestamp": "2026-05-01T14:30:00Z"
+  "entry_time": "2026-05-01T14:30:00Z",
+  "last_signal": "MANUAL_SET",
+  "updated_at": "2026-05-01T16:00:00Z"
 }
 ```
 
-Use `null` for `entry_price` / `entry_timestamp` when you only want the bot to know the side. Omit `active_symbol` or run `--flat` when flat.
+Flat recovery (after closing everything at the broker):
+
+```json
+{
+  "symbol": null,
+  "entry_price": null,
+  "entry_time": null,
+  "last_signal": "MANUAL_FLAT",
+  "updated_at": "2026-05-01T16:00:00Z"
+}
+```
+
+If the file is missing, unreadable JSON, or has an invalid `symbol`, the bot prints `[position] …` and **starts flat** (never crashes). To recover: delete `position_state.json`, run `python main.py --flat`, or paste a valid JSON object from the example.
+
+Use `null` for `entry_price` / `entry_time` when you only want the bot to know the side. Prefer `python main.py --flat` / `--set-position` over hand-editing when possible.
 
 ## Decision rules
 

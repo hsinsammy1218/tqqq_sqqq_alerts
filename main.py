@@ -92,8 +92,18 @@ def run() -> int:
         print(f"Config error: {exc}")
         return 1
 
+    stamp = _format_utc_z(datetime.now(timezone.utc))
     if args.flat:
-        save_position(settings.position_state_json, PositionState())
+        save_position(
+            settings.position_state_json,
+            PositionState(
+                active_symbol=None,
+                entry_price=None,
+                entry_timestamp=None,
+                last_signal="MANUAL_FLAT",
+                updated_at=stamp,
+            ),
+        )
         print("Position reset: flat (no active TQQQ/SQQQ in bot memory).")
     elif args.set_position is not None:
         entry_price_f = float(args.entry_price) if args.entry_price is not None else None
@@ -106,7 +116,13 @@ def run() -> int:
                 return 1
         save_position(
             settings.position_state_json,
-            PositionState(active_symbol=args.set_position, entry_price=entry_price_f, entry_timestamp=entry_ts_str),
+            PositionState(
+                active_symbol=args.set_position,
+                entry_price=entry_price_f,
+                entry_timestamp=entry_ts_str,
+                last_signal="MANUAL_SET",
+                updated_at=stamp,
+            ),
         )
         extra = []
         if entry_price_f is not None:
@@ -168,7 +184,9 @@ def run() -> int:
         print(f"Unexpected indicator failure: {exc}")
         return 1
 
-    position = load_position(settings.position_state_json)
+    position, position_warnings = load_position(settings.position_state_json)
+    for msg in position_warnings:
+        print(f"[position] {msg}")
     alert, new_position = decide(
         snapshot=snapshot,
         position=position,

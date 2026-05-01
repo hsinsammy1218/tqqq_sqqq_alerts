@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -13,11 +13,16 @@ def _fmt_px(value: float, decimals: int = 2) -> str:
     return f"{value:.{decimals}f}"
 
 
+_VALID_SIDES = frozenset({"TQQQ", "SQQQ"})
+
+
 @dataclass
 class PositionState:
     active_symbol: str | None = None
     entry_price: float | None = None
     entry_timestamp: str | None = None
+    last_signal: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass
@@ -38,19 +43,111 @@ class AlertDecision:
     notes: str = ""
 
 
-def load_position(path: Path) -> PositionState:
+def _coerce_entry_price(raw: object) -> tuple[float | None, bool]:
+    if raw is None:
+        return None, False
+    if isinstance(raw, bool):
+        return None, True
+    if isinstance(raw, (int, float)):
+        return float(raw), False
+    return None, True
+
+
+def _normalize_loaded_symbol(raw: object) -> tuple[str | None, bool]:
+    if raw is None or raw == "":
+        return None, False
+    if not isinstance(raw, str):
+        return None, True
+    sym = raw.strip().upper()
+    if sym not in _VALID_SIDES:
+        return None, True
+    return sym, False
+
+
+def load_position(path: Path) -> tuple[PositionState, list[str]]:
+    """Load position_state.json. Returns (flat state, warnings) on any problem."""
+    warnings: list[str] = []
     if not path.exists():
-        return PositionState()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return PositionState(
-        active_symbol=data.get("active_symbol"),
-        entry_price=data.get("entry_price"),
-        entry_timestamp=data.get("entry_timestamp"),
+        return PositionState(), warnings
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+        data = json.loads(raw_text)
+    except (OSError, json.JSONDecodeError) as exc:
+        warnings.append(f"Ignoring unreadable position_state.json ({exc}). Starting flat.")
+        return PositionState(), warnings
+    if not isinstance(data, dict):
+        warnings.append("position_state.json must be a JSON object. Starting flat.")
+        return PositionState(), warnings
+
+    sym_raw = data.get("symbol", data.get("active_symbol"))
+    sym, sym_bad = _normalize_loaded_symbol(sym_raw)
+    if sym_bad:
+        warnings.append(f"Ignoring invalid symbol {sym_raw!r}. Starting flat.")
+        return PositionState(), warnings
+
+    ep_raw = data.get("entry_price")
+    entry_price, ep_bad = _coerce_entry_price(ep_raw)
+    if ep_bad:
+        warnings.append(f"Ignoring invalid entry_price {ep_raw!r}.")
+        entry_price = None
+
+    et_raw = data.get("entry_time", data.get("entry_timestamp"))
+    entry_time: str | None = None
+    if et_raw is None or et_raw == "":
+        entry_time = None
+    elif isinstance(et_raw, str):
+        entry_time = et_raw.strip()
+    else:
+        warnings.append(f"Ignoring invalid entry_time {et_raw!r}.")
+        entry_time = None
+
+    last_signal = data.get("last_signal")
+    if last_signal is not None and not isinstance(last_signal, str):
+        warnings.append("Ignoring invalid last_signal.")
+        last_signal = None
+    elif isinstance(last_signal, str):
+        last_signal = last_signal.strip() or None
+
+    updated_at = data.get("updated_at")
+    if updated_at is not None and not isinstance(updated_at, str):
+        warnings.append("Ignoring invalid updated_at.")
+        updated_at = None
+    elif isinstance(updated_at, str):
+        updated_at = updated_at.strip() or None
+
+    if sym is None:
+        return (
+            PositionState(
+                active_symbol=None,
+                entry_price=None,
+                entry_timestamp=None,
+                last_signal=last_signal,
+                updated_at=updated_at,
+            ),
+            warnings,
+        )
+
+    return (
+        PositionState(
+            active_symbol=sym,
+            entry_price=entry_price,
+            entry_timestamp=entry_time,
+            last_signal=last_signal,
+            updated_at=updated_at,
+        ),
+        warnings,
     )
 
 
 def save_position(path: Path, position: PositionState) -> None:
-    path.write_text(json.dumps(asdict(position), indent=2), encoding="utf-8")
+    payload = {
+        "symbol": position.active_symbol,
+        "entry_price": position.entry_price,
+        "entry_time": position.entry_timestamp,
+        "last_signal": position.last_signal,
+        "updated_at": position.updated_at,
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def _load_blocked_dates(path: Path) -> set[str]:
@@ -180,7 +277,9 @@ def format_technical_breakdown(
             f"  Entry zone (QQQ): close +/- {meta.entry_atr_multiplier}*ATR14 -> [{_fmt_px(alert.entry_zone_low)}, {_fmt_px(alert.entry_zone_high)}]",
             "",
             "[Bot position memory - before this decision]",
-            f"  active_symbol={position_before.active_symbol!r}  entry_price={position_before.entry_price!r}  entry_timestamp={position_before.entry_timestamp!r}",
+            f"  active_symbol={position_before.active_symbol!r}  entry_price={position_before.entry_price!r}  "
+            f"entry_timestamp={position_before.entry_timestamp!r}",
+            f"  last_signal={position_before.last_signal!r}  updated_at={position_before.updated_at!r}",
         ]
     )
 
@@ -303,6 +402,8 @@ def decide(
         active_symbol=position.active_symbol,
         entry_price=position.entry_price,
         entry_timestamp=position.entry_timestamp,
+        last_signal=alert_type,
+        updated_at=ts,
     )
 
     if alert_type == "BUY":
@@ -316,7 +417,13 @@ def decide(
             take_profit = entry_price * (1 - take_profit_pct)
             stretch_tp = entry_price * (1 - stretch_take_profit_pct)
         max_hold_date = _trading_days_after(ts, max_hold_days)
-        new_position = PositionState(active_symbol=symbol, entry_price=entry_price, entry_timestamp=ts)
+        new_position = PositionState(
+            active_symbol=symbol,
+            entry_price=entry_price,
+            entry_timestamp=ts,
+            last_signal="BUY",
+            updated_at=ts,
+        )
     elif position.active_symbol:
         symbol = position.active_symbol
         entry_price = float(position.entry_price or price)
@@ -347,7 +454,13 @@ def decide(
             symbol = flip_to
             notes = f"Reverse signal: sell {position.active_symbol} and buy {flip_to}."
             max_hold_date = _trading_days_after(ts, max_hold_days)
-            new_position = PositionState(active_symbol=flip_to, entry_price=price, entry_timestamp=ts)
+            new_position = PositionState(
+                active_symbol=flip_to,
+                entry_price=price,
+                entry_timestamp=ts,
+                last_signal="FLIP",
+                updated_at=ts,
+            )
             if flip_to == "TQQQ":
                 stop_loss = price * (1 - stop_loss_pct)
                 take_profit = price * (1 + take_profit_pct)
@@ -359,7 +472,13 @@ def decide(
         elif weaken or stop_hit or tp_hit or reached_max_hold:
             alert_type = "SELL"
             notes = "Exit rule triggered."
-            new_position = PositionState()
+            new_position = PositionState(
+                active_symbol=None,
+                entry_price=None,
+                entry_timestamp=None,
+                last_signal="SELL",
+                updated_at=ts,
+            )
         else:
             alert_type = "CASH"
             notes = "Holding active position."
@@ -367,6 +486,8 @@ def decide(
                 active_symbol=symbol,
                 entry_price=position.entry_price,
                 entry_timestamp=resolved_entry_ts,
+                last_signal="CASH",
+                updated_at=ts,
             )
 
     decision = AlertDecision(

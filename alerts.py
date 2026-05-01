@@ -123,6 +123,14 @@ def build_discord_embed(
         else:
             mem = "Flat — no TQQQ/SQQQ in bot memory"
 
+        persist_bits = []
+        if position_before.last_signal:
+            persist_bits.append(f"last_signal `{position_before.last_signal}`")
+        if position_before.updated_at:
+            persist_bits.append(f"updated_at `{position_before.updated_at}`")
+        if persist_bits:
+            mem += "\n" + " · ".join(persist_bits)
+
         data_ctx = (
             f"Daily bar end: `{technical_meta.daily_bar_end}`\n"
             f"4h bar end: `{technical_meta.h4_bar_end}`\n"
