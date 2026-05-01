@@ -549,6 +549,14 @@ def decide(
             last_signal="BUY",
             updated_at=ts,
         )
+        # Daily close always sits inside the zone built from that bar; use latest H4 vs daily zone for chase risk.
+        if confidence >= HIGH_SIGNAL_QUALITY_THRESHOLD and atr > 0:
+            hx = snapshot.h4_close
+            chase_extended = (symbol == "TQQQ" and hx > entry_high + atr) or (
+                symbol == "SQQQ" and hx < entry_low - atr
+            )
+            if chase_extended:
+                notes += " Extended move — consider waiting for pullback."
     elif position.active_symbol:
         symbol = position.active_symbol
         entry_price = float(position.entry_price or price)
