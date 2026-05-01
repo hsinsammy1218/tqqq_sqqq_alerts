@@ -90,9 +90,9 @@ def build_discord_embed(
     fields: list[dict[str, object]] = [
         {"name": "Alert", "value": alert.alert_type, "inline": True},
         {"name": "Symbol", "value": alert.symbol, "inline": True},
-        {"name": "Confidence", "value": f"{alert.confidence_score}%", "inline": True},
-        {"name": "Bull score", "value": f"{alert.bullish_score}/8", "inline": True},
-        {"name": "Bear score", "value": f"{alert.bearish_score}/8", "inline": True},
+        {"name": "Confidence", "value": f"{alert.confidence_score}% (norm.)", "inline": True},
+        {"name": "Bull strength", "value": f"{alert.bullish_score}/100", "inline": True},
+        {"name": "Bear strength", "value": f"{alert.bearish_score}/100", "inline": True},
         {"name": "Time (UTC)", "value": alert.timestamp, "inline": True},
         {
             "name": "Entry zone (QQQ)",
@@ -112,7 +112,7 @@ def build_discord_embed(
         and today_iso is not None
     )
     if enriched:
-        bull, bear, bull_reasons, bear_reasons = score_signals(snapshot)
+        bull, bear, bull_reasons, bear_reasons = score_signals(snapshot, technical_meta.score_weights)
 
         if position_before.active_symbol:
             mem = position_before.active_symbol
@@ -134,6 +134,7 @@ def build_discord_embed(
         data_ctx = (
             f"Daily bar end: `{technical_meta.daily_bar_end}`\n"
             f"4h bar end: `{technical_meta.h4_bar_end}`\n"
+            f"Regime: **{technical_meta.regime}**\n"
             f"Event blackout: **{'yes' if technical_meta.blocked_today else 'no'}**\n"
             f"VWAP anchor: {technical_meta.anchor_date_label}"
         )
@@ -150,10 +151,14 @@ def build_discord_embed(
             f"**Close** {snapshot.h4_close:.2f} · **EMA20** {snapshot.h4_ema20:.2f} · **EMA50** {snapshot.h4_ema50:.2f}"
         )
         rules = (
-            f"TQQQ BUY: bull≥{technical_meta.bull_entry_threshold}, bear<{technical_meta.bear_entry_threshold}\n"
-            f"SQQQ BUY: bear≥{technical_meta.bear_entry_threshold}, bull<{technical_meta.bull_entry_threshold}\n"
-            f"Exit while holding: weak / opposite / stop / TP / **{technical_meta.max_hold_days}** trading-day max hold\n"
-            f"Weak: TQQQ bull<{technical_meta.weak_threshold} · SQQQ bear<{technical_meta.weak_threshold}\n"
+            f"TQQQ BUY (weighted): bull_sum≥{technical_meta.effective_bull_entry:.2f}, "
+            f"bear_sum<{technical_meta.effective_bear_entry:.2f}\n"
+            f"SQQQ BUY (weighted): bear_sum≥{technical_meta.effective_bear_entry:.2f}, "
+            f"bull_sum<{technical_meta.effective_bull_entry:.2f}\n"
+            f"Exit while holding: weak / opposite / stop / TP / **{technical_meta.max_hold_days}** trading-day max hold "
+            f"(flip suppression may apply)\n"
+            f"Weak: TQQQ bull_sum<{technical_meta.effective_weak:.2f} · "
+            f"SQQQ bear_sum<{technical_meta.effective_weak:.2f}\n"
             f"Risk %: stop {technical_meta.stop_loss_pct:.0%}, TP {technical_meta.take_profit_pct:.0%}, "
             f"stretch {technical_meta.stretch_take_profit_pct:.0%} · entry zone ±{technical_meta.entry_atr_multiplier}×ATR14"
         )
@@ -165,21 +170,19 @@ def build_discord_embed(
                 {"name": "QQQ — daily snapshot", "value": _truncate(daily_txt, 1024), "inline": False},
                 {"name": "QQQ — 4h snapshot", "value": _truncate(h4_txt, 1024), "inline": False},
                 {
-                    "name": f"Bull checklist ({bull}/8)",
+                    "name": f"Bull checklist (strength {bull}/100)",
                     "value": _checklist_embed_value(bull_reasons),
                     "inline": False,
                 },
                 {
-                    "name": f"Bear checklist ({bear}/8)",
+                    "name": f"Bear checklist (strength {bear}/100)",
                     "value": _checklist_embed_value(bear_reasons),
                     "inline": False,
                 },
                 {"name": "Rule thresholds", "value": _truncate(rules, 1024), "inline": False},
             ]
         )
-        exit_line = hold_exit_summary_line(
-            snapshot, alert, position_before, technical_meta, bull, bear, today_iso
-        )
+        exit_line = hold_exit_summary_line(snapshot, alert, position_before, technical_meta, today_iso)
         if exit_line:
             fields.append(
                 {
@@ -213,9 +216,9 @@ def format_alert_message(alert: AlertDecision) -> str:
         f"Alert: {alert.alert_type}\n"
         f"Symbol: {alert.symbol}\n"
         f"QQQ trend: {alert.qqq_trend_reason}\n"
-        f"Bullish score: {alert.bullish_score}/8\n"
-        f"Bearish score: {alert.bearish_score}/8\n"
-        f"Confidence: {alert.confidence_score}%\n"
+        f"Bullish strength: {alert.bullish_score}/100 (weighted checklist)\n"
+        f"Bearish strength: {alert.bearish_score}/100 (weighted checklist)\n"
+        f"Confidence (normalized): {alert.confidence_score}%\n"
         f"Entry zone: {alert.entry_zone_low:.2f} - {alert.entry_zone_high:.2f}\n"
         f"Stop loss: {alert.stop_loss:.2f}\n"
         f"Take profit: {alert.take_profit:.2f}\n"

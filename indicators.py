@@ -78,6 +78,8 @@ class IndicatorSnapshot:
     daily_close: float
     daily_ema20: float
     daily_ema50: float
+    daily_ema20_prev: float
+    daily_ema50_prev: float
     daily_rsi14: float
     daily_macd: float
     daily_macd_signal: float
@@ -109,10 +111,19 @@ def build_snapshot(daily: pd.DataFrame, four_hour: pd.DataFrame, anchor_date: st
 
     dl = d.iloc[-1]
     hl = h4.iloc[-1]
+    if len(d) >= 2:
+        prev = d.iloc[-2]
+        ema20_prev = float(prev["ema20"])
+        ema50_prev = float(prev["ema50"])
+    else:
+        ema20_prev = float(dl["ema20"])
+        ema50_prev = float(dl["ema50"])
     return IndicatorSnapshot(
         daily_close=float(dl["close"]),
         daily_ema20=float(dl["ema20"]),
         daily_ema50=float(dl["ema50"]),
+        daily_ema20_prev=ema20_prev,
+        daily_ema50_prev=ema50_prev,
         daily_rsi14=float(dl["rsi14"]),
         daily_macd=float(dl["macd"]),
         daily_macd_signal=float(dl["macd_signal"]),

@@ -11,7 +11,7 @@ from typing import Any
 
 from alerts import format_alert_message, send_discord
 from backtest import format_backtest_report, run_backtest
-from config import ConfigError, load_settings
+from config import ConfigError, load_settings, strategy_params_from_settings
 from data import DataError, load_candles
 from event_calendar import load_merged_blackout_dates
 from indicators import build_snapshot
@@ -326,6 +326,7 @@ def run() -> int:
         settings = load_settings()
         if args.dry_run:
             settings = settings.__class__(**{**settings.__dict__, "dry_run": True})
+        strategy_params = strategy_params_from_settings(settings)
         _log_event(
             logger,
             logging.INFO,
@@ -463,14 +464,7 @@ def run() -> int:
                 candles,
                 anchor_date=settings.anchor_date or None,
                 blocked_dates=blocked_dates,
-                bull_entry_threshold=settings.bull_entry_threshold,
-                bear_entry_threshold=settings.bear_entry_threshold,
-                weak_threshold=settings.weak_score_threshold,
-                stop_loss_pct=settings.stop_loss_pct,
-                take_profit_pct=settings.take_profit_pct,
-                stretch_take_profit_pct=settings.stretch_take_profit_pct,
-                max_hold_days=settings.max_hold_trading_days,
-                entry_atr_multiplier=settings.entry_atr_multiplier,
+                strategy_params=strategy_params,
                 bars=args.backtest_bars,
             )
         except ValueError as exc:
@@ -497,19 +491,12 @@ def run() -> int:
         warnings=position_warnings,
         position_before=_position_to_dict(position),
     )
-    alert, new_position = decide(
+    alert, new_position, dbg = decide(
         snapshot=snapshot,
         position=position,
         blocked_dates=blocked_dates,
         now_utc=now_utc,
-        bull_entry_threshold=settings.bull_entry_threshold,
-        bear_entry_threshold=settings.bear_entry_threshold,
-        weak_threshold=settings.weak_score_threshold,
-        stop_loss_pct=settings.stop_loss_pct,
-        take_profit_pct=settings.take_profit_pct,
-        stretch_take_profit_pct=settings.stretch_take_profit_pct,
-        max_hold_days=settings.max_hold_trading_days,
-        entry_atr_multiplier=settings.entry_atr_multiplier,
+        params=strategy_params,
     )
 
     last_daily = candles.daily.index[-1]
@@ -525,9 +512,16 @@ def run() -> int:
         daily_bar_end=daily_label,
         h4_bar_end=h4_label,
         blocked_today=today_iso in blocked_dates,
-        bull_entry_threshold=settings.bull_entry_threshold,
-        bear_entry_threshold=settings.bear_entry_threshold,
-        weak_threshold=settings.weak_score_threshold,
+        regime=dbg.regime,
+        base_bull_entry_threshold=settings.bull_entry_threshold,
+        base_bear_entry_threshold=settings.bear_entry_threshold,
+        base_weak_threshold=settings.weak_score_threshold,
+        effective_bull_entry=dbg.effective_bull_entry,
+        effective_bear_entry=dbg.effective_bear_entry,
+        effective_weak=dbg.effective_weak,
+        score_weights=strategy_params.score_weights,
+        weighted_bull=dbg.weighted_bull,
+        weighted_bear=dbg.weighted_bear,
         stop_loss_pct=settings.stop_loss_pct,
         take_profit_pct=settings.take_profit_pct,
         stretch_take_profit_pct=settings.stretch_take_profit_pct,

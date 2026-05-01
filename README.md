@@ -8,7 +8,10 @@ This is alert-only software. It does not place orders and has no broker executio
 
 - Uses QQQ as analysis source across daily + 4h context
 - Indicators: EMA(20/50), RSI(14), MACD, ATR(14), weekly VWAP, anchored VWAP, volume vs 20-period average
-- Scores bullish and bearish setups (0-8 each)
+- **Weighted** bullish/bearish checklist (8 paired signals, configurable weights) with **0–100 strength** vs max stack
+- **Regime-aware** thresholds (`trend_up` / `trend_down` / `range`) from daily EMA separation and slope vs ATR
+- **Flip suppression** (minimum trading days in trade and/or extra opposite-side margin) to reduce whipsaws
+- Normalized **confidence** (0–100 dominance of weighted stacks)
 - Emits alerts: BUY, SELL, FLIP, CASH
 - Risk logic: stop loss, take profit, stretch target, max hold
 - Outputs: console, CSV journal, Discord webhook
@@ -24,6 +27,8 @@ This is alert-only software. It does not place orders and has no broker executio
 - `event_calendar.py`
 - `data.py`
 - `indicators.py`
+- `strategy_params.py`
+- `strategy_scoring.py`
 - `strategy.py`
 - `alerts.py`
 - `journal.py`
@@ -64,6 +69,18 @@ Optional event-risk avoidance (never fatal):
 5. Optionally set `EVENT_RISK_CALENDAR_URL` to fetch JSON containing a top-level `risk_calendar` object with the same keys. If the URL fails or returns invalid JSON, the bot logs `[events] ...` and continues with file-based dates only (or manual-only if the file has no usable data).
 
 When `EVENT_RISK_AVOIDANCE` is false or no risk data is present, behavior matches manual `blocked_dates` only. Missing `events.json` is still OK (no blackout dates).
+
+Optional strategy tuning (defaults match legacy **5/5 entry**, **3 weak** when weights are all `1`):
+
+| Variable | Meaning |
+|----------|---------|
+| `SCORE_WEIGHTS` | Eight comma-separated weights for the checklist items (daily→4h→VWAP→volume order); empty = all `1` |
+| `REGIME_SEP_ATR_MULT` | \|(EMA20−EMA50)\|/ATR threshold for trending vs chop |
+| `REGIME_SLOPE_ATR_MULT` | Daily EMA20 one-bar slope / ATR threshold |
+| `REGIME_RANGING_THRESHOLD_WEIGHT_ADD` | Extra weighted hurdle for **both** sides in `range` regime |
+| `REGIME_TREND_FAVORABLE_DELTA` | Weight-units easier/harder entry along vs against the trend |
+| `FLIP_MIN_HOLD_TRADING_DAYS` | Full weekdays after entry before an opposite flip is allowed without extra margin |
+| `FLIP_MARGIN_WEIGHT` | Opposite stack must exceed its threshold by this many weight-units to flip early |
 
 ## Run
 
@@ -173,17 +190,14 @@ Use `null` for `entry_price` / `entry_time` when you only want the bot to know t
 
 ## Decision rules
 
-- BUY TQQQ when bullish score >= 5 and bearish < 5
-- BUY SQQQ when bearish score >= 5 and bullish < 5
-- FLIP active side when reversal threshold triggers:
-  - holding TQQQ and bearish >= threshold -> SELL TQQQ + BUY SQQQ
-  - holding SQQQ and bullish >= threshold -> SELL SQQQ + BUY TQQQ
-- CASH when mixed/weak/conflicting
-- SELL active side when:
-  - active score < 3, or
-  - opposite score >= 5, or
-  - stop loss / take profit trigger, or
-  - max hold > 10 trading days
+Legacy knobs `BULL_ENTRY_THRESHOLD`, `BEAR_ENTRY_THRESHOLD`, `WEAK_SCORE_THRESHOLD` stay on a **0–8 scale**; internally they map to **weighted-sum targets** (same logic as before when every weight is `1`).
+
+- BUY TQQQ when **weighted bull sum ≥ effective bull target**, **weighted bear sum < effective bear target**, flat, not blocked.
+- BUY SQQQ when **weighted bear sum ≥ effective bear target**, **weighted bull sum < effective bull target**, flat, not blocked.
+- **Effective targets** shift by regime (stricter in `range`, slightly easier with the trend in `trend_up` / `trend_down`).
+- FLIP when the opposite side clears its effective threshold **and** flip-suppression rules pass (otherwise HOLD with a note).
+- CASH when mixed/weak/conflicting while flat, or HOLD messaging while in a position without exit/flip.
+- SELL when weak vs weighted threshold, stop/TP, max hold, etc.
 
 Mutual exclusivity is enforced: never hold TQQQ and SQQQ simultaneously.
 
@@ -195,10 +209,10 @@ ACTION: BUY TQQQ
 
 Alert: BUY
 Symbol: TQQQ
-QQQ trend: daily close > EMA20; daily EMA20 > EMA50; 4h EMA20 > EMA50
-Bullish score: 6/8
-Bearish score: 2/8
-Confidence: 50%
+QQQ trend: daily close > EMA20; daily EMA20 > EMA50; 4h EMA20 > EMA50 | regime=trend_up
+Bullish strength: 75/100 (weighted checklist)
+Bearish strength: 25/100 (weighted checklist)
+Confidence (normalized): 50%
 Entry zone: 432.10 - 439.70
 Stop loss: 400.65
 Take profit: 502.13
@@ -212,7 +226,7 @@ Notes: Bullish QQQ setup.
 
 ```csv
 timestamp_utc,alert_type,execution_symbol,qqq_trend_reason,bull_score,bear_score,confidence,entry_zone_low,entry_zone_high,stop_price,take_profit_price,take_profit_stretch_price,max_hold_date,notes
-2026-05-01T14:20:00Z,BUY,TQQQ,daily close > EMA20; daily EMA20 > EMA50; 4h EMA20 > EMA50,6,2,50,432.1,439.7,400.65,502.13,545.79,2026-05-15,Bullish QQQ setup.
+2026-05-01T14:20:00Z,BUY,TQQQ,"daily close > EMA20; daily EMA20 > EMA50 | regime=trend_up",75,25,50,432.1,439.7,400.65,502.13,545.79,2026-05-15,Bullish QQQ setup.
 ```
 
 ## Notes

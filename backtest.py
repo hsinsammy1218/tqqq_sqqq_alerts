@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from data import CandleData
 from indicators import build_snapshot
+from strategy_params import StrategyParams
 from strategy import PositionState, decide
 
 
@@ -47,14 +48,7 @@ def run_backtest(
     *,
     anchor_date: str | None,
     blocked_dates: set[str],
-    bull_entry_threshold: int,
-    bear_entry_threshold: int,
-    weak_threshold: int,
-    stop_loss_pct: float,
-    take_profit_pct: float,
-    stretch_take_profit_pct: float,
-    max_hold_days: int,
-    entry_atr_multiplier: float,
+    strategy_params: StrategyParams,
     bars: int,
 ) -> BacktestResult:
     daily = candles.daily
@@ -89,19 +83,12 @@ def run_backtest(
             continue
 
         snapshot = build_snapshot(daily_slice, h4_slice, anchor_date)
-        alert, new_position = decide(
+        alert, new_position, _ = decide(
             snapshot=snapshot,
             position=position,
             blocked_dates=blocked_dates,
             now_utc=now_dt,
-            bull_entry_threshold=bull_entry_threshold,
-            bear_entry_threshold=bear_entry_threshold,
-            weak_threshold=weak_threshold,
-            stop_loss_pct=stop_loss_pct,
-            take_profit_pct=take_profit_pct,
-            stretch_take_profit_pct=stretch_take_profit_pct,
-            max_hold_days=max_hold_days,
-            entry_atr_multiplier=entry_atr_multiplier,
+            params=strategy_params,
         )
 
         close_px = snapshot.daily_close

@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from strategy_params import DEFAULT_SCORE_WEIGHTS, StrategyParams
+
 
 class ConfigError(Exception):
     pass
@@ -32,12 +34,58 @@ class Settings:
     event_risk_avoidance: bool
     event_risk_calendar_url: str
     anchor_date: str
+    score_weights_csv: str
+    regime_sep_atr_mult: float
+    regime_slope_atr_mult: float
+    regime_ranging_threshold_weight_add: float
+    regime_trend_favorable_delta: float
+    flip_min_hold_trading_days: int
+    flip_margin_weight: float
 
 
 def _to_bool(value: str, default: bool = False) -> bool:
     if not value:
         return default
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_score_weights(value: str) -> tuple[float, ...]:
+    raw = (value or "").strip()
+    if not raw:
+        return DEFAULT_SCORE_WEIGHTS
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if len(parts) != 8:
+        raise ConfigError("SCORE_WEIGHTS must contain exactly 8 comma-separated non-negative numbers.")
+    try:
+        out = tuple(float(p) for p in parts)
+    except ValueError as exc:
+        raise ConfigError("SCORE_WEIGHTS must be numeric.") from exc
+    if any(w < 0 for w in out):
+        raise ConfigError("SCORE_WEIGHTS values must be non-negative.")
+    return out
+
+
+def strategy_params_from_settings(settings: Settings) -> StrategyParams:
+    try:
+        return StrategyParams(
+            bull_entry_threshold=settings.bull_entry_threshold,
+            bear_entry_threshold=settings.bear_entry_threshold,
+            weak_threshold=settings.weak_score_threshold,
+            stop_loss_pct=settings.stop_loss_pct,
+            take_profit_pct=settings.take_profit_pct,
+            stretch_take_profit_pct=settings.stretch_take_profit_pct,
+            max_hold_days=settings.max_hold_trading_days,
+            entry_atr_multiplier=settings.entry_atr_multiplier,
+            score_weights=_parse_score_weights(settings.score_weights_csv),
+            regime_sep_atr_mult=settings.regime_sep_atr_mult,
+            regime_slope_atr_mult=settings.regime_slope_atr_mult,
+            regime_ranging_threshold_weight_add=settings.regime_ranging_threshold_weight_add,
+            regime_trend_favorable_delta=settings.regime_trend_favorable_delta,
+            flip_min_hold_trading_days=settings.flip_min_hold_trading_days,
+            flip_margin_weight=settings.flip_margin_weight,
+        )
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def load_settings() -> Settings:
@@ -72,4 +120,11 @@ def load_settings() -> Settings:
         event_risk_avoidance=_to_bool(os.getenv("EVENT_RISK_AVOIDANCE", "false"), default=False),
         event_risk_calendar_url=os.getenv("EVENT_RISK_CALENDAR_URL", "").strip(),
         anchor_date=os.getenv("ANCHOR_DATE", "").strip(),
+        score_weights_csv=os.getenv("SCORE_WEIGHTS", "").strip(),
+        regime_sep_atr_mult=float(os.getenv("REGIME_SEP_ATR_MULT", "0.12")),
+        regime_slope_atr_mult=float(os.getenv("REGIME_SLOPE_ATR_MULT", "0.03")),
+        regime_ranging_threshold_weight_add=float(os.getenv("REGIME_RANGING_THRESHOLD_WEIGHT_ADD", "0.75")),
+        regime_trend_favorable_delta=float(os.getenv("REGIME_TREND_FAVORABLE_DELTA", "0.5")),
+        flip_min_hold_trading_days=int(os.getenv("FLIP_MIN_HOLD_TRADING_DAYS", "2")),
+        flip_margin_weight=float(os.getenv("FLIP_MARGIN_WEIGHT", "1.0")),
     )

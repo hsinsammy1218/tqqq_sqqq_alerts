@@ -7,6 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from indicators import IndicatorSnapshot
+from strategy_params import DEFAULT_SCORE_WEIGHTS, StrategyParams
+from strategy_scoring import (
+    WeightedSignalBreakdown,
+    detect_market_regime,
+    effective_thresholds,
+    normalized_confidence_score,
+    trading_days_between_inclusive,
+    weighted_signal_breakdown,
+)
 
 
 def _fmt_px(value: float, decimals: int = 2) -> str:
@@ -41,6 +50,18 @@ class AlertDecision:
     max_hold_date: str
     timestamp: str
     notes: str = ""
+
+
+@dataclass(frozen=True)
+class StrategyDebug:
+    regime: str
+    weighted_bull: float
+    weighted_bear: float
+    effective_bull_entry: float
+    effective_bear_entry: float
+    effective_weak: float
+    normalized_confidence: int
+    flip_suppressed: bool
 
 
 def _coerce_entry_price(raw: object) -> tuple[float | None, bool]:
@@ -171,40 +192,21 @@ def _trading_days_after(date_str: str, days: int) -> str:
     return date.isoformat()
 
 
-def score_signals(s: IndicatorSnapshot) -> tuple[int, int, list[str], list[str]]:
-    bull = 0
-    bear = 0
-    bull_reasons: list[str] = []
-    bear_reasons: list[str] = []
+def score_signals(
+    s: IndicatorSnapshot,
+    weights: tuple[float, ...] | None = None,
+) -> tuple[int, int, list[str], list[str]]:
+    """Weighted checklist; returns 0–100 strength per side vs max possible weight sum."""
+    w = weights if weights is not None else DEFAULT_SCORE_WEIGHTS
+    bd = weighted_signal_breakdown(s, w)
+    scale = max(bd.max_weight_total, 1e-9)
+    bull_pct = int(round(100 * bd.weighted_bull / scale))
+    bear_pct = int(round(100 * bd.weighted_bear / scale))
+    return bull_pct, bear_pct, list(bd.bull_reasons), list(bd.bear_reasons)
 
-    def add(cond: bool, side: str, text: str) -> None:
-        nonlocal bull, bear
-        if cond:
-            if side == "bull":
-                bull += 1
-                bull_reasons.append(text)
-            else:
-                bear += 1
-                bear_reasons.append(text)
 
-    add(s.daily_close > s.daily_ema20, "bull", "daily close > EMA20")
-    add(s.daily_ema20 > s.daily_ema50, "bull", "daily EMA20 > EMA50")
-    add(s.daily_rsi14 > 50, "bull", "daily RSI > 50")
-    add(s.daily_macd > s.daily_macd_signal, "bull", "MACD > signal")
-    add(s.h4_close > s.h4_ema20, "bull", "4h close > EMA20")
-    add(s.h4_ema20 > s.h4_ema50, "bull", "4h EMA20 > EMA50")
-    add(s.daily_close > s.daily_weekly_vwap, "bull", "price > weekly VWAP")
-    add(s.daily_volume > s.daily_vol_sma20, "bull", "volume > 20 avg")
-
-    add(s.daily_close < s.daily_ema20, "bear", "daily close < EMA20")
-    add(s.daily_ema20 < s.daily_ema50, "bear", "daily EMA20 < EMA50")
-    add(s.daily_rsi14 < 50, "bear", "daily RSI < 50")
-    add(s.daily_macd < s.daily_macd_signal, "bear", "MACD < signal")
-    add(s.h4_close < s.h4_ema20, "bear", "4h close < EMA20")
-    add(s.h4_ema20 < s.h4_ema50, "bear", "4h EMA20 < EMA50")
-    add(s.daily_close < s.daily_weekly_vwap, "bear", "price < weekly VWAP")
-    add(s.daily_volume > s.daily_vol_sma20, "bear", "volume > 20 avg")
-    return bull, bear, bull_reasons, bear_reasons
+def _weighted_breakdown(snapshot: IndicatorSnapshot, params: StrategyParams) -> WeightedSignalBreakdown:
+    return weighted_signal_breakdown(snapshot, params.score_weights)
 
 
 @dataclass(frozen=True)
@@ -216,9 +218,16 @@ class RunTechnicalMeta:
     daily_bar_end: str | None
     h4_bar_end: str | None
     blocked_today: bool
-    bull_entry_threshold: int
-    bear_entry_threshold: int
-    weak_threshold: int
+    regime: str
+    base_bull_entry_threshold: int
+    base_bear_entry_threshold: int
+    base_weak_threshold: int
+    effective_bull_entry: float
+    effective_bear_entry: float
+    effective_weak: float
+    score_weights: tuple[float, ...]
+    weighted_bull: float
+    weighted_bear: float
     stop_loss_pct: float
     take_profit_pct: float
     stretch_take_profit_pct: float
@@ -234,12 +243,14 @@ def format_technical_breakdown(
     meta: RunTechnicalMeta,
     today_iso: str,
 ) -> str:
-    bull, bear, bull_reasons, bear_reasons = score_signals(snapshot)
+    bull, bear, bull_reasons, bear_reasons = score_signals(snapshot, meta.score_weights)
+    wsum = max(sum(meta.score_weights), 1e-9)
     lines: list[str] = [
         "--- Technical breakdown (inputs are QQQ; trades are TQQQ/SQQQ) ---",
         f"Ticker: {meta.qqq_ticker} | Run (UTC): {meta.run_utc_iso}",
         f"Bars: daily_last={meta.daily_bar_end or '?'} | h4_last={meta.h4_bar_end or '?'}",
         f"Event blackout today: {'yes' if meta.blocked_today else 'no'}",
+        f"Regime: {meta.regime} (EMA sep/slope vs ATR)",
         f"Anchored VWAP anchor: {meta.anchor_date_label}",
         "",
         "[QQQ - daily]",
@@ -251,8 +262,10 @@ def format_technical_breakdown(
         "[QQQ - 4h last bar]",
         f"  close={_fmt_px(snapshot.h4_close)}  EMA20={_fmt_px(snapshot.h4_ema20)}  EMA50={_fmt_px(snapshot.h4_ema50)}",
         "",
-        "[Score engine] (max 8 bull / 8 bear - dual-count volume regime)",
-        f"  Bull {bull}/8 | Bear {bear}/8 | Confidence {alert.confidence_score}% (from |bull-bear|/8)",
+        "[Score engine] (weighted checklist; strength is % of max weighted stack)",
+        f"  Bull strength {bull}/100 | Bear strength {bear}/100 | "
+        f"Weighted raw {meta.weighted_bull:.2f} / {meta.weighted_bear:.2f} (max sum {wsum:.2f})",
+        f"  Normalized confidence {alert.confidence_score}% (dominance of weighted stacks)",
         "  Bull checks:",
     ]
     if bull_reasons:
@@ -268,11 +281,29 @@ def format_technical_breakdown(
         [
             "",
             "[Thresholds]",
-            f"  BUY TQQQ: bull>={meta.bull_entry_threshold} AND bear<{meta.bear_entry_threshold} (flat, not blocked)",
-            f"  BUY SQQQ: bear>={meta.bear_entry_threshold} AND bull<{meta.bull_entry_threshold} (flat, not blocked)",
-            f"  SELL / exit while holding: weak trend OR opposite entry-level signal OR stop OR take-profit OR max hold ({meta.max_hold_days} trading days)",
-            f"    weak if TQQQ: bull<{meta.weak_threshold}; weak if SQQQ: bear<{meta.weak_threshold}",
-            f"    reverse if TQQQ held: bear>={meta.bear_entry_threshold}; reverse if SQQQ held: bull>={meta.bull_entry_threshold}",
+            (
+                f"  BUY TQQQ (weighted): bull_sum>={meta.effective_bull_entry:.2f} AND "
+                f"bear_sum<{meta.effective_bear_entry:.2f} (flat, not blocked)"
+            ),
+            (
+                f"  BUY SQQQ (weighted): bear_sum>={meta.effective_bear_entry:.2f} AND "
+                f"bull_sum<{meta.effective_bull_entry:.2f} (flat, not blocked)"
+            ),
+            f"  Base thresholds (legacy 0–8 scale): bull≥{meta.base_bull_entry_threshold}, "
+            f"bear≥{meta.base_bear_entry_threshold}, weak<{meta.base_weak_threshold}",
+            (
+                f"  SELL / exit while holding: weak trend OR opposite entry-level signal OR stop OR "
+                f"take-profit OR max hold ({meta.max_hold_days} trading days)"
+            ),
+            (
+                f"    weak if TQQQ: bull_sum<{meta.effective_weak:.2f}; "
+                f"weak if SQQQ: bear_sum<{meta.effective_weak:.2f}"
+            ),
+            (
+                f"    reverse if TQQQ held: bear_sum>={meta.effective_bear_entry:.2f}; "
+                f"reverse if SQQQ held: bull_sum>={meta.effective_bull_entry:.2f} "
+                f"(flip suppression: min hold / extra margin may apply)"
+            ),
             f"  Risk params: stop {meta.stop_loss_pct:.1%} | TP {meta.take_profit_pct:.1%} | stretch TP {meta.stretch_take_profit_pct:.1%}",
             f"  Entry zone (QQQ): close +/- {meta.entry_atr_multiplier}*ATR14 -> [{_fmt_px(alert.entry_zone_low)}, {_fmt_px(alert.entry_zone_high)}]",
             "",
@@ -297,14 +328,16 @@ def format_technical_breakdown(
             ]
         )
         reached_max = bool(alert.max_hold_date) and today_iso > alert.max_hold_date
+        wb = meta.weighted_bull
+        wbear = meta.weighted_bear
         if sym == "TQQQ":
-            weaken = bull < meta.weak_threshold
-            reverse = bear >= meta.bear_entry_threshold
+            weaken = wb < meta.effective_weak
+            reverse = wbear >= meta.effective_bear_entry
             stop_hit = price <= alert.stop_loss
             tp_hit = price >= alert.take_profit
         else:
-            weaken = bear < meta.weak_threshold
-            reverse = bull >= meta.bull_entry_threshold
+            weaken = wbear < meta.effective_weak
+            reverse = wb >= meta.effective_bull_entry
             stop_hit = price >= alert.stop_loss
             tp_hit = price <= alert.take_profit
         lines.append("  Exit flags:")
@@ -327,8 +360,6 @@ def hold_exit_summary_line(
     alert: AlertDecision,
     position_before: PositionState,
     meta: RunTechnicalMeta,
-    bull: int,
-    bear: int,
     today_iso: str,
 ) -> str | None:
     sym = position_before.active_symbol
@@ -336,14 +367,16 @@ def hold_exit_summary_line(
         return None
     price = snapshot.daily_close
     reached_max = bool(alert.max_hold_date) and today_iso > alert.max_hold_date
+    wb = meta.weighted_bull
+    wbear = meta.weighted_bear
     if sym == "TQQQ":
-        weaken = bull < meta.weak_threshold
-        reverse = bear >= meta.bear_entry_threshold
+        weaken = wb < meta.effective_weak
+        reverse = wbear >= meta.effective_bear_entry
         stop_hit = price <= alert.stop_loss
         tp_hit = price >= alert.take_profit
     else:
-        weaken = bear < meta.weak_threshold
-        reverse = bull >= meta.bull_entry_threshold
+        weaken = wbear < meta.effective_weak
+        reverse = wb >= meta.effective_bull_entry
         stop_hit = price >= alert.stop_loss
         tp_hit = price <= alert.take_profit
     return (
@@ -356,38 +389,42 @@ def decide(
     position: PositionState,
     blocked_dates: set[str],
     now_utc: datetime,
-    bull_entry_threshold: int,
-    bear_entry_threshold: int,
-    weak_threshold: int,
-    stop_loss_pct: float,
-    take_profit_pct: float,
-    stretch_take_profit_pct: float,
-    max_hold_days: int,
-    entry_atr_multiplier: float,
-) -> tuple[AlertDecision, PositionState]:
-    bull, bear, bull_reasons, bear_reasons = score_signals(snapshot)
-    confidence = int(round((abs(bull - bear) / 8) * 100))
+    params: StrategyParams,
+) -> tuple[AlertDecision, PositionState, StrategyDebug]:
+    bd = _weighted_breakdown(snapshot, params)
+    wb = bd.weighted_bull
+    wbear = bd.weighted_bear
+    scale = max(bd.max_weight_total, 1e-9)
+    regime = detect_market_regime(snapshot, params)
+    bull_eff, bear_eff, weak_eff = effective_thresholds(regime, params)
+    bull_pct = int(round(100 * wb / scale))
+    bear_pct = int(round(100 * wbear / scale))
+    confidence = normalized_confidence_score(wb, wbear, scale)
     ts = now_utc.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     today = now_utc.date().isoformat()
     blocked = today in blocked_dates
 
     price = snapshot.daily_close
     atr = snapshot.daily_atr14
-    entry_low = price - (entry_atr_multiplier * atr)
-    entry_high = price + (entry_atr_multiplier * atr)
+    entry_low = price - (params.entry_atr_multiplier * atr)
+    entry_high = price + (params.entry_atr_multiplier * atr)
 
-    dominant_reasons = bull_reasons[:3] if bull >= bear else bear_reasons[:3]
+    bull_reasons = list(bd.bull_reasons)
+    bear_reasons = list(bd.bear_reasons)
+    dominant_reasons = bull_reasons[:3] if wb >= wbear else bear_reasons[:3]
     reason = "; ".join(dominant_reasons) if dominant_reasons else "mixed conditions"
+    reason = f"{reason} | regime={regime}"
     symbol = "CASH"
     alert_type = "CASH"
     notes = "No high-confidence setup."
+    flip_suppressed = False
 
     if position.active_symbol is None and not blocked:
-        if bull >= bull_entry_threshold and bear < bear_entry_threshold:
+        if wb >= bull_eff and wbear < bear_eff:
             symbol = "TQQQ"
             alert_type = "BUY"
             notes = "Bullish QQQ setup."
-        elif bear >= bear_entry_threshold and bull < bull_entry_threshold:
+        elif wbear >= bear_eff and wb < bull_eff:
             symbol = "SQQQ"
             alert_type = "BUY"
             notes = "Bearish QQQ setup."
@@ -409,14 +446,14 @@ def decide(
     if alert_type == "BUY":
         entry_price = price
         if symbol == "TQQQ":
-            stop_loss = entry_price * (1 - stop_loss_pct)
-            take_profit = entry_price * (1 + take_profit_pct)
-            stretch_tp = entry_price * (1 + stretch_take_profit_pct)
+            stop_loss = entry_price * (1 - params.stop_loss_pct)
+            take_profit = entry_price * (1 + params.take_profit_pct)
+            stretch_tp = entry_price * (1 + params.stretch_take_profit_pct)
         else:
-            stop_loss = entry_price * (1 + stop_loss_pct)
-            take_profit = entry_price * (1 - take_profit_pct)
-            stretch_tp = entry_price * (1 - stretch_take_profit_pct)
-        max_hold_date = _trading_days_after(ts, max_hold_days)
+            stop_loss = entry_price * (1 + params.stop_loss_pct)
+            take_profit = entry_price * (1 - params.take_profit_pct)
+            stretch_tp = entry_price * (1 - params.stretch_take_profit_pct)
+        max_hold_date = _trading_days_after(ts, params.max_hold_days)
         new_position = PositionState(
             active_symbol=symbol,
             entry_price=entry_price,
@@ -428,32 +465,47 @@ def decide(
         symbol = position.active_symbol
         entry_price = float(position.entry_price or price)
         resolved_entry_ts = position.entry_timestamp or ts
-        max_hold_date = _trading_days_after(resolved_entry_ts, max_hold_days)
+        max_hold_date = _trading_days_after(resolved_entry_ts, params.max_hold_days)
         reached_max_hold = now_utc.date().isoformat() > max_hold_date
 
         if symbol == "TQQQ":
-            stop_loss = entry_price * (1 - stop_loss_pct)
-            take_profit = entry_price * (1 + take_profit_pct)
-            stretch_tp = entry_price * (1 + stretch_take_profit_pct)
-            weaken = bull < weak_threshold
-            reverse = bear >= bear_entry_threshold
+            stop_loss = entry_price * (1 - params.stop_loss_pct)
+            take_profit = entry_price * (1 + params.take_profit_pct)
+            stretch_tp = entry_price * (1 + params.stretch_take_profit_pct)
+            weaken = wb < weak_eff
+            raw_reverse = wbear >= bear_eff
             stop_hit = price <= stop_loss
             tp_hit = price >= take_profit
         else:
-            stop_loss = entry_price * (1 + stop_loss_pct)
-            take_profit = entry_price * (1 - take_profit_pct)
-            stretch_tp = entry_price * (1 - stretch_take_profit_pct)
-            weaken = bear < weak_threshold
-            reverse = bull >= bull_entry_threshold
+            stop_loss = entry_price * (1 + params.stop_loss_pct)
+            take_profit = entry_price * (1 - params.take_profit_pct)
+            stretch_tp = entry_price * (1 - params.stretch_take_profit_pct)
+            weaken = wbear < weak_eff
+            raw_reverse = wb >= bull_eff
             stop_hit = price >= stop_loss
             tp_hit = price <= take_profit
+
+        entry_day = datetime.fromisoformat(resolved_entry_ts.replace("Z", "+00:00")).date()
+        td_hold = trading_days_between_inclusive(entry_day, now_utc.date())
+        if symbol == "TQQQ":
+            flip_ok = (not raw_reverse) or (
+                td_hold >= params.flip_min_hold_trading_days
+                or wbear >= bear_eff + params.flip_margin_weight
+            )
+        else:
+            flip_ok = (not raw_reverse) or (
+                td_hold >= params.flip_min_hold_trading_days
+                or wb >= bull_eff + params.flip_margin_weight
+            )
+        flip_suppressed = raw_reverse and not flip_ok
+        reverse = raw_reverse and flip_ok
 
         if reverse:
             flip_to = "SQQQ" if symbol == "TQQQ" else "TQQQ"
             alert_type = "FLIP"
             symbol = flip_to
             notes = f"Reverse signal: sell {position.active_symbol} and buy {flip_to}."
-            max_hold_date = _trading_days_after(ts, max_hold_days)
+            max_hold_date = _trading_days_after(ts, params.max_hold_days)
             new_position = PositionState(
                 active_symbol=flip_to,
                 entry_price=price,
@@ -462,13 +514,13 @@ def decide(
                 updated_at=ts,
             )
             if flip_to == "TQQQ":
-                stop_loss = price * (1 - stop_loss_pct)
-                take_profit = price * (1 + take_profit_pct)
-                stretch_tp = price * (1 + stretch_take_profit_pct)
+                stop_loss = price * (1 - params.stop_loss_pct)
+                take_profit = price * (1 + params.take_profit_pct)
+                stretch_tp = price * (1 + params.stretch_take_profit_pct)
             else:
-                stop_loss = price * (1 + stop_loss_pct)
-                take_profit = price * (1 - take_profit_pct)
-                stretch_tp = price * (1 - stretch_take_profit_pct)
+                stop_loss = price * (1 + params.stop_loss_pct)
+                take_profit = price * (1 - params.take_profit_pct)
+                stretch_tp = price * (1 - params.stretch_take_profit_pct)
         elif weaken or stop_hit or tp_hit or reached_max_hold:
             alert_type = "SELL"
             notes = "Exit rule triggered."
@@ -482,6 +534,8 @@ def decide(
         else:
             alert_type = "CASH"
             notes = "Holding active position."
+            if flip_suppressed:
+                notes += " Flip suppressed (whipsaw guard)."
             new_position = PositionState(
                 active_symbol=symbol,
                 entry_price=position.entry_price,
@@ -490,12 +544,23 @@ def decide(
                 updated_at=ts,
             )
 
+    dbg = StrategyDebug(
+        regime=regime,
+        weighted_bull=wb,
+        weighted_bear=wbear,
+        effective_bull_entry=bull_eff,
+        effective_bear_entry=bear_eff,
+        effective_weak=weak_eff,
+        normalized_confidence=confidence,
+        flip_suppressed=flip_suppressed,
+    )
+
     decision = AlertDecision(
         alert_type=alert_type,
         symbol=symbol,
         qqq_trend_reason=reason,
-        bullish_score=bull,
-        bearish_score=bear,
+        bullish_score=bull_pct,
+        bearish_score=bear_pct,
         confidence_score=confidence,
         entry_zone_low=entry_low,
         entry_zone_high=entry_high,
@@ -506,7 +571,7 @@ def decide(
         timestamp=ts,
         notes=notes,
     )
-    return decision, new_position
+    return decision, new_position, dbg
 
 
 def load_blocked_dates(path: Path) -> set[str]:
