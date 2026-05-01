@@ -64,6 +64,13 @@ class StrategyDebug:
     flip_suppressed: bool
 
 
+@dataclass(frozen=True)
+class DecideOptions:
+    """Optional hooks for research/backtest; live runs pass None (same as defaults)."""
+
+    debug_sanity_dominate: bool = False
+
+
 def _coerce_entry_price(raw: object) -> tuple[float | None, bool]:
     if raw is None:
         return None, False
@@ -390,6 +397,8 @@ def decide(
     blocked_dates: set[str],
     now_utc: datetime,
     params: StrategyParams,
+    *,
+    decide_options: DecideOptions | None = None,
 ) -> tuple[AlertDecision, PositionState, StrategyDebug]:
     bd = _weighted_breakdown(snapshot, params)
     wb = bd.weighted_bull
@@ -418,9 +427,23 @@ def decide(
     alert_type = "CASH"
     notes = "No high-confidence setup."
     flip_suppressed = False
+    opts = decide_options or DecideOptions()
 
     if position.active_symbol is None and not blocked:
-        if wb >= bull_eff and wbear < bear_eff:
+        if opts.debug_sanity_dominate:
+            notes = "[DEBUG SANITY - dominance-only entries; not for production]"
+            if wb > wbear:
+                symbol = "TQQQ"
+                alert_type = "BUY"
+                notes += " BUY TQQQ (weighted bull > bear)."
+            elif wbear > wb:
+                symbol = "SQQQ"
+                alert_type = "BUY"
+                notes += " BUY SQQQ (weighted bear > bull)."
+            else:
+                alert_type = "CASH"
+                notes += " tie stacks; flat."
+        elif wb >= bull_eff and wbear < bear_eff:
             symbol = "TQQQ"
             alert_type = "BUY"
             notes = "Bullish QQQ setup."
@@ -428,6 +451,16 @@ def decide(
             symbol = "SQQQ"
             alert_type = "BUY"
             notes = "Bearish QQQ setup."
+        elif params.entry_dominance_gap_weight > 0:
+            gap_w = params.entry_dominance_gap_weight
+            if wb > wbear and (wb - wbear) >= gap_w:
+                symbol = "TQQQ"
+                alert_type = "BUY"
+                notes = "Dominance entry: bull stack leads bear by weighted gap (fallback)."
+            elif wbear > wb and (wbear - wb) >= gap_w:
+                symbol = "SQQQ"
+                alert_type = "BUY"
+                notes = "Dominance entry: bear stack leads bull by weighted gap (fallback)."
     elif position.active_symbol is None and blocked:
         notes = "Entry blocked by event calendar (manual blackout + optional CPI/FOMC/earnings risk dates)."
 

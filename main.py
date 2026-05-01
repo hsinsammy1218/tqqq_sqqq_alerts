@@ -18,6 +18,7 @@ from event_calendar import load_merged_blackout_dates
 from indicators import build_snapshot
 from journal import append_journal
 from strategy import (
+    DecideOptions,
     PositionState,
     RunTechnicalMeta,
     decide,
@@ -298,6 +299,16 @@ def run() -> int:
         metavar="PATH",
         help="Optional path to write ranked sweep results CSV.",
     )
+    parser.add_argument(
+        "--debug-strategy",
+        action="store_true",
+        help="With --backtest or --backtest-sweep only: print score/regime/threshold diagnostics.",
+    )
+    parser.add_argument(
+        "--debug-strategy-sanity",
+        action="store_true",
+        help="Requires --debug-strategy: flat entries use weighted dominance only (debug; not for live).",
+    )
     pos = parser.add_mutually_exclusive_group()
     pos.add_argument(
         "--flat",
@@ -323,6 +334,9 @@ def run() -> int:
         help="Open time ISO8601 (optional). If omitted, max-hold anchors from the first bot run after --set-position.",
     )
     args = parser.parse_args()
+    if args.debug_strategy_sanity and not args.debug_strategy:
+        print("Config error: --debug-strategy-sanity requires --debug-strategy.")
+        return 1
     logger = _setup_logger(args.log_level)
     run_ts = _format_utc_z(datetime.now(timezone.utc))
     _log_event(
@@ -336,6 +350,8 @@ def run() -> int:
         backtest_report_csv=args.backtest_report_csv,
         backtest_sweep=args.backtest_sweep,
         backtest_sweep_csv=args.backtest_sweep_csv,
+        debug_strategy=args.debug_strategy,
+        debug_strategy_sanity=args.debug_strategy_sanity,
     )
 
     if args.set_position is not None and args.entry_price is not None and args.entry_price <= 0:
@@ -479,12 +495,19 @@ def run() -> int:
         blocked_dates_count=len(blocked_dates),
         risk_notes=risk_notes,
     )
+    if args.debug_strategy and not args.backtest and not args.backtest_sweep:
+        print("[debug-strategy] Ignored unless combined with --backtest or --backtest-sweep.")
+
+    research_decide_options = DecideOptions(debug_sanity_dominate=args.debug_strategy_sanity)
+
     if args.backtest_sweep:
         try:
             grid = sweep_grid_from_settings(settings)
             n_combo = grid.combination_count
             if n_combo > 400:
                 print(f"Warning: sweep has {n_combo} combinations - expect a long run.")
+            if args.debug_strategy:
+                print("[debug-strategy] Sweep: verbose diagnostics for the first grid combination only.")
             sweep_rows = run_parameter_sweep(
                 candles,
                 anchor_date=settings.anchor_date or None,
@@ -492,6 +515,8 @@ def run() -> int:
                 base_params=strategy_params,
                 bars=args.backtest_bars,
                 grid=grid,
+                debug_strategy=args.debug_strategy,
+                decide_options=research_decide_options,
             )
         except ConfigError as exc:
             print(f"Sweep config error: {exc}")
@@ -524,6 +549,8 @@ def run() -> int:
                 blocked_dates=blocked_dates,
                 strategy_params=strategy_params,
                 bars=args.backtest_bars,
+                debug_strategy=args.debug_strategy,
+                decide_options=research_decide_options,
             )
         except ValueError as exc:
             print(f"Backtest error: {exc}")

@@ -12,6 +12,8 @@ from config import ConfigError, Settings
 from data import CandleData
 from strategy_params import StrategyParams
 
+from strategy import DecideOptions
+
 from backtest import BacktestResult, run_backtest
 
 # Balanced ranking score (raw units, not min-max normalized). Tune coefficients here only.
@@ -168,15 +170,19 @@ def run_parameter_sweep(
     base_params: StrategyParams,
     bars: int,
     grid: SweepGrid,
+    debug_strategy: bool = False,
+    decide_options: DecideOptions | None = None,
 ) -> list[SweepResultRow]:
     rows: list[SweepResultRow] = []
-    for bull, bear, weak, rng_add, f_hold, f_margin in itertools.product(
-        grid.bull_entry,
-        grid.bear_entry,
-        grid.weak,
-        grid.regime_ranging_add,
-        grid.flip_min_hold,
-        grid.flip_margin,
+    for combo_idx, (bull, bear, weak, rng_add, f_hold, f_margin) in enumerate(
+        itertools.product(
+            grid.bull_entry,
+            grid.bear_entry,
+            grid.weak,
+            grid.regime_ranging_add,
+            grid.flip_min_hold,
+            grid.flip_margin,
+        )
     ):
         params = replace(
             base_params,
@@ -193,6 +199,8 @@ def run_parameter_sweep(
             blocked_dates=blocked_dates,
             strategy_params=params,
             bars=bars,
+            debug_strategy=bool(debug_strategy and combo_idx == 0),
+            decide_options=decide_options,
         )
         bal = compute_balanced_score(
             bt.total_return_pct,

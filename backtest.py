@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+import math
+from collections import Counter
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
+
 from data import CandleData
-from indicators import build_snapshot
+from indicators import IndicatorSnapshot, build_snapshot
 from strategy_scoring import trading_days_between_inclusive
 from strategy_params import StrategyParams
-from strategy import PositionState, decide
+from strategy import DecideOptions, PositionState, decide
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,160 @@ def _trade_return_pct(symbol: str, entry_price: float, exit_price: float) -> flo
     return _side_multiplier(symbol) * move * 100.0
 
 
+def _utc_calendar_date(ts: object) -> object:
+    """Normalize to UTC calendar date for aligning daily vs intraday indices."""
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        return t.date()
+    return t.tz_convert("UTC").date()
+
+
+def synthetic_h4_fallback_from_daily(daily_slice: pd.DataFrame, *, min_rows: int = 5) -> pd.DataFrame:
+    """Approximate a minimal intraday series from trailing daily OHLCV.
+
+    Some data feeds return only a short trailing intraday window while daily history is long.
+    Without this, expanding-window backtests skip every bar (no 4H context through older dates).
+    Degraded vs real 4H; backtests only — live runs still use vendor intraday as fetched.
+    """
+    n = min(len(daily_slice), min_rows)
+    tail = daily_slice.iloc[-n:]
+    return pd.DataFrame(
+        {
+            "open": tail["open"],
+            "high": tail["high"],
+            "low": tail["low"],
+            "close": tail["close"],
+            "volume": tail["volume"],
+        },
+        index=tail.index,
+    )
+
+
+def h4_slice_through_daily_calendar_date(daily_ts: object, four_hour: pd.DataFrame) -> pd.DataFrame:
+    """Return 4H bars through the daily bar's UTC calendar date.
+
+    Daily candles often stamp midnight UTC while resampled 4H bars fall later the same day;
+    filtering with ``four_hour.index <= daily_ts`` drops same-session intraday rows and can skip
+    every backtest bar (len(h4) < 5).
+    """
+    if four_hour.empty:
+        return four_hour
+    cutoff_day = _utc_calendar_date(daily_ts)
+    idx_days = four_hour.index.map(_utc_calendar_date)
+    return four_hour[idx_days <= cutoff_day]
+
+
+def _snapshot_nan_fields(snapshot: IndicatorSnapshot) -> tuple[str, ...]:
+    bad: list[str] = []
+    for f in fields(snapshot):
+        val = getattr(snapshot, f.name)
+        if isinstance(val, float) and math.isnan(val):
+            bad.append(f.name)
+    return tuple(bad)
+
+
+@dataclass
+class _DebugStrategyAccum:
+    decisions_seen: int = 0
+    thin_real_h4: int = 0
+    max_bull_pct: int = -1
+    min_bull_pct: int = 10**9
+    max_bear_pct: int = -1
+    min_bear_pct: int = 10**9
+    max_wb: float = -1e18
+    min_wb: float = 1e18
+    max_wbear: float = -1e18
+    min_wbear: float = 1e18
+    regime_counts: Counter[str] = field(default_factory=Counter)
+    close_bull_near: int = 0
+    close_bear_near: int = 0
+    nan_indicator_rows: int = 0
+    flat_blocked_days: int = 0
+
+
+def _print_debug_strategy_footer(
+    *,
+    strategy_params: StrategyParams,
+    dbg: _DebugStrategyAccum,
+    sanity_dominate: bool,
+) -> None:
+    """Console-only diagnostics; gated by --debug-strategy."""
+    print()
+    print("[debug-strategy] --- aggregate (bars that reached decide()) ---")
+    print(f"  Bars evaluated (decide calls): {dbg.decisions_seen}")
+    print(
+        "  Bars with sparse real 4H through date (daily-derived 4H fallback used): "
+        f"{dbg.thin_real_h4}"
+    )
+    min_b = dbg.min_bull_pct if dbg.decisions_seen else None
+    min_be = dbg.min_bear_pct if dbg.decisions_seen else None
+    print(
+        f"  Max bull strength %: {dbg.max_bull_pct if dbg.decisions_seen else 'n/a'} "
+        f"| Min bull strength %: {min_b if min_b is not None else 'n/a'}"
+    )
+    print(
+        f"  Max bear strength %: {dbg.max_bear_pct if dbg.decisions_seen else 'n/a'} "
+        f"| Min bear strength %: {min_be if min_be is not None else 'n/a'}"
+    )
+    if dbg.decisions_seen:
+        print(f"  Weighted bull max/min: {dbg.max_wb:.3f} / {dbg.min_wb:.3f}")
+        print(f"  Weighted bear max/min: {dbg.max_wbear:.3f} / {dbg.min_wbear:.3f}")
+    else:
+        print("  Weighted bull max/min: n/a")
+        print("  Weighted bear max/min: n/a")
+    print(f"  Regime counts: {dict(dbg.regime_counts)}")
+    print(
+        "  Near-entry (flat, not blocked, within 20% of weighted bull threshold "
+        f"but below gate): {dbg.close_bull_near}"
+    )
+    print(
+        "  Near-entry (flat, not blocked, within 20% of weighted bear threshold "
+        f"but below gate): {dbg.close_bear_near}"
+    )
+    print(f"  Rows with NaN indicator fields: {dbg.nan_indicator_rows}")
+    print(f"  Flat + blocked (entry suppressed): {dbg.flat_blocked_days}")
+    if sanity_dominate:
+        print("  SANITY mode: threshold gates bypassed for entries (dominance-only).")
+    print()
+    print("[debug-strategy] --- heuristic diagnosis ---")
+    bull_tgt = (strategy_params.bull_entry_threshold / 8.0) * strategy_params.weight_scale
+    bear_tgt = (strategy_params.bear_entry_threshold / 8.0) * strategy_params.weight_scale
+    scale = strategy_params.weight_scale
+    print(
+        f"  Base weighted targets (pre-regime): bull~{bull_tgt:.3f}, bear~{bear_tgt:.3f} "
+        f"(scale={scale:.3f}). Range regime adds +{strategy_params.regime_ranging_threshold_weight_add:g} "
+        "to BOTH entry gates - strict chop can block symmetric entries."
+    )
+    print(
+        "  Dominance fallback: ENTRY_DOMINANCE_GAP_WEIGHT="
+        f"{strategy_params.entry_dominance_gap_weight:g} weighted units "
+        "(0 disables)."
+    )
+    if (
+        dbg.decisions_seen
+        and dbg.max_wb < bull_tgt * 0.5
+        and dbg.max_wbear < bear_tgt * 0.5
+    ):
+        print("  Observation: peak stacks stayed well below typical entry targets - check data / NaNs / 4H alignment.")
+    elif dbg.decisions_seen and (dbg.close_bull_near + dbg.close_bear_near) > dbg.decisions_seen // 3:
+        print("  Observation: many near-miss bars - thresholds/regime penalty likely tight vs realized stacks.")
+    if dbg.nan_indicator_rows:
+        print("  Observation: NaNs present - checklist votes may be silently False; inspect upstream series.")
+    if dbg.decisions_seen and dbg.thin_real_h4 > dbg.decisions_seen // 2:
+        print(
+            "  Observation: vendor 4H/intraday window is short vs daily history - "
+            "fallback stitches trailing daily bars as pseudo-4H (see synthetic_h4_fallback_from_daily)."
+        )
+    print(
+        "  4H alignment: decide() uses the latest 4H bar with timestamp <= each daily bar; "
+        "large gaps between daily date and h4_last in the sample table can mute intraday confirmation."
+    )
+    print(
+        "[debug-strategy] Note: report 'total_trades' counts CLOSED round-trips only; "
+        "open positions at the window end have buys/flips without a recorded exit yet."
+    )
+
+
 def _max_drawdown_pct(equity_points: list[float]) -> float:
     if not equity_points:
         return 0.0
@@ -132,6 +290,8 @@ def run_backtest(
     blocked_dates: set[str],
     strategy_params: StrategyParams,
     bars: int,
+    debug_strategy: bool = False,
+    decide_options: DecideOptions | None = None,
 ) -> BacktestResult:
     daily = candles.daily
     four_hour = candles.four_hour
@@ -161,13 +321,21 @@ def run_backtest(
     trade_rows: list[BacktestTradeRow] = []
     equity_points: list[float] = [equity]
 
+    dbg_accum = _DebugStrategyAccum()
+    sample_lines: list[str] = []
+    sanity_dominate = bool((decide_options or DecideOptions()).debug_sanity_dominate)
+
     for i in range(start_idx, len(daily)):
         now_ts = daily.index[i]
         now_dt = now_ts.to_pydatetime()  # timezone matches daily index (typically UTC)
         daily_slice = daily.iloc[: i + 1]
-        h4_slice = four_hour[four_hour.index <= now_ts]
-        if len(h4_slice) < 5:
-            continue
+        h4_real = h4_slice_through_daily_calendar_date(now_ts, four_hour)
+        if len(h4_real) < 5:
+            if debug_strategy:
+                dbg_accum.thin_real_h4 += 1
+            h4_slice = synthetic_h4_fallback_from_daily(daily_slice, min_rows=5)
+        else:
+            h4_slice = h4_real
 
         snapshot = build_snapshot(daily_slice, h4_slice, anchor_date)
         alert, new_position, dbg = decide(
@@ -176,7 +344,61 @@ def run_backtest(
             blocked_dates=blocked_dates,
             now_utc=now_dt,
             params=strategy_params,
+            decide_options=decide_options,
         )
+
+        if debug_strategy:
+            dbg_accum.decisions_seen += 1
+            bp, bep = alert.bullish_score, alert.bearish_score
+            dbg_accum.max_bull_pct = max(dbg_accum.max_bull_pct, bp)
+            dbg_accum.min_bull_pct = min(dbg_accum.min_bull_pct, bp)
+            dbg_accum.max_bear_pct = max(dbg_accum.max_bear_pct, bep)
+            dbg_accum.min_bear_pct = min(dbg_accum.min_bear_pct, bep)
+            wb_i = dbg.weighted_bull
+            wbear_i = dbg.weighted_bear
+            dbg_accum.max_wb = max(dbg_accum.max_wb, wb_i)
+            dbg_accum.min_wb = min(dbg_accum.min_wb, wb_i)
+            dbg_accum.max_wbear = max(dbg_accum.max_wbear, wbear_i)
+            dbg_accum.min_wbear = min(dbg_accum.min_wbear, wbear_i)
+            dbg_accum.regime_counts[dbg.regime] += 1
+            today_iso = now_dt.date().isoformat()
+            blocked_today = today_iso in blocked_dates
+            if position.active_symbol is None and blocked_today:
+                dbg_accum.flat_blocked_days += 1
+            be_bull = dbg.effective_bull_entry
+            be_bear = dbg.effective_bear_entry
+            if (
+                position.active_symbol is None
+                and not blocked_today
+                and be_bull > 0
+                and wb_i < be_bull
+                and wb_i >= 0.8 * be_bull
+                and wbear_i < be_bear
+            ):
+                dbg_accum.close_bull_near += 1
+            if (
+                position.active_symbol is None
+                and not blocked_today
+                and be_bear > 0
+                and wbear_i < be_bear
+                and wbear_i >= 0.8 * be_bear
+                and wb_i < be_bull
+            ):
+                dbg_accum.close_bear_near += 1
+            if _snapshot_nan_fields(snapshot):
+                dbg_accum.nan_indicator_rows += 1
+            if len(sample_lines) < 20:
+                h4_ts = h4_slice.index[-1]
+                if hasattr(h4_ts, "isoformat"):
+                    h4_lab = h4_ts.isoformat()[:19].replace("T", " ")
+                else:
+                    h4_lab = str(h4_ts)[:19]
+                sample_lines.append(
+                    f"{len(sample_lines):2d} | {str(now_ts)[:10]} | {bp:3d} {bep:3d} | {dbg.regime:10s} | "
+                    f"{be_bull:5.2f} {be_bear:5.2f} | {wb_i:4.2f} {wbear_i:5.2f} | "
+                    f"{alert.alert_type:4s} {alert.symbol:4s} | "
+                    f"{'blk' if blocked_today else 'ok '} | {h4_lab}"
+                )
 
         close_px = snapshot.daily_close
         if alert.alert_type == "BUY":
@@ -278,6 +500,22 @@ def run_backtest(
     avg_hold_days = (sum(hold_days_values) / len(hold_days_values)) if hold_days_values else 0.0
     max_drawdown = _max_drawdown_pct(equity_points)
     total_return = (equity - 1.0) * 100.0
+
+    if debug_strategy:
+        print("[debug-strategy] --- sample rows (first <=20 bars that reached decide()) ---")
+        header = (
+            "ix | date       | bull bear | regime     | bThr bearT | wb    wbear | dec  sym | blk | h4_last"
+        )
+        print(header)
+        print("-" * len(header))
+        for line in sample_lines:
+            print(line)
+        _print_debug_strategy_footer(
+            strategy_params=strategy_params,
+            dbg=dbg_accum,
+            sanity_dominate=sanity_dominate,
+        )
+
     return BacktestResult(
         bars_tested=tested,
         start_utc=start_ts.isoformat(),
@@ -349,5 +587,7 @@ def format_backtest_report(result: BacktestResult, ticker: str) -> str:
                 "Notes: QQQ close-to-close directional proxy only "
                 "(TQQQ ~ long QQQ, SQQQ ~ short QQQ); not broker execution or ETF-accurate PnL."
             ),
+            "Note: total_trades counts closed round-trips only (SELL/FLIP completes); "
+            "a BUY without exit before window end stays open.",
         ]
     )

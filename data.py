@@ -120,10 +120,10 @@ def _fetch_daily_prices(ticker: str, cli_command: str, api_key: str) -> pd.DataF
     return _normalize_ohlcv(pd.DataFrame(records), ticker=ticker)
 
 
-def _fetch_hourly_intraday(ticker: str, cli_command: str, api_key: str) -> pd.DataFrame:
+def _fetch_hourly_intraday(ticker: str, cli_command: str, api_key: str, *, bars: int) -> pd.DataFrame:
     payload = _run_ka_json(
         cli_command=cli_command,
-        args=["intraday", "-s", ticker, "-tf", "1hour", "-bars", "800", "-output", "json"],
+        args=["intraday", "-s", ticker, "-tf", "1hour", "-bars", str(int(bars)), "-output", "json"],
         api_key=api_key,
     )
     records = _extract_records(payload)
@@ -132,7 +132,12 @@ def _fetch_hourly_intraday(ticker: str, cli_command: str, api_key: str) -> pd.Da
 
 def load_candles(ticker: str, api_key: str, cli_command: str) -> CandleData:
     daily = _fetch_daily_prices(ticker=ticker, cli_command=cli_command, api_key=api_key)
-    hourly = _fetch_hourly_intraday(ticker=ticker, cli_command=cli_command, api_key=api_key)
+    # Hourly history must cover the daily window (800 bars ~33d would otherwise blank older backtest dates).
+    span_days = max(7, (daily.index[-1] - daily.index[0]).days + 14)
+    hourly_bars = min(12000, max(800, span_days * 24))
+    hourly = _fetch_hourly_intraday(
+        ticker=ticker, cli_command=cli_command, api_key=api_key, bars=hourly_bars
+    )
 
     # Build synthetic 4h candles from 1h bars from KlickAnalytics.
     four_hour = (

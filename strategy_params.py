@@ -27,12 +27,17 @@ class StrategyParams:
     regime_trend_favorable_delta: float
     flip_min_hold_trading_days: int
     flip_margin_weight: float
+    # Weighted-units gap between bull stack and bear stack required for a dominance fallback
+    # entry when strict threshold gates fail. Set to 0 to disable (legacy behavior).
+    entry_dominance_gap_weight: float
 
     def __post_init__(self) -> None:
         if len(self.score_weights) != 8:
             raise ValueError("score_weights must contain exactly 8 values.")
         if any(w < 0 for w in self.score_weights):
             raise ValueError("score_weights must be non-negative.")
+        if self.entry_dominance_gap_weight < 0:
+            raise ValueError("entry_dominance_gap_weight must be non-negative.")
 
     @property
     def weight_scale(self) -> float:
