@@ -290,7 +290,7 @@ def run() -> int:
     parser.add_argument(
         "--backtest-sweep",
         action="store_true",
-        help="Run backtests over BACKTEST_SWEEP_* parameter grids (see README).",
+        help="Run backtests over BACKTEST_SWEEP_* grids (e.g. BACKTEST_SWEEP_BULL; see README).",
     )
     parser.add_argument(
         "--backtest-sweep-csv",

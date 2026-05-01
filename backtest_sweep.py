@@ -109,37 +109,52 @@ def _parse_float_csv(env_name: str, raw: str | None, default: float) -> tuple[fl
         raise ConfigError(f"{env_name} must be comma-separated numbers.") from exc
 
 
+def _sweep_env_raw(*keys: str) -> str | None:
+    """First non-empty BACKTEST_SWEEP_* value wins (supports legacy alias keys)."""
+    for key in keys:
+        raw = os.getenv(key)
+        if raw is not None and str(raw).strip():
+            return raw
+    return None
+
+
 def sweep_grid_from_settings(settings: Settings) -> SweepGrid:
-    """Read BACKTEST_SWEEP_* lists from environment; missing -> single default from Settings."""
+    """Read sweep grids from env (short BACKTEST_SWEEP_* names); legacy long names still honored."""
     return SweepGrid(
         bull_entry=_parse_int_csv(
-            "BACKTEST_SWEEP_BULL_ENTRY_THRESHOLD",
-            os.getenv("BACKTEST_SWEEP_BULL_ENTRY_THRESHOLD"),
+            "BACKTEST_SWEEP_BULL",
+            _sweep_env_raw("BACKTEST_SWEEP_BULL", "BACKTEST_SWEEP_BULL_ENTRY_THRESHOLD"),
             settings.bull_entry_threshold,
         ),
         bear_entry=_parse_int_csv(
-            "BACKTEST_SWEEP_BEAR_ENTRY_THRESHOLD",
-            os.getenv("BACKTEST_SWEEP_BEAR_ENTRY_THRESHOLD"),
+            "BACKTEST_SWEEP_BEAR",
+            _sweep_env_raw("BACKTEST_SWEEP_BEAR", "BACKTEST_SWEEP_BEAR_ENTRY_THRESHOLD"),
             settings.bear_entry_threshold,
         ),
         weak=_parse_int_csv(
-            "BACKTEST_SWEEP_WEAK_SCORE_THRESHOLD",
-            os.getenv("BACKTEST_SWEEP_WEAK_SCORE_THRESHOLD"),
+            "BACKTEST_SWEEP_WEAK",
+            _sweep_env_raw("BACKTEST_SWEEP_WEAK", "BACKTEST_SWEEP_WEAK_SCORE_THRESHOLD"),
             settings.weak_score_threshold,
         ),
         regime_ranging_add=_parse_float_csv(
-            "BACKTEST_SWEEP_REGIME_RANGING_THRESHOLD_WEIGHT_ADD",
-            os.getenv("BACKTEST_SWEEP_REGIME_RANGING_THRESHOLD_WEIGHT_ADD"),
+            "BACKTEST_SWEEP_RANGE_ADD",
+            _sweep_env_raw(
+                "BACKTEST_SWEEP_RANGE_ADD",
+                "BACKTEST_SWEEP_REGIME_RANGING_THRESHOLD_WEIGHT_ADD",
+            ),
             settings.regime_ranging_threshold_weight_add,
         ),
         flip_min_hold=_parse_int_csv(
-            "BACKTEST_SWEEP_FLIP_MIN_HOLD_TRADING_DAYS",
-            os.getenv("BACKTEST_SWEEP_FLIP_MIN_HOLD_TRADING_DAYS"),
+            "BACKTEST_SWEEP_FLIP_HOLD",
+            _sweep_env_raw(
+                "BACKTEST_SWEEP_FLIP_HOLD",
+                "BACKTEST_SWEEP_FLIP_MIN_HOLD_TRADING_DAYS",
+            ),
             settings.flip_min_hold_trading_days,
         ),
         flip_margin=_parse_float_csv(
-            "BACKTEST_SWEEP_FLIP_MARGIN_WEIGHT",
-            os.getenv("BACKTEST_SWEEP_FLIP_MARGIN_WEIGHT"),
+            "BACKTEST_SWEEP_FLIP_MARGIN",
+            _sweep_env_raw("BACKTEST_SWEEP_FLIP_MARGIN", "BACKTEST_SWEEP_FLIP_MARGIN_WEIGHT"),
             settings.flip_margin_weight,
         ),
     )
