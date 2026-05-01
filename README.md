@@ -42,6 +42,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - Optional `--backtest` mode for historical rule replay (QQQ directional proxy; see below)
 - Discord **rich embeds** match the console breakdown: bot memory (flat vs symbol), bar timestamps + blackout, full QQQ daily/4h indicator lines, every bull/bear checklist item, rule thresholds, hold exit flags when applicable, then notes
 - KlickAnalytics CLI market data backend
+- Optional **Windows Task Scheduler** wrappers (`run_bot.ps1`, `setup_scheduler.ps1`, `remove_scheduler.ps1`) for timed runs (alert-only; see below)
 
 ## File layout
 
@@ -58,6 +59,8 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - `backtest_sweep.py`
 - `walk_forward.py`
 - `main.py`
+- `run_bot.ps1` (scheduled runner wrapper)
+- `setup_scheduler.ps1` / `remove_scheduler.ps1` (Windows Task Scheduler install/remove)
 - `.env.example`
 - `requirements.txt`
 - `events.example.json`
@@ -143,6 +146,44 @@ Health check verifies:
 - `position_state.json` loadability (or safe recovery to flat with warnings)
 - `events.json` readability if present
 - Discord webhook configuration when not in dry-run mode
+
+## Windows scheduled alerts
+
+Alert-only scheduled runs on **Windows**: three daily tasks call `main.py --no-technical` via the project venv Python. No broker APIs or order execution—same behavior as a manual CLI run.
+
+**Install** (from project root; elevated PowerShell may be required if registration is denied):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup_scheduler.ps1
+```
+
+Creates tasks:
+
+| Task name | Local time |
+|-----------|------------|
+| `TQQQ_SQQQ_Alerts_1000` | 10:00 AM |
+| `TQQQ_SQQQ_Alerts_1230` | 12:30 PM |
+| `TQQQ_SQQQ_Alerts_1530` | 3:30 PM |
+
+Each runs:
+
+`powershell.exe -ExecutionPolicy Bypass -File "C:\Users\hsins\projects\tqqq-sqqq-alerts\run_bot.ps1"`
+
+(Adjust the path in Task Scheduler if your clone lives elsewhere, or keep scripts under `C:\Users\hsins\projects\tqqq-sqqq-alerts`.)
+
+**Remove**:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\remove_scheduler.ps1
+```
+
+**Test manually**:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_bot.ps1
+```
+
+**Logs**: wrapper timestamps and Python stdout/stderr append to `logs/scheduler.log` (the `logs/` directory is gitignored).
 
 ### Backtest (optional)
 
