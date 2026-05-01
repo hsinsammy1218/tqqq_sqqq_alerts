@@ -1,68 +1,104 @@
-# TQQQ / SQQQ swing alert system
+# tqqq_sqqq_alerts
 
-QQQ-driven technical alerts for leveraged Nasdaq ETFs (alert-only; no broker execution).
+QQQ-driven swing-trading alert system that emits alerts for TQQQ/SQQQ/CASH.
 
-Private repository — add application code per project plan.
+This is alert-only software. It does not place orders and has no broker execution code.
 
-## Local Git repository (first-time)
+## Features
 
-From this folder:
+- Uses QQQ as analysis source across daily + 4h context
+- Indicators: EMA(20/50), RSI(14), MACD, ATR(14), weekly VWAP, anchored VWAP, volume vs 20-period average
+- Scores bullish and bearish setups (0-8 each)
+- Emits alerts: BUY, SELL, CASH
+- Risk logic: stop loss, take profit, stretch target, max hold
+- Outputs: console, CSV journal, Discord webhook
+- Dry-run mode for testing without Discord sends
+- KlickAnalytics CLI market data backend
 
-```powershell
-cd C:\Users\hsins\projects\tqqq-sqqq-alerts
-powershell -ExecutionPolicy Bypass -File .\init-git-here.ps1
+## File layout
+
+- `config.py`
+- `data.py`
+- `indicators.py`
+- `strategy.py`
+- `alerts.py`
+- `journal.py`
+- `main.py`
+- `.env.example`
+- `requirements.txt`
+- `events.example.json`
+
+## Setup
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-That creates **`main`**, the **initial commit**, and **`_init_git_result.txt`**. The commit uses placeholder author `Local <local@localhost>` so it works without global `git config`. Change later with `git commit --amend --reset-author` after setting your real name and email.
+Copy `.env.example` to `.env` and fill values:
 
-If `.git` was half-initialized (errors about `HEAD`), delete the `.git` folder once, then run the script again.
+- `KLICKANALYTICS_CLI_API_KEY` (required)
+- `KLICKANALYTICS_CLI_COMMAND=ka` (override only if your executable name/path differs)
+- `DISCORD_WEBHOOK_URL` only required when `DRY_RUN=false`
 
-## Create the private GitHub repository
+Optional: copy `events.example.json` to `events.json` and maintain `blocked_dates` for CPI/FOMC/major earnings blackout.
 
-### Option A — Script (Git required; `gh` optional)
+## Run
 
-From this folder:
+Dry-run:
 
-```powershell
-cd C:\Users\hsins\projects\tqqq-sqqq-alerts
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-private-repo.ps1
+```bash
+python main.py --dry-run
 ```
 
-- Writes details to **`git-gh-setup.log`**.
-- If **`gh` is not installed**, the script still creates **`main`** and the first commit, then prints how to add `origin` and push manually.
-- Install GitHub CLI when you want one-shot repo creation: `winget install --id GitHub.cli`, then `gh auth login`, then run the script again.
+Live Discord alerts:
 
-**If commit fails with “tell me who you are”**, set your identity once:
-
-```powershell
-git config --global user.name "Your Name"
-git config --global user.email "you@example.com"
+```bash
+python main.py
 ```
 
-Then re-run the script.
+## Decision rules
 
-### Option B — No `gh` (website + HTTPS)
+- BUY TQQQ when bullish score >= 5 and bearish < 5
+- BUY SQQQ when bearish score >= 5 and bullish < 5
+- CASH when mixed/weak/conflicting
+- SELL active side when:
+  - active score < 3, or
+  - opposite score >= 5, or
+  - stop loss / take profit trigger, or
+  - max hold > 10 trading days
 
-1. On GitHub: **New repository** → name it (e.g. `tqqq-sqqq-alerts`) → **Private** → create **without** README (you already have files locally).
-2. In PowerShell:
+Mutual exclusivity is enforced: never hold TQQQ and SQQQ simultaneously.
 
-```powershell
-cd C:\Users\hsins\projects\tqqq-sqqq-alerts
-git add README.md .gitignore scripts
-git commit -m "Initial commit"
-git branch -M main
-git remote add origin https://github.com/<YOU>/<REPO>.git
-git push -u origin main
+## Sample Discord alert
+
+```text
+Alert: BUY
+Symbol: TQQQ
+QQQ trend: daily close > EMA20; daily EMA20 > EMA50; 4h EMA20 > EMA50
+Bullish score: 6/8
+Bearish score: 2/8
+Confidence: 50%
+Entry zone: 432.10 - 439.70
+Stop loss: 400.65
+Take profit: 502.13
+Stretch target: 545.79
+Max hold date: 2026-05-15
+Timestamp: 2026-05-01T14:20:00Z
+Notes: Bullish QQQ setup.
 ```
 
-Use the same `git config user.*` lines as above if `git commit` asks for identity.
+## Sample CSV journal format
 
-### Option C — `gh` installed and logged in
-
-```powershell
-winget install --id GitHub.cli
-gh auth login
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-private-repo.ps1
+```csv
+timestamp_utc,alert_type,execution_symbol,qqq_trend_reason,bull_score,bear_score,confidence,entry_zone_low,entry_zone_high,stop_price,take_profit_price,take_profit_stretch_price,max_hold_date,notes
+2026-05-01T14:20:00Z,BUY,TQQQ,daily close > EMA20; daily EMA20 > EMA50; 4h EMA20 > EMA50,6,2,50,432.1,439.7,400.65,502.13,545.79,2026-05-15,Bullish QQQ setup.
 ```
 
-The script runs `gh repo create tqqq-sqqq-alerts --private --source=. --remote=origin --push`. If that name exists, it retries **`tqqq-sqqq-alerts-trading`**.
+## Notes
+
+- 4h candles are synthesized from 1h KlickAnalytics intraday bars.
+- Data is pulled via KlickAnalytics CLI commands (`ka prices` and `ka intraday`).
+- Real-time quality depends on your KlickAnalytics plan and your run cadence.
+- Educational use only. Not financial advice.

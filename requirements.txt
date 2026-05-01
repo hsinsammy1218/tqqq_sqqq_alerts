@@ -1,0 +1,4 @@
+pandas
+klickanalytics-cli
+python-dotenv
+requests

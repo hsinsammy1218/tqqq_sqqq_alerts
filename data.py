@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from dataclasses import dataclass
+
+import pandas as pd
+
+
+class DataError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class CandleData:
+    daily: pd.DataFrame
+    four_hour: pd.DataFrame
+
+
+def _normalize_ohlcv(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        raise DataError(f"No data returned for {ticker}.")
+
+    rename_map = {
+        "Date": "timestamp",
+        "Datetime": "timestamp",
+        "px_date": "timestamp",
+        "date": "timestamp",
+        "datetime": "timestamp",
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close",
+        "Volume": "volume",
+        "open": "open",
+        "high": "high",
+        "low": "low",
+        "close": "close",
+        "volume": "volume",
+    }
+    frame = frame.rename(columns=rename_map)
+    if "timestamp" in frame.columns:
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True)
+        frame = frame.dropna(subset=["timestamp"]).set_index("timestamp")
+
+    required = ["open", "high", "low", "close", "volume"]
+    missing = sorted(set(required) - set(frame.columns))
+    if missing:
+        raise DataError(
+            f"Missing required columns: {missing}. Available columns: {list(frame.columns)}"
+        )
+
+    frame = frame[required].copy()
+    for column in required:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna()
+    frame = frame[(frame["open"] > 0) & (frame["high"] > 0) & (frame["low"] > 0) & (frame["close"] > 0)]
+    frame = frame[frame["volume"] >= 0]
+    if frame.empty:
+        raise DataError(f"Data invalid/empty after cleaning for {ticker}.")
+    return frame.sort_index()
+
+
+def _extract_records(payload: object) -> list[dict]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if isinstance(payload, dict):
+        for key in ("results", "data", "rows", "items", "bars", "prices", "recent_bars"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [row for row in value if isinstance(row, dict)]
+        if "result" in payload and isinstance(payload["result"], list):
+            return [row for row in payload["result"] if isinstance(row, dict)]
+    raise DataError("KlickAnalytics returned an unsupported JSON shape.")
+
+
+def _run_ka_json(cli_command: str, args: list[str], api_key: str) -> object:
+    env = os.environ.copy()
+    env["KLICKANALYTICS_CLI_API_KEY"] = api_key
+    cmd = [cli_command] + args
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except FileNotFoundError as exc:
+        raise DataError(
+            f"KlickAnalytics CLI not found: '{cli_command}'. Install with 'pip install klickanalytics-cli'."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise DataError(f"KlickAnalytics CLI timed out for command: {' '.join(cmd)}") from exc
+
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        raise DataError(f"KlickAnalytics CLI command failed: {stderr or stdout or 'unknown error'}")
+
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        raise DataError("KlickAnalytics CLI returned empty output.")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise DataError("KlickAnalytics CLI did not return valid JSON. Use -output json.") from exc
+
+
+def _fetch_daily_prices(ticker: str, cli_command: str, api_key: str) -> pd.DataFrame:
+    payload = _run_ka_json(
+        cli_command=cli_command,
+        args=["prices", "-s", ticker, "-l", "400", "-output", "json"],
+        api_key=api_key,
+    )
+    records = _extract_records(payload)
+    return _normalize_ohlcv(pd.DataFrame(records), ticker=ticker)
+
+
+def _fetch_hourly_intraday(ticker: str, cli_command: str, api_key: str) -> pd.DataFrame:
+    payload = _run_ka_json(
+        cli_command=cli_command,
+        args=["intraday", "-s", ticker, "-tf", "1hour", "-bars", "800", "-output", "json"],
+        api_key=api_key,
+    )
+    records = _extract_records(payload)
+    return _normalize_ohlcv(pd.DataFrame(records), ticker=ticker)
+
+
+def load_candles(ticker: str, api_key: str, cli_command: str) -> CandleData:
+    daily = _fetch_daily_prices(ticker=ticker, cli_command=cli_command, api_key=api_key)
+    hourly = _fetch_hourly_intraday(ticker=ticker, cli_command=cli_command, api_key=api_key)
+
+    # Build synthetic 4h candles from 1h bars from KlickAnalytics.
+    four_hour = (
+        hourly.resample("4h")
+        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        .dropna()
+    )
+    if len(daily) < 60:
+        raise DataError("Not enough daily candles to compute indicators safely.")
+    if len(four_hour) < 5:
+        raise DataError("Not enough intraday candles to compute 4h context safely.")
+    return CandleData(daily=daily, four_hour=four_hour)

@@ -1,0 +1,11 @@
+{
+  "blocked_dates": [
+    "2026-01-28",
+    "2026-03-18",
+    "2026-05-06"
+  ],
+  "notes": [
+    "Sample FOMC/CPI/major earnings blackout dates.",
+    "Use YYYY-MM-DD in New York market date."
+  ]
+}
