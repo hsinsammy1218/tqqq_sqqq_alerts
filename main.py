@@ -484,7 +484,7 @@ def run() -> int:
             grid = sweep_grid_from_settings(settings)
             n_combo = grid.combination_count
             if n_combo > 400:
-                print(f"Warning: sweep has {n_combo} combinations — expect a long run.")
+                print(f"Warning: sweep has {n_combo} combinations - expect a long run.")
             sweep_rows = run_parameter_sweep(
                 candles,
                 anchor_date=settings.anchor_date or None,

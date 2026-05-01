@@ -124,14 +124,16 @@ python main.py --backtest --backtest-bars 250
 python main.py --backtest --backtest-bars 250 --backtest-report-csv reports/backtest_trades.csv
 ```
 
-Parameter sweep (grid search — uses same data window as `--backtest-bars`):
+Parameter sweep (grid search; **research only** — uses the same `--backtest-bars` window):
 
 ```bash
-python main.py --backtest-sweep --backtest-bars 180
-python main.py --backtest-sweep --backtest-sweep-csv reports/sweep_results.csv
+python main.py --backtest-sweep --backtest-bars 250
+python main.py --backtest-sweep --backtest-bars 250 --backtest-sweep-csv reports/sweep_results.csv
 ```
 
-Define grids via comma-separated env vars (omit a variable to sweep only its single value from your normal `.env`):
+Sweep mode is for comparing parameter combinations offline. Results use the **QQQ directional proxy** (not real ETF fills). **Best-ranked settings are not guaranteed future performance.**
+
+Define grids via comma-separated env vars (omit a variable to keep only its single value from your normal `.env`):
 
 | Env | Swept parameter |
 |-----|-----------------|
@@ -142,7 +144,11 @@ Define grids via comma-separated env vars (omit a variable to sweep only its sin
 | `BACKTEST_SWEEP_FLIP_MIN_HOLD_TRADING_DAYS` | `FLIP_MIN_HOLD_TRADING_DAYS` |
 | `BACKTEST_SWEEP_FLIP_MARGIN_WEIGHT` | `FLIP_MARGIN_WEIGHT` |
 
-Console output is ranked by a **balanced score** (min-max normalized within the sweep): rewards total return, win rate, and average return per trade; penalizes max drawdown and flip count. `--backtest-sweep-csv` writes the full ranked table.
+Console shows the **top 10** combinations by **balanced score** (simple formula in `backtest_sweep.py`, easy to tune):
+
+`balanced_score = total_return_pct + (win_rate_pct * 0.25) - abs(max_drawdown_pct * 1.5) - (flip_count * 0.25)`
+
+`--backtest-sweep-csv` writes **one row per combination** with full parameters and metrics (complete ranked list).
 
 If both `--backtest` and `--backtest-sweep` are passed, **sweep wins** (single backtest is skipped).
 
