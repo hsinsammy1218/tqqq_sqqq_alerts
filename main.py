@@ -626,6 +626,7 @@ def run() -> int:
         entry_atr_multiplier=settings.entry_atr_multiplier,
         anchor_date_label=anchor_label,
         flip_in_range_regime=strategy_params.flip_in_range_regime,
+        min_confidence_to_trade=strategy_params.min_confidence_to_trade,
     )
 
     message = format_alert_message(alert)

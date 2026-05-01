@@ -155,6 +155,8 @@ def build_discord_embed(
             f"bear_sum<{technical_meta.effective_bear_entry:.2f}\n"
             f"SQQQ BUY (weighted): bear_sum≥{technical_meta.effective_bear_entry:.2f}, "
             f"bull_sum<{technical_meta.effective_bull_entry:.2f}\n"
+            f"Flat BUY minimum confidence: **{technical_meta.min_confidence_to_trade}%** "
+            f"(below → CASH; does not apply to SELL/FLIP)\n"
             f"Exit while holding: weak / opposite / stop / TP / **{technical_meta.max_hold_days}** trading-day max hold "
             f"(flip suppression may apply)\n"
             f"Range chop FLIPs: **{'allowed' if technical_meta.flip_in_range_regime else 'off'}** "

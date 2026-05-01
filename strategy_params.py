@@ -32,6 +32,8 @@ class StrategyParams:
     entry_dominance_gap_weight: float
     # When False (default), never FLIP on reversal while regime is range/chop (exit via weaken/SL/TP/max hold).
     flip_in_range_regime: bool
+    # Minimum normalized confidence (0-100 stack dominance) required for a flat BUY; 0 disables.
+    min_confidence_to_trade: int
 
     def __post_init__(self) -> None:
         if len(self.score_weights) != 8:
@@ -40,6 +42,8 @@ class StrategyParams:
             raise ValueError("score_weights must be non-negative.")
         if self.entry_dominance_gap_weight < 0:
             raise ValueError("entry_dominance_gap_weight must be non-negative.")
+        if not 0 <= self.min_confidence_to_trade <= 100:
+            raise ValueError("min_confidence_to_trade must be between 0 and 100 inclusive.")
 
     @property
     def weight_scale(self) -> float:

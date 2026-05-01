@@ -43,6 +43,7 @@ class Settings:
     flip_margin_weight: float
     entry_dominance_gap_weight: float
     flip_in_range_regime: bool
+    min_confidence_to_trade: int
 
 
 def _to_bool(value: str, default: bool = False) -> bool:
@@ -87,6 +88,7 @@ def strategy_params_from_settings(settings: Settings) -> StrategyParams:
             flip_margin_weight=settings.flip_margin_weight,
             entry_dominance_gap_weight=settings.entry_dominance_gap_weight,
             flip_in_range_regime=settings.flip_in_range_regime,
+            min_confidence_to_trade=settings.min_confidence_to_trade,
         )
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
@@ -133,4 +135,5 @@ def load_settings() -> Settings:
         flip_margin_weight=float(os.getenv("FLIP_MARGIN_WEIGHT", "1.25")),
         entry_dominance_gap_weight=float(os.getenv("ENTRY_DOMINANCE_GAP_WEIGHT", "1.25")),
         flip_in_range_regime=_to_bool(os.getenv("FLIP_ALLOW_IN_RANGE", "false"), default=False),
+        min_confidence_to_trade=int(os.getenv("MIN_CONFIDENCE_TO_TRADE", "62")),
     )

@@ -242,6 +242,7 @@ class RunTechnicalMeta:
     entry_atr_multiplier: float
     anchor_date_label: str
     flip_in_range_regime: bool
+    min_confidence_to_trade: int
 
 
 def format_technical_breakdown(
@@ -296,6 +297,10 @@ def format_technical_breakdown(
             (
                 f"  BUY SQQQ (weighted): bear_sum>={meta.effective_bear_entry:.2f} AND "
                 f"bull_sum<{meta.effective_bull_entry:.2f} (flat, not blocked)"
+            ),
+            (
+                f"  Flat BUY confidence gate: normalized confidence ≥{meta.min_confidence_to_trade}% "
+                f"(MIN_CONFIDENCE_TO_TRADE; 0 disables)"
             ),
             f"  Base thresholds (legacy 0–8 scale): bull≥{meta.base_bull_entry_threshold}, "
             f"bear≥{meta.base_bear_entry_threshold}, weak<{meta.base_weak_threshold}",
@@ -468,6 +473,20 @@ def decide(
                 notes = "Dominance entry: bear stack leads bull by weighted gap (fallback)."
     elif position.active_symbol is None and blocked:
         notes = "Entry blocked by event calendar (manual blackout + optional CPI/FOMC/earnings risk dates)."
+
+    if (
+        position.active_symbol is None
+        and not blocked
+        and alert_type == "BUY"
+        and params.min_confidence_to_trade > 0
+        and confidence < params.min_confidence_to_trade
+    ):
+        alert_type = "CASH"
+        symbol = "CASH"
+        notes = (
+            f"Entry skipped: confidence {confidence}% is below MIN_CONFIDENCE_TO_TRADE "
+            f"({params.min_confidence_to_trade}%)."
+        )
 
     stop_loss = 0.0
     take_profit = 0.0
