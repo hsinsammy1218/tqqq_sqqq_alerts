@@ -294,18 +294,37 @@ def run_backtest(
     bars: int,
     debug_strategy: bool = False,
     decide_options: DecideOptions | None = None,
+    loop_start_idx: int | None = None,
+    loop_end_idx_exclusive: int | None = None,
 ) -> BacktestResult:
     daily = candles.daily
     four_hour = candles.four_hour
     if len(daily) < 80:
         raise ValueError("Need at least 80 daily bars for backtest.")
-    if bars < 20:
-        raise ValueError("--backtest-bars must be >= 20.")
-
-    start_idx = max(60, len(daily) - bars)
-    tested = len(daily) - start_idx
-    start_ts = daily.index[start_idx]
-    end_ts = daily.index[-1]
+    n = len(daily)
+    use_slice = loop_start_idx is not None or loop_end_idx_exclusive is not None
+    if use_slice:
+        lo = int(loop_start_idx) if loop_start_idx is not None else max(60, n - bars)
+        hi = int(loop_end_idx_exclusive) if loop_end_idx_exclusive is not None else n
+        if lo < 60:
+            raise ValueError("loop_start_idx must be >= 60 (indicator warmup).")
+        if hi > n or hi <= lo:
+            raise ValueError("Invalid walk-forward loop range.")
+        if hi - lo < 20:
+            raise ValueError("Walk-forward segment must span at least 20 daily bars.")
+        start_idx = lo
+        tested = hi - lo
+        start_ts = daily.index[start_idx]
+        end_ts = daily.index[hi - 1]
+        iter_hi = hi
+    else:
+        if bars < 20:
+            raise ValueError("--backtest-bars must be >= 20.")
+        start_idx = max(60, n - bars)
+        tested = n - start_idx
+        start_ts = daily.index[start_idx]
+        end_ts = daily.index[-1]
+        iter_hi = n
 
     position = PositionState()
     open_trade: _OpenTrade | None = None
@@ -327,7 +346,7 @@ def run_backtest(
     sample_lines: list[str] = []
     sanity_dominate = bool((decide_options or DecideOptions()).debug_sanity_dominate)
 
-    for i in range(start_idx, len(daily)):
+    for i in range(start_idx, iter_hi):
         now_ts = daily.index[i]
         now_dt = now_ts.to_pydatetime()  # timezone matches daily index (typically UTC)
         daily_slice = daily.iloc[: i + 1]
@@ -491,7 +510,8 @@ def run_backtest(
 
     open_unrealized: float | None = None
     if open_trade is not None:
-        last_close = float(daily.iloc[-1]["close"])
+        last_bar_ix = iter_hi - 1
+        last_close = float(daily.iloc[last_bar_ix]["close"])
         open_unrealized = _trade_return_pct(open_trade.symbol, open_trade.entry_price, last_close)
 
     total_trades = closed

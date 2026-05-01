@@ -17,6 +17,13 @@ from data import DataError, load_candles
 from event_calendar import load_merged_blackout_dates
 from indicators import build_snapshot
 from journal import append_journal
+from walk_forward import (
+    export_walk_forward_csv,
+    format_walk_forward_report,
+    run_walk_forward,
+    walk_forward_fold_count,
+    walk_forward_grid_from_settings,
+)
 from strategy import (
     DecideOptions,
     PositionState,
@@ -305,6 +312,20 @@ def run() -> int:
         help="Optional path to write ranked sweep results CSV.",
     )
     parser.add_argument(
+        "--walk-forward",
+        action="store_true",
+        help=(
+            "Walk-forward grid search over WALK_FORWARD_GRID_* env lists; ranks by mean "
+            "balanced score on chronological validation folds."
+        ),
+    )
+    parser.add_argument(
+        "--walk-forward-csv",
+        default="reports/walk_forward_results.csv",
+        metavar="PATH",
+        help="Path for ranked walk-forward CSV (default: reports/walk_forward_results.csv).",
+    )
+    parser.add_argument(
         "--debug-strategy",
         action="store_true",
         help="With --backtest or --backtest-sweep only: print score/regime/threshold diagnostics.",
@@ -339,6 +360,9 @@ def run() -> int:
         help="Open time ISO8601 (optional). If omitted, max-hold anchors from the first bot run after --set-position.",
     )
     args = parser.parse_args()
+    if args.walk_forward and (args.backtest or args.backtest_sweep):
+        print("Config error: --walk-forward cannot be combined with --backtest or --backtest-sweep.")
+        return 1
     if args.debug_strategy_sanity and not args.debug_strategy:
         print("Config error: --debug-strategy-sanity requires --debug-strategy.")
         return 1
@@ -355,6 +379,8 @@ def run() -> int:
         backtest_report_csv=args.backtest_report_csv,
         backtest_sweep=args.backtest_sweep,
         backtest_sweep_csv=args.backtest_sweep_csv,
+        walk_forward=args.walk_forward,
+        walk_forward_csv=args.walk_forward_csv,
         debug_strategy=args.debug_strategy,
         debug_strategy_sanity=args.debug_strategy_sanity,
     )
@@ -500,10 +526,53 @@ def run() -> int:
         blocked_dates_count=len(blocked_dates),
         risk_notes=risk_notes,
     )
-    if args.debug_strategy and not args.backtest and not args.backtest_sweep:
-        print("[debug-strategy] Ignored unless combined with --backtest or --backtest-sweep.")
+    if args.debug_strategy and not args.backtest and not args.backtest_sweep and not args.walk_forward:
+        print("[debug-strategy] Ignored unless combined with --backtest, --backtest-sweep, or --walk-forward.")
 
     research_decide_options = DecideOptions(debug_sanity_dominate=args.debug_strategy_sanity)
+
+    if args.walk_forward:
+        try:
+            wf_grid = walk_forward_grid_from_settings(settings)
+            wf_folds = walk_forward_fold_count()
+            n_wf = wf_grid.combination_count
+            if n_wf > 200:
+                print(f"Warning: walk-forward grid has {n_wf} combinations - expect a long run.")
+            if args.debug_strategy:
+                print("[debug-strategy] Walk-forward: verbose diagnostics for the first fold of the first grid combination only.")
+            wf_rows = run_walk_forward(
+                candles,
+                anchor_date=settings.anchor_date or None,
+                blocked_dates=blocked_dates,
+                base_params=strategy_params,
+                bars=args.backtest_bars,
+                grid=wf_grid,
+                n_folds=wf_folds,
+                debug_strategy=args.debug_strategy,
+                decide_options=research_decide_options,
+            )
+        except ConfigError as exc:
+            print(f"Walk-forward config error: {exc}")
+            return 1
+        except ValueError as exc:
+            print(f"Walk-forward error: {exc}")
+            return 1
+        print(
+            format_walk_forward_report(
+                wf_rows,
+                ticker=settings.qqq_ticker,
+                bars=args.backtest_bars,
+                combo_count=n_wf,
+                n_folds=wf_folds,
+            )
+        )
+        try:
+            export_walk_forward_csv(args.walk_forward_csv, wf_rows)
+            print(f"Walk-forward CSV written: {args.walk_forward_csv}")
+        except OSError as exc:
+            print(f"Walk-forward export error: {exc}")
+            return 1
+        return 0
 
     if args.backtest_sweep:
         try:

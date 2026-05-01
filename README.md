@@ -56,6 +56,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - `journal.py`
 - `backtest.py`
 - `backtest_sweep.py`
+- `walk_forward.py`
 - `main.py`
 - `.env.example`
 - `requirements.txt`
@@ -192,6 +193,40 @@ Console shows the **top 10** combinations by **balanced score** (`compute_balanc
 `--backtest-sweep-csv` writes **one row per combination** with full parameters and metrics (complete ranked list).
 
 If both `--backtest` and `--backtest-sweep` are passed, **sweep wins** (single backtest is skipped).
+
+`--walk-forward` cannot be combined with `--backtest` or `--backtest-sweep`.
+
+### Walk-forward parameter selection (optional)
+
+Splits the same `--backtest-bars` trailing window into chronological validation folds (default **3**, `WALK_FORWARD_FOLDS`). For each grid combination of the knobs below, runs a sliced backtest per fold, computes `compute_balanced_score` per fold, and ranks combinations by the **mean** validation score. Console output summarizes the **recommended** env-style settings plus pooled trade count, win rate, median return/trade, worst-fold max drawdown, and fold count. Results still use the **QQQ directional proxy** only.
+
+```bash
+python main.py --walk-forward --backtest-bars 250
+python main.py --walk-forward --backtest-bars 250 --walk-forward-csv reports/walk_forward_results.csv
+```
+
+`--walk-forward-csv` defaults to `reports/walk_forward_results.csv`. Leaving normal `.env` defaults unchanged is intentional until you adopt a recommendation manually.
+
+| Env | Parameter |
+|-----|-----------|
+| `WALK_FORWARD_GRID_MIN_CONFIDENCE` | `MIN_CONFIDENCE_TO_TRADE` |
+| `WALK_FORWARD_GRID_DOM_GAP` | `ENTRY_DOMINANCE_GAP_WEIGHT` |
+| `WALK_FORWARD_GRID_RANGE_ADD` | `REGIME_RANGING_THRESHOLD_WEIGHT_ADD` |
+| `WALK_FORWARD_GRID_FLIP_HOLD` | `FLIP_MIN_HOLD_TRADING_DAYS` |
+| `WALK_FORWARD_GRID_FLIP_MARGIN` | `FLIP_MARGIN_WEIGHT` |
+| `WALK_FORWARD_GRID_FLIP_ALLOW_IN_RANGE` | `FLIP_ALLOW_IN_RANGE` (`true`/`false`, comma-separated) |
+
+Example:
+
+```env
+WALK_FORWARD_FOLDS=3
+WALK_FORWARD_GRID_MIN_CONFIDENCE=55,62,70
+WALK_FORWARD_GRID_DOM_GAP=1.0,1.25
+WALK_FORWARD_GRID_RANGE_ADD=0.55,0.65
+WALK_FORWARD_GRID_FLIP_HOLD=3
+WALK_FORWARD_GRID_FLIP_MARGIN=1.25,1.5
+WALK_FORWARD_GRID_FLIP_ALLOW_IN_RANGE=false,true
+```
 
 Backtest report now includes:
 - total trades
