@@ -12,6 +12,7 @@ This is alert-only software. It does not place orders and has no broker executio
 - Emits alerts: BUY, SELL, FLIP, CASH
 - Risk logic: stop loss, take profit, stretch target, max hold
 - Outputs: console, CSV journal, Discord webhook
+- Structured JSON logs in `logs/bot.log` with daily rotation
 - Dry-run mode for testing without Discord sends
 - Optional `--backtest` mode for historical rule replay (QQQ directional proxy; see below)
 - Discord **rich embeds** match the console breakdown: bot memory (flat vs symbol), bar timestamps + blackout, full QQQ daily/4h indicator lines, every bull/bear checklist item, rule thresholds, hold exit flags when applicable, then notes
@@ -71,6 +72,25 @@ Dry-run:
 ```bash
 python main.py --dry-run
 ```
+
+Set logging verbosity (default `INFO`):
+
+```bash
+python main.py --log-level DEBUG --dry-run
+```
+
+Run non-destructive environment checks:
+
+```bash
+python main.py --health-check --dry-run
+```
+
+Health check verifies:
+- KlickAnalytics CLI command availability
+- Market data fetch success (and latest daily/4h bar timestamps)
+- `position_state.json` loadability (or safe recovery to flat with warnings)
+- `events.json` readability if present
+- Discord webhook configuration when not in dry-run mode
 
 ### Backtest (optional)
 
