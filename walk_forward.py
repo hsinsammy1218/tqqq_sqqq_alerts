@@ -334,9 +334,10 @@ def format_walk_forward_report(
 
 
 def export_walk_forward_csv(path: str, rows: list[WalkForwardResultRow]) -> None:
+    ranked = sorted(rows, key=lambda r: r.validation_score, reverse=True)
     fields = [
         "rank",
-        "validation_score",
+        "avg_score",
         "min_confidence_to_trade",
         "entry_dominance_gap_weight",
         "regime_ranging_threshold_weight_add",
@@ -354,11 +355,11 @@ def export_walk_forward_csv(path: str, rows: list[WalkForwardResultRow]) -> None
     with out_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
-        for r in rows:
+        for i, r in enumerate(ranked, start=1):
             writer.writerow(
                 {
-                    "rank": r.rank,
-                    "validation_score": round(r.validation_score, 6),
+                    "rank": i,
+                    "avg_score": round(r.validation_score, 6),
                     "min_confidence_to_trade": r.min_confidence_to_trade,
                     "entry_dominance_gap_weight": round(r.entry_dominance_gap_weight, 6),
                     "regime_ranging_threshold_weight_add": round(
