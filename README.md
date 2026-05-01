@@ -120,7 +120,21 @@ Replays the same scoring and `decide()` rules over recent historical QQQ daily b
 ```bash
 python main.py --backtest
 python main.py --backtest --backtest-bars 250
+python main.py --backtest --backtest-bars 250 --backtest-report-csv reports/backtest_trades.csv
 ```
+
+Backtest report now includes:
+- total trades
+- win rate
+- average return per trade
+- best trade / worst trade
+- max drawdown
+- average hold days
+- FLIP event count
+- CASH no-trade period count
+
+`--backtest-report-csv` exports per-trade rows with:
+`timestamp,action,symbol,entry_price,exit_price,return_pct,hold_days,bull_strength,bear_strength,confidence,regime,reason`
 
 Live Discord alerts:
 

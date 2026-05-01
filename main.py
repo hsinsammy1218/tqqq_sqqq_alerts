@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from alerts import format_alert_message, send_discord
-from backtest import format_backtest_report, run_backtest
+from backtest import export_backtest_trades_csv, format_backtest_report, run_backtest
 from config import ConfigError, load_settings, strategy_params_from_settings
 from data import DataError, load_candles
 from event_calendar import load_merged_blackout_dates
@@ -280,6 +280,12 @@ def run() -> int:
         metavar="N",
         help="Number of recent daily bars to evaluate in --backtest mode (default: 180).",
     )
+    parser.add_argument(
+        "--backtest-report-csv",
+        default=None,
+        metavar="PATH",
+        help="Optional path to write per-trade backtest CSV report.",
+    )
     pos = parser.add_mutually_exclusive_group()
     pos.add_argument(
         "--flat",
@@ -315,6 +321,7 @@ def run() -> int:
         dry_run_arg=bool(args.dry_run),
         health_check=bool(args.health_check),
         no_technical=bool(args.no_technical),
+        backtest_report_csv=args.backtest_report_csv,
     )
 
     if args.set_position is not None and args.entry_price is not None and args.entry_price <= 0:
@@ -471,6 +478,13 @@ def run() -> int:
             print(f"Backtest error: {exc}")
             return 1
         print(format_backtest_report(bt, settings.qqq_ticker))
+        if args.backtest_report_csv:
+            try:
+                export_backtest_trades_csv(args.backtest_report_csv, bt.trade_rows)
+                print(f"Backtest trade CSV written: {args.backtest_report_csv}")
+            except OSError as exc:
+                print(f"Backtest report export error: {exc}")
+                return 1
         return 0
 
     try:
