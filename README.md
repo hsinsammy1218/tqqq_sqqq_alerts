@@ -2,7 +2,29 @@
 
 QQQ-driven swing-trading alert system that emits alerts for TQQQ/SQQQ/CASH.
 
-This is alert-only software. It does not place orders and has no broker execution code.
+This is **alert-only** software: it produces **signals for manual review**. You decide whether to act (for example in Robinhood); **nothing here places trades**.
+
+### Signals you may see
+
+| Signal | Meaning (manual follow-up) |
+|--------|----------------------------|
+| **BUY** | Suggestion to **buy TQQQ** or **buy SQQQ** (symbol is stated on the alert) |
+| **SELL** | Suggestion to **exit** the referenced ETF leg |
+| **FLIP** | Suggestion to **switch** from TQQQ to SQQQ or vice versa |
+| **CASH** | No new entry / hold commentary as applicable (includes explicit hold notes when already positioned) |
+
+### What alerts may include (informational only)
+
+Symbol, direction, entry zone, stop loss, take profit / stretch target, confidence, headline reasoning, and risk-oriented notes. These are **inputs for your judgment**, not instructions executed by this repo.
+
+### Non-goals (never part of this project)
+
+- No Robinhood or other **broker integration**
+- No broker trading APIs or authenticated trading sessions
+- No **automated order execution** or **automated position sizing that places orders**
+- No real-money trade placement by the bot
+
+Backtests and sweeps are **research simulations** on QQQ history only; they do not connect to a brokerage.
 
 ## Features
 

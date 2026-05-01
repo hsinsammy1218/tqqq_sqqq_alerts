@@ -252,7 +252,12 @@ def _parse_entry_time_arg(value: str) -> datetime:
 
 
 def run() -> int:
-    parser = argparse.ArgumentParser(description="QQQ-driven TQQQ/SQQQ alert-only system")
+    parser = argparse.ArgumentParser(
+        description=(
+            "QQQ-driven TQQQ/SQQQ alert-only system: emits BUY/SELL/FLIP/CASH signals "
+            "for manual review; does not place orders or connect to brokers."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print payloads without sending Discord alerts.")
     parser.add_argument(
         "--log-level",
