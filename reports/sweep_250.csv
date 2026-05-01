@@ -1,0 +1,2 @@
+rank,balanced_score,bull_entry_threshold,bear_entry_threshold,weak_score_threshold,regime_ranging_threshold_weight_add,flip_min_hold_trading_days,flip_margin_weight,total_trades,win_rate_pct,average_return_pct,best_trade_pct,worst_trade_pct,max_drawdown_pct,average_hold_days,flip_count,cash_periods,equity_end,total_return_pct
+1,0.0,5,5,3,0.75,2,1.0,0,0.0,0.0,,,0.0,0.0,0,0,1.0,0.0
