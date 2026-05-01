@@ -13,3 +13,6 @@ git-gh-setup.log
 alerts_journal.csv
 position_state.json
 logs/
+
+# Generated walk-forward output (local research artifact; not versioned).
+reports/walk_forward_results.csv

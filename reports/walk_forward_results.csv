@@ -1,2 +1,0 @@
-rank,avg_score,min_confidence_to_trade,entry_dominance_gap_weight,regime_ranging_threshold_weight_add,flip_min_hold_trading_days,flip_margin_weight,flip_allow_in_range,trade_count,win_rate_pct,median_return_per_trade_pct,max_drawdown_pct,validation_windows_tested
-1,-7.368254,62,1.25,0.55,3,1.25,0,21,28.5714,-1.524583,10.58714,3
