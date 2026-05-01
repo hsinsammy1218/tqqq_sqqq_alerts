@@ -29,6 +29,8 @@ class Settings:
     journal_csv: Path
     position_state_json: Path
     events_json: Path
+    event_risk_avoidance: bool
+    event_risk_calendar_url: str
     anchor_date: str
 
 
@@ -67,5 +69,7 @@ def load_settings() -> Settings:
         journal_csv=Path(os.getenv("JOURNAL_CSV", "alerts_journal.csv")),
         position_state_json=Path(os.getenv("POSITION_STATE_JSON", "position_state.json")),
         events_json=Path(os.getenv("EVENTS_JSON", "events.json")),
+        event_risk_avoidance=_to_bool(os.getenv("EVENT_RISK_AVOIDANCE", "false"), default=False),
+        event_risk_calendar_url=os.getenv("EVENT_RISK_CALENDAR_URL", "").strip(),
         anchor_date=os.getenv("ANCHOR_DATE", "").strip(),
     )

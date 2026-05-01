@@ -7,6 +7,7 @@ from alerts import format_alert_message, send_discord
 from backtest import format_backtest_report, run_backtest
 from config import ConfigError, load_settings
 from data import DataError, load_candles
+from event_calendar import load_merged_blackout_dates
 from indicators import build_snapshot
 from journal import append_journal
 from strategy import (
@@ -14,7 +15,6 @@ from strategy import (
     RunTechnicalMeta,
     decide,
     format_technical_breakdown,
-    load_blocked_dates,
     load_position,
     save_position,
 )
@@ -133,7 +133,13 @@ def run() -> int:
         return 1
 
     now_utc = datetime.now(timezone.utc)
-    blocked_dates = load_blocked_dates(settings.events_json)
+    blocked_dates, risk_notes = load_merged_blackout_dates(
+        settings.events_json,
+        risk_avoidance=settings.event_risk_avoidance,
+        risk_calendar_url=settings.event_risk_calendar_url or None,
+    )
+    for msg in risk_notes:
+        print(f"[events] {msg}")
     if args.backtest:
         try:
             bt = run_backtest(

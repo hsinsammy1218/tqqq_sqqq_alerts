@@ -4,8 +4,26 @@
     "2026-03-18",
     "2026-05-06"
   ],
+  "risk_calendar": {
+    "cpi_dates": [
+      "2026-01-13",
+      "2026-02-12",
+      "2026-03-12"
+    ],
+    "fomc_dates": [
+      "2026-01-28",
+      "2026-03-18",
+      "2026-05-06"
+    ],
+    "nasdaq_earnings_dates": [
+      "2026-01-30",
+      "2026-04-24"
+    ]
+  },
   "notes": [
-    "Sample FOMC/CPI/major earnings blackout dates.",
-    "Use YYYY-MM-DD in New York market date."
+    "blocked_dates: always honored when flat (manual blackout).",
+    "risk_calendar: merged only when EVENT_RISK_AVOIDANCE=true (same entry-blocking behavior).",
+    "Use YYYY-MM-DD calendar dates (align with how you interpret the trading session day).",
+    "EVENT_RISK_CALENDAR_URL may point at JSON with the same risk_calendar shape; fetch failures are non-blocking."
   ]
 }

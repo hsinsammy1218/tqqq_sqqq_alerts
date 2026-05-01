@@ -293,7 +293,7 @@ def decide(
             alert_type = "BUY"
             notes = "Bearish QQQ setup."
     elif position.active_symbol is None and blocked:
-        notes = "Entry blocked by event calendar."
+        notes = "Entry blocked by event calendar (manual blackout + optional CPI/FOMC/earnings risk dates)."
 
     stop_loss = 0.0
     take_profit = 0.0

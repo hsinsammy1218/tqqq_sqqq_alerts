@@ -20,6 +20,7 @@ This is alert-only software. It does not place orders and has no broker executio
 ## File layout
 
 - `config.py`
+- `event_calendar.py`
 - `data.py`
 - `indicators.py`
 - `strategy.py`
@@ -52,7 +53,15 @@ Discord webhook quick setup:
 3. Set `DISCORD_WEBHOOK_URL=<your webhook>` in `.env`.
 4. Set `DRY_RUN=false` when you want live posts.
 
-Optional: copy `events.example.json` to `events.json` and maintain `blocked_dates` for CPI/FOMC/major earnings blackout.
+Optional event-risk avoidance (never fatal):
+
+1. Copy `events.example.json` to `events.json`.
+2. Maintain `blocked_dates` (YYYY-MM-DD) for days you never want **new** BUY entries while flat.
+3. Optionally add a `risk_calendar` object with lists `cpi_dates`, `fomc_dates`, and `nasdaq_earnings_dates` (same date format).
+4. Set `EVENT_RISK_AVOIDANCE=true` to merge those risk lists into the same entry-blocking set as `blocked_dates`.
+5. Optionally set `EVENT_RISK_CALENDAR_URL` to fetch JSON containing a top-level `risk_calendar` object with the same keys. If the URL fails or returns invalid JSON, the bot logs `[events] ...` and continues with file-based dates only (or manual-only if the file has no usable data).
+
+When `EVENT_RISK_AVOIDANCE` is false or no risk data is present, behavior matches manual `blocked_dates` only. Missing `events.json` is still OK (no blackout dates).
 
 ## Run
 
