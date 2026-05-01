@@ -625,6 +625,7 @@ def run() -> int:
         max_hold_days=settings.max_hold_trading_days,
         entry_atr_multiplier=settings.entry_atr_multiplier,
         anchor_date_label=anchor_label,
+        flip_in_range_regime=strategy_params.flip_in_range_regime,
     )
 
     message = format_alert_message(alert)

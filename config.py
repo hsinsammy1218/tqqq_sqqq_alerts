@@ -42,6 +42,7 @@ class Settings:
     flip_min_hold_trading_days: int
     flip_margin_weight: float
     entry_dominance_gap_weight: float
+    flip_in_range_regime: bool
 
 
 def _to_bool(value: str, default: bool = False) -> bool:
@@ -85,6 +86,7 @@ def strategy_params_from_settings(settings: Settings) -> StrategyParams:
             flip_min_hold_trading_days=settings.flip_min_hold_trading_days,
             flip_margin_weight=settings.flip_margin_weight,
             entry_dominance_gap_weight=settings.entry_dominance_gap_weight,
+            flip_in_range_regime=settings.flip_in_range_regime,
         )
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
@@ -125,9 +127,10 @@ def load_settings() -> Settings:
         score_weights_csv=os.getenv("SCORE_WEIGHTS", "").strip(),
         regime_sep_atr_mult=float(os.getenv("REGIME_SEP_ATR_MULT", "0.12")),
         regime_slope_atr_mult=float(os.getenv("REGIME_SLOPE_ATR_MULT", "0.03")),
-        regime_ranging_threshold_weight_add=float(os.getenv("REGIME_RANGING_THRESHOLD_WEIGHT_ADD", "0.35")),
+        regime_ranging_threshold_weight_add=float(os.getenv("REGIME_RANGING_THRESHOLD_WEIGHT_ADD", "0.55")),
         regime_trend_favorable_delta=float(os.getenv("REGIME_TREND_FAVORABLE_DELTA", "0.5")),
-        flip_min_hold_trading_days=int(os.getenv("FLIP_MIN_HOLD_TRADING_DAYS", "2")),
-        flip_margin_weight=float(os.getenv("FLIP_MARGIN_WEIGHT", "1.0")),
-        entry_dominance_gap_weight=float(os.getenv("ENTRY_DOMINANCE_GAP_WEIGHT", "1.0")),
+        flip_min_hold_trading_days=int(os.getenv("FLIP_MIN_HOLD_TRADING_DAYS", "3")),
+        flip_margin_weight=float(os.getenv("FLIP_MARGIN_WEIGHT", "1.25")),
+        entry_dominance_gap_weight=float(os.getenv("ENTRY_DOMINANCE_GAP_WEIGHT", "1.25")),
+        flip_in_range_regime=_to_bool(os.getenv("FLIP_ALLOW_IN_RANGE", "false"), default=False),
     )

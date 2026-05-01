@@ -93,7 +93,7 @@ Optional event-risk avoidance (never fatal):
 
 When `EVENT_RISK_AVOIDANCE` is false or no risk data is present, behavior matches manual `blocked_dates` only. Missing `events.json` is still OK (no blackout dates).
 
-Optional strategy tuning (defaults match legacy **5/5 entry**, **3 weak** when weights are all `1`):
+Optional strategy tuning (baseline **5/5** entry, **3 weak** with equal weights; chop/range and flip behavior tuned via rows below):
 
 | Variable | Meaning |
 |----------|---------|
@@ -104,6 +104,8 @@ Optional strategy tuning (defaults match legacy **5/5 entry**, **3 weak** when w
 | `REGIME_TREND_FAVORABLE_DELTA` | Weight-units easier/harder entry along vs against the trend |
 | `FLIP_MIN_HOLD_TRADING_DAYS` | Full weekdays after entry before an opposite flip is allowed without extra margin |
 | `FLIP_MARGIN_WEIGHT` | Opposite stack must exceed its threshold by this many weight-units to flip early |
+| `ENTRY_DOMINANCE_GAP_WEIGHT` | Minimum weighted bull−bear separation for dominance fallback entry after strict gates fail (`0` disables) |
+| `FLIP_ALLOW_IN_RANGE` | When `false` (default), **no FLIP on reversal** during `range` chop — exit via weaken / stop / TP / max hold only; set `true` to allow reversal flips in range |
 
 ## Run
 
@@ -165,6 +167,7 @@ Define grids via comma-separated env vars (omit a variable to keep only its sing
 | `BACKTEST_SWEEP_RANGE_ADD` | `REGIME_RANGING_THRESHOLD_WEIGHT_ADD` |
 | `BACKTEST_SWEEP_FLIP_HOLD` | `FLIP_MIN_HOLD_TRADING_DAYS` |
 | `BACKTEST_SWEEP_FLIP_MARGIN` | `FLIP_MARGIN_WEIGHT` |
+| `BACKTEST_SWEEP_DOM_GAP` | `ENTRY_DOMINANCE_GAP_WEIGHT` |
 
 Legacy aliases (`BACKTEST_SWEEP_BULL_ENTRY_THRESHOLD`, `BACKTEST_SWEEP_BEAR_ENTRY_THRESHOLD`, etc.) are still read if the short name is unset.
 
@@ -181,7 +184,7 @@ BACKTEST_SWEEP_FLIP_MARGIN=0.0,0.5,1.0
 
 Console shows the **top 10** combinations by **balanced score** (simple formula in `backtest_sweep.py`, easy to tune):
 
-`balanced_score = total_return_pct + (win_rate_pct * 0.25) - abs(max_drawdown_pct * 1.5) - (flip_count * 0.25)`
+`balanced_score = total_return_pct + (win_rate_pct * 0.25) - abs(max_drawdown_pct * 1.5) - (flip_count * 0.4)`
 
 `--backtest-sweep-csv` writes **one row per combination** with full parameters and metrics (complete ranked list).
 

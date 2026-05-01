@@ -30,6 +30,8 @@ class StrategyParams:
     # Weighted-units gap between bull stack and bear stack required for a dominance fallback
     # entry when strict threshold gates fail. Set to 0 to disable (legacy behavior).
     entry_dominance_gap_weight: float
+    # When False (default), never FLIP on reversal while regime is range/chop (exit via weaken/SL/TP/max hold).
+    flip_in_range_regime: bool
 
     def __post_init__(self) -> None:
         if len(self.score_weights) != 8:

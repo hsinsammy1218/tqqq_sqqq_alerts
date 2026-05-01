@@ -25,7 +25,7 @@ from backtest import BacktestResult, run_backtest
 #       - (flip_count * FLIP_PENALTY)
 _WIN_RATE_WEIGHT = 0.25
 _DRAWDOWN_WEIGHT = 1.5
-_FLIP_PENALTY = 0.25
+_FLIP_PENALTY = 0.4
 
 
 def compute_balanced_score(
@@ -51,6 +51,7 @@ class SweepGrid:
     regime_ranging_add: tuple[float, ...]
     flip_min_hold: tuple[int, ...]
     flip_margin: tuple[float, ...]
+    entry_dominance_gap: tuple[float, ...]
 
     @property
     def combination_count(self) -> int:
@@ -61,6 +62,7 @@ class SweepGrid:
             * len(self.regime_ranging_add)
             * len(self.flip_min_hold)
             * len(self.flip_margin)
+            * len(self.entry_dominance_gap)
         )
 
 
@@ -74,6 +76,7 @@ class SweepResultRow:
     regime_ranging_threshold_weight_add: float
     flip_min_hold_trading_days: int
     flip_margin_weight: float
+    entry_dominance_gap_weight: float
     total_trades: int
     win_rate_pct: float
     average_return_pct: float
@@ -159,6 +162,14 @@ def sweep_grid_from_settings(settings: Settings) -> SweepGrid:
             _sweep_env_raw("BACKTEST_SWEEP_FLIP_MARGIN", "BACKTEST_SWEEP_FLIP_MARGIN_WEIGHT"),
             settings.flip_margin_weight,
         ),
+        entry_dominance_gap=_parse_float_csv(
+            "BACKTEST_SWEEP_DOM_GAP",
+            _sweep_env_raw(
+                "BACKTEST_SWEEP_DOM_GAP",
+                "BACKTEST_SWEEP_ENTRY_DOMINANCE_GAP_WEIGHT",
+            ),
+            settings.entry_dominance_gap_weight,
+        ),
     )
 
 
@@ -174,7 +185,7 @@ def run_parameter_sweep(
     decide_options: DecideOptions | None = None,
 ) -> list[SweepResultRow]:
     rows: list[SweepResultRow] = []
-    for combo_idx, (bull, bear, weak, rng_add, f_hold, f_margin) in enumerate(
+    for combo_idx, (bull, bear, weak, rng_add, f_hold, f_margin, dom_gap) in enumerate(
         itertools.product(
             grid.bull_entry,
             grid.bear_entry,
@@ -182,6 +193,7 @@ def run_parameter_sweep(
             grid.regime_ranging_add,
             grid.flip_min_hold,
             grid.flip_margin,
+            grid.entry_dominance_gap,
         )
     ):
         params = replace(
@@ -192,6 +204,7 @@ def run_parameter_sweep(
             regime_ranging_threshold_weight_add=rng_add,
             flip_min_hold_trading_days=f_hold,
             flip_margin_weight=f_margin,
+            entry_dominance_gap_weight=dom_gap,
         )
         bt = run_backtest(
             candles,
@@ -218,6 +231,7 @@ def run_parameter_sweep(
                 regime_ranging_threshold_weight_add=rng_add,
                 flip_min_hold_trading_days=f_hold,
                 flip_margin_weight=f_margin,
+                entry_dominance_gap_weight=dom_gap,
                 total_trades=bt.total_trades,
                 win_rate_pct=bt.win_rate_pct,
                 average_return_pct=bt.average_return_per_trade_pct,
@@ -245,6 +259,7 @@ def run_parameter_sweep(
                 regime_ranging_threshold_weight_add=row.regime_ranging_threshold_weight_add,
                 flip_min_hold_trading_days=row.flip_min_hold_trading_days,
                 flip_margin_weight=row.flip_margin_weight,
+                entry_dominance_gap_weight=row.entry_dominance_gap_weight,
                 total_trades=row.total_trades,
                 win_rate_pct=row.win_rate_pct,
                 average_return_pct=row.average_return_pct,
@@ -271,15 +286,15 @@ def format_sweep_report(rows: list[SweepResultRow], *, ticker: str, bars: int, c
         f"Ticker: {ticker} | Bars: {bars} | Combinations evaluated: {combo_count}",
         "",
         "Balanced score (higher is better; see backtest_sweep.py):",
-        "  total_return_pct + (win_rate_pct * 0.25) - abs(max_drawdown_pct * 1.5) - (flip_count * 0.25)",
+        "  total_return_pct + (win_rate_pct * 0.25) - abs(max_drawdown_pct * 1.5) - (flip_count * 0.4)",
         "",
         f"Top {len(top)} by balanced_score (full ranking in CSV if --backtest-sweep-csv is set):",
         "",
         (
-            "rk | score   | bull bear weak | rng_add | fh | fmrg | trades | win% | avgRet% | "
+            "rk | score   | bull bear weak | rng_add | fh | fmrg | dom | trades | win% | avgRet% | "
             "best% | worst% | maxDD% | hold | flips | cash | equity | totRet%"
         ),
-        "-" * 125,
+        "-" * 132,
     ]
     for r in top:
         best_s = f"{r.best_trade_pct:.2f}" if r.best_trade_pct is not None else "  n/a"
@@ -287,7 +302,7 @@ def format_sweep_report(rows: list[SweepResultRow], *, ticker: str, bars: int, c
         lines.append(
             f"{r.rank:2d} | {r.balanced_score:7.2f} | {r.bull_entry_threshold:4d} {r.bear_entry_threshold:4d} "
             f"{r.weak_score_threshold:4d} | {r.regime_ranging_threshold_weight_add:7.2f} | "
-            f"{r.flip_min_hold_trading_days:2d} | {r.flip_margin_weight:4.2f} | "
+            f"{r.flip_min_hold_trading_days:2d} | {r.flip_margin_weight:4.2f} | {r.entry_dominance_gap_weight:4.2f} | "
             f"{r.total_trades:6d} | {r.win_rate_pct:4.0f} | {r.average_return_pct:7.2f} | "
             f"{best_s:>7} | {worst_s:>7} | {r.max_drawdown_pct:6.2f} | {r.average_hold_days:4.1f} | "
             f"{r.flip_count:5d} | {r.cash_periods:4d} | {r.equity_end:.4f} | {r.total_return_pct:7.2f}%"
@@ -320,6 +335,7 @@ def export_sweep_csv(path: str, rows: list[SweepResultRow]) -> None:
         "regime_ranging_threshold_weight_add",
         "flip_min_hold_trading_days",
         "flip_margin_weight",
+        "entry_dominance_gap_weight",
         "total_trades",
         "win_rate_pct",
         "average_return_pct",
@@ -348,6 +364,7 @@ def export_sweep_csv(path: str, rows: list[SweepResultRow]) -> None:
                     "regime_ranging_threshold_weight_add": round(r.regime_ranging_threshold_weight_add, 6),
                     "flip_min_hold_trading_days": r.flip_min_hold_trading_days,
                     "flip_margin_weight": round(r.flip_margin_weight, 6),
+                    "entry_dominance_gap_weight": round(r.entry_dominance_gap_weight, 6),
                     "total_trades": r.total_trades,
                     "win_rate_pct": round(r.win_rate_pct, 4),
                     "average_return_pct": round(r.average_return_pct, 6),

@@ -157,6 +157,8 @@ def build_discord_embed(
             f"bull_sum<{technical_meta.effective_bull_entry:.2f}\n"
             f"Exit while holding: weak / opposite / stop / TP / **{technical_meta.max_hold_days}** trading-day max hold "
             f"(flip suppression may apply)\n"
+            f"Range chop FLIPs: **{'allowed' if technical_meta.flip_in_range_regime else 'off'}** "
+            f"(when off, reversals in range use exits only)\n"
             f"Weak: TQQQ bull_sum<{technical_meta.effective_weak:.2f} · "
             f"SQQQ bear_sum<{technical_meta.effective_weak:.2f}\n"
             f"Risk %: stop {technical_meta.stop_loss_pct:.0%}, TP {technical_meta.take_profit_pct:.0%}, "

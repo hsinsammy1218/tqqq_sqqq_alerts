@@ -241,6 +241,7 @@ class RunTechnicalMeta:
     max_hold_days: int
     entry_atr_multiplier: float
     anchor_date_label: str
+    flip_in_range_regime: bool
 
 
 def format_technical_breakdown(
@@ -310,6 +311,10 @@ def format_technical_breakdown(
                 f"    reverse if TQQQ held: bear_sum>={meta.effective_bear_entry:.2f}; "
                 f"reverse if SQQQ held: bull_sum>={meta.effective_bull_entry:.2f} "
                 f"(flip suppression: min hold / extra margin may apply)"
+            ),
+            (
+                f"    reversal FLIPs in range regime: "
+                f"{'allowed' if meta.flip_in_range_regime else 'disabled (use weaken/stop/TP/max hold only)'}"
             ),
             f"  Risk params: stop {meta.stop_loss_pct:.1%} | TP {meta.take_profit_pct:.1%} | stretch TP {meta.stretch_take_profit_pct:.1%}",
             f"  Entry zone (QQQ): close +/- {meta.entry_atr_multiplier}*ATR14 -> [{_fmt_px(alert.entry_zone_low)}, {_fmt_px(alert.entry_zone_high)}]",
@@ -517,6 +522,9 @@ def decide(
             raw_reverse = wb >= bull_eff
             stop_hit = price >= stop_loss
             tp_hit = price <= take_profit
+
+        if regime == "range" and not params.flip_in_range_regime:
+            raw_reverse = False
 
         entry_day = datetime.fromisoformat(resolved_entry_ts.replace("Z", "+00:00")).date()
         td_hold = trading_days_between_inclusive(entry_day, now_utc.date())
