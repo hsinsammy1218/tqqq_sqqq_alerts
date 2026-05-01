@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timezone
 
 from alerts import format_alert_message, send_discord
+from backtest import format_backtest_report, run_backtest
 from config import ConfigError, load_settings
 from data import DataError, load_candles
 from indicators import build_snapshot
@@ -40,6 +41,18 @@ def run() -> int:
         "--no-technical",
         action="store_true",
         help="Skip the detailed technical breakdown block after the alert summary.",
+    )
+    parser.add_argument(
+        "--backtest",
+        action="store_true",
+        help="Run a lightweight historical backtest on QQQ rules and exit.",
+    )
+    parser.add_argument(
+        "--backtest-bars",
+        type=int,
+        default=180,
+        metavar="N",
+        help="Number of recent daily bars to evaluate in --backtest mode (default: 180).",
     )
     pos = parser.add_mutually_exclusive_group()
     pos.add_argument(
@@ -112,7 +125,6 @@ def run() -> int:
             api_key=settings.klickanalytics_api_key,
             cli_command=settings.klickanalytics_cli_command,
         )
-        snapshot = build_snapshot(candles.daily, candles.four_hour, settings.anchor_date or None)
     except DataError as exc:
         print(f"Data error: {exc}")
         return 1
@@ -122,6 +134,34 @@ def run() -> int:
 
     now_utc = datetime.now(timezone.utc)
     blocked_dates = load_blocked_dates(settings.events_json)
+    if args.backtest:
+        try:
+            bt = run_backtest(
+                candles,
+                anchor_date=settings.anchor_date or None,
+                blocked_dates=blocked_dates,
+                bull_entry_threshold=settings.bull_entry_threshold,
+                bear_entry_threshold=settings.bear_entry_threshold,
+                weak_threshold=settings.weak_score_threshold,
+                stop_loss_pct=settings.stop_loss_pct,
+                take_profit_pct=settings.take_profit_pct,
+                stretch_take_profit_pct=settings.stretch_take_profit_pct,
+                max_hold_days=settings.max_hold_trading_days,
+                entry_atr_multiplier=settings.entry_atr_multiplier,
+                bars=args.backtest_bars,
+            )
+        except ValueError as exc:
+            print(f"Backtest error: {exc}")
+            return 1
+        print(format_backtest_report(bt, settings.qqq_ticker))
+        return 0
+
+    try:
+        snapshot = build_snapshot(candles.daily, candles.four_hour, settings.anchor_date or None)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Unexpected indicator failure: {exc}")
+        return 1
+
     position = load_position(settings.position_state_json)
     alert, new_position = decide(
         snapshot=snapshot,

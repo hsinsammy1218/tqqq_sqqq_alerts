@@ -13,6 +13,7 @@ This is alert-only software. It does not place orders and has no broker executio
 - Risk logic: stop loss, take profit, stretch target, max hold
 - Outputs: console, CSV journal, Discord webhook
 - Dry-run mode for testing without Discord sends
+- Optional `--backtest` mode for historical rule replay (QQQ directional proxy; see below)
 - Discord **rich embeds** match the console breakdown: bot memory (flat vs symbol), bar timestamps + blackout, full QQQ daily/4h indicator lines, every bull/bear checklist item, rule thresholds, hold exit flags when applicable, then notes
 - KlickAnalytics CLI market data backend
 
@@ -24,6 +25,7 @@ This is alert-only software. It does not place orders and has no broker executio
 - `strategy.py`
 - `alerts.py`
 - `journal.py`
+- `backtest.py`
 - `main.py`
 - `.env.example`
 - `requirements.txt`
@@ -58,6 +60,19 @@ Dry-run:
 
 ```bash
 python main.py --dry-run
+```
+
+### Backtest (optional)
+
+Replays the same scoring and `decide()` rules over recent historical QQQ daily bars (with expanding daily + 4h context). Useful for sanity-checking how often BUY / SELL / FLIP would have fired before trusting live alerts.
+
+**Does not** post Discord, append the CSV journal, or modify `position_state.json`.
+
+**Caveat — QQQ directional proxy only:** reported equity applies QQQ close-to-close moves as a stand-in (long TQQQ ~ positive QQQ return, long SQQQ ~ negative QQQ return). It ignores leveraged ETF mechanics, borrow/fees, spreads, and partial fills. Treat results as rule-frequency / rough regime checks, not predictive performance.
+
+```bash
+python main.py --backtest
+python main.py --backtest --backtest-bars 250
 ```
 
 Live Discord alerts:
