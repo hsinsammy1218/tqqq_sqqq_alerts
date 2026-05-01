@@ -1,0 +1,6 @@
+rank,balanced_score,bull_entry_threshold,bear_entry_threshold,weak_score_threshold,regime_ranging_threshold_weight_add,flip_min_hold_trading_days,flip_margin_weight,entry_dominance_gap_weight,min_confidence_to_trade,total_trades,win_rate_pct,average_return_pct,median_return_pct,best_trade_pct,worst_trade_pct,max_drawdown_pct,average_hold_days,flip_count,cash_periods,equity_end,total_return_pct
+1,-4.630588,5,5,3,0.55,3,1.25,1.25,65,18,44.4444,0.307905,-0.771843,5.850212,-2.668823,12.469549,9.111111,0,164,1.049566,4.956633
+2,-4.630588,5,5,3,0.55,3,1.25,1.25,70,18,44.4444,0.307905,-0.771843,5.850212,-2.668823,12.469549,9.111111,0,164,1.049566,4.956633
+3,-4.630588,5,5,3,0.55,3,1.25,1.25,75,18,44.4444,0.307905,-0.771843,5.850212,-2.668823,12.469549,9.111111,0,164,1.049566,4.956633
+4,-17.680018,5,5,3,0.55,3,1.25,1.25,55,37,40.5405,-0.013147,-0.694364,7.479087,-4.920498,14.122943,7.513514,6,38,0.978973,-2.102685
+5,-17.680018,5,5,3,0.55,3,1.25,1.25,60,37,40.5405,-0.013147,-0.694364,7.479087,-4.920498,14.122943,7.513514,6,38,0.978973,-2.102685

@@ -17,15 +17,24 @@ from strategy import DecideOptions
 from backtest import BacktestResult, run_backtest
 
 # Balanced ranking score (raw units, not min-max normalized). Tune coefficients here only.
-# Formula:
-#   balanced_score =
-#       total_return_pct
-#       + (win_rate_pct * WIN_RATE_WEIGHT)
-#       - abs(max_drawdown_pct * DRAWDOWN_WEIGHT)
-#       - (flip_count * FLIP_PENALTY)
-_WIN_RATE_WEIGHT = 0.25
-_DRAWDOWN_WEIGHT = 1.5
-_FLIP_PENALTY = 0.4
+# Formula (see compute_balanced_score):
+#   total_return_pct
+#   + win_rate * WIN_RATE_WEIGHT
+#   + avg_return_per_trade * AVG_RETURN_WEIGHT
+#   + median_return_per_trade * MEDIAN_RETURN_WEIGHT (skipped if no trades)
+#   - abs(max_drawdown_pct) * DRAWDOWN_WEIGHT
+#   - flip_count * FLIP_PENALTY
+#   - under-trade penalty if total_trades < UNDER_TRADE_MIN
+#   - over-trade penalty if total_trades > OVER_TRADE_MAX
+_WIN_RATE_WEIGHT = 0.22
+_DRAWDOWN_WEIGHT = 1.55
+_FLIP_PENALTY = 0.42
+_AVG_RETURN_WEIGHT = 0.18
+_MEDIAN_RETURN_WEIGHT = 0.12
+_UNDER_TRADE_MIN = 6
+_UNDER_TRADE_PENALTY = 1.8
+_OVER_TRADE_MAX = 42
+_OVER_TRADE_PENALTY = 0.22
 
 
 def compute_balanced_score(
@@ -33,14 +42,24 @@ def compute_balanced_score(
     win_rate_pct: float,
     max_drawdown_pct: float,
     flip_count: int,
+    *,
+    average_return_pct: float,
+    median_return_pct: float | None,
+    total_trades: int,
 ) -> float:
-    """Higher is better. Uses simple penalties so ranking is not return-only."""
-    return (
-        total_return_pct
-        + (win_rate_pct * _WIN_RATE_WEIGHT)
-        - abs(max_drawdown_pct * _DRAWDOWN_WEIGHT)
-        - (flip_count * _FLIP_PENALTY)
-    )
+    """Higher is better; balances return quality, risk, flip churn, and trade count."""
+    score = total_return_pct
+    score += win_rate_pct * _WIN_RATE_WEIGHT
+    score -= abs(max_drawdown_pct) * _DRAWDOWN_WEIGHT
+    score -= flip_count * _FLIP_PENALTY
+    score += average_return_pct * _AVG_RETURN_WEIGHT
+    if median_return_pct is not None:
+        score += median_return_pct * _MEDIAN_RETURN_WEIGHT
+    if total_trades < _UNDER_TRADE_MIN:
+        score -= (_UNDER_TRADE_MIN - total_trades) * _UNDER_TRADE_PENALTY
+    elif total_trades > _OVER_TRADE_MAX:
+        score -= (total_trades - _OVER_TRADE_MAX) * _OVER_TRADE_PENALTY
+    return score
 
 
 @dataclass(frozen=True)
@@ -52,6 +71,7 @@ class SweepGrid:
     flip_min_hold: tuple[int, ...]
     flip_margin: tuple[float, ...]
     entry_dominance_gap: tuple[float, ...]
+    min_confidence: tuple[int, ...]
 
     @property
     def combination_count(self) -> int:
@@ -63,6 +83,7 @@ class SweepGrid:
             * len(self.flip_min_hold)
             * len(self.flip_margin)
             * len(self.entry_dominance_gap)
+            * len(self.min_confidence)
         )
 
 
@@ -77,9 +98,11 @@ class SweepResultRow:
     flip_min_hold_trading_days: int
     flip_margin_weight: float
     entry_dominance_gap_weight: float
+    min_confidence_to_trade: int
     total_trades: int
     win_rate_pct: float
     average_return_pct: float
+    median_return_pct: float | None
     best_trade_pct: float | None
     worst_trade_pct: float | None
     max_drawdown_pct: float
@@ -170,6 +193,14 @@ def sweep_grid_from_settings(settings: Settings) -> SweepGrid:
             ),
             settings.entry_dominance_gap_weight,
         ),
+        min_confidence=_parse_int_csv(
+            "BACKTEST_SWEEP_MIN_CONFIDENCE",
+            _sweep_env_raw(
+                "BACKTEST_SWEEP_MIN_CONFIDENCE",
+                "BACKTEST_SWEEP_MIN_CONFIDENCE_TO_TRADE",
+            ),
+            settings.min_confidence_to_trade,
+        ),
     )
 
 
@@ -185,7 +216,7 @@ def run_parameter_sweep(
     decide_options: DecideOptions | None = None,
 ) -> list[SweepResultRow]:
     rows: list[SweepResultRow] = []
-    for combo_idx, (bull, bear, weak, rng_add, f_hold, f_margin, dom_gap) in enumerate(
+    for combo_idx, (bull, bear, weak, rng_add, f_hold, f_margin, dom_gap, min_cf) in enumerate(
         itertools.product(
             grid.bull_entry,
             grid.bear_entry,
@@ -194,6 +225,7 @@ def run_parameter_sweep(
             grid.flip_min_hold,
             grid.flip_margin,
             grid.entry_dominance_gap,
+            grid.min_confidence,
         )
     ):
         params = replace(
@@ -205,6 +237,7 @@ def run_parameter_sweep(
             flip_min_hold_trading_days=f_hold,
             flip_margin_weight=f_margin,
             entry_dominance_gap_weight=dom_gap,
+            min_confidence_to_trade=min_cf,
         )
         bt = run_backtest(
             candles,
@@ -220,6 +253,9 @@ def run_parameter_sweep(
             bt.win_rate_pct,
             bt.max_drawdown_pct,
             bt.flips,
+            average_return_pct=bt.average_return_per_trade_pct,
+            median_return_pct=bt.median_return_per_trade_pct,
+            total_trades=bt.total_trades,
         )
         rows.append(
             SweepResultRow(
@@ -232,9 +268,11 @@ def run_parameter_sweep(
                 flip_min_hold_trading_days=f_hold,
                 flip_margin_weight=f_margin,
                 entry_dominance_gap_weight=dom_gap,
+                min_confidence_to_trade=min_cf,
                 total_trades=bt.total_trades,
                 win_rate_pct=bt.win_rate_pct,
                 average_return_pct=bt.average_return_per_trade_pct,
+                median_return_pct=bt.median_return_per_trade_pct,
                 best_trade_pct=bt.best_trade_pct,
                 worst_trade_pct=bt.worst_trade_pct,
                 max_drawdown_pct=bt.max_drawdown_pct,
@@ -260,9 +298,11 @@ def run_parameter_sweep(
                 flip_min_hold_trading_days=row.flip_min_hold_trading_days,
                 flip_margin_weight=row.flip_margin_weight,
                 entry_dominance_gap_weight=row.entry_dominance_gap_weight,
+                min_confidence_to_trade=row.min_confidence_to_trade,
                 total_trades=row.total_trades,
                 win_rate_pct=row.win_rate_pct,
                 average_return_pct=row.average_return_pct,
+                median_return_pct=row.median_return_pct,
                 best_trade_pct=row.best_trade_pct,
                 worst_trade_pct=row.worst_trade_pct,
                 max_drawdown_pct=row.max_drawdown_pct,
@@ -285,27 +325,29 @@ def format_sweep_report(rows: list[SweepResultRow], *, ticker: str, bars: int, c
         "--- Backtest parameter sweep (research only; QQQ directional proxy) ---",
         f"Ticker: {ticker} | Bars: {bars} | Combinations evaluated: {combo_count}",
         "",
-        "Balanced score (higher is better; see backtest_sweep.py):",
-        "  total_return_pct + (win_rate_pct * 0.25) - abs(max_drawdown_pct * 1.5) - (flip_count * 0.4)",
+        "Balanced score (higher is better; see backtest_sweep.compute_balanced_score):",
+        "  total_return_pct",
+        "  + win_rate_pct * 0.22 + avg_return_pct * 0.18 + median_return_pct * 0.12 (if trades)",
+        "  - abs(max_drawdown_pct) * 1.55 - flip_count * 0.42",
+        "  - under-trade penalty if trades < 6 | over-trade penalty if trades > 42",
         "",
         f"Top {len(top)} by balanced_score (full ranking in CSV if --backtest-sweep-csv is set):",
         "",
         (
-            "rk | score   | bull bear weak | rng_add | fh | fmrg | dom | trades | win% | avgRet% | "
-            "best% | worst% | maxDD% | hold | flips | cash | equity | totRet%"
+            "rk | score   | bull bear weak | rng_add | fh | fmrg | dom | mc | medRt | trades | win% | "
+            "avgRet | maxDD | flips | totRet%"
         ),
-        "-" * 132,
+        "-" * 118,
     ]
     for r in top:
-        best_s = f"{r.best_trade_pct:.2f}" if r.best_trade_pct is not None else "  n/a"
-        worst_s = f"{r.worst_trade_pct:.2f}" if r.worst_trade_pct is not None else "  n/a"
+        med_s = f"{r.median_return_pct:5.2f}" if r.median_return_pct is not None else "  n/a"
         lines.append(
             f"{r.rank:2d} | {r.balanced_score:7.2f} | {r.bull_entry_threshold:4d} {r.bear_entry_threshold:4d} "
             f"{r.weak_score_threshold:4d} | {r.regime_ranging_threshold_weight_add:7.2f} | "
             f"{r.flip_min_hold_trading_days:2d} | {r.flip_margin_weight:4.2f} | {r.entry_dominance_gap_weight:4.2f} | "
-            f"{r.total_trades:6d} | {r.win_rate_pct:4.0f} | {r.average_return_pct:7.2f} | "
-            f"{best_s:>7} | {worst_s:>7} | {r.max_drawdown_pct:6.2f} | {r.average_hold_days:4.1f} | "
-            f"{r.flip_count:5d} | {r.cash_periods:4d} | {r.equity_end:.4f} | {r.total_return_pct:7.2f}%"
+            f"{r.min_confidence_to_trade:2d} | {med_s} | "
+            f"{r.total_trades:6d} | {r.win_rate_pct:4.0f} | {r.average_return_pct:6.2f} | "
+            f"{r.max_drawdown_pct:6.2f} | {r.flip_count:5d} | {r.total_return_pct:7.2f}%"
         )
     lines.extend(
         [
@@ -336,9 +378,11 @@ def export_sweep_csv(path: str, rows: list[SweepResultRow]) -> None:
         "flip_min_hold_trading_days",
         "flip_margin_weight",
         "entry_dominance_gap_weight",
+        "min_confidence_to_trade",
         "total_trades",
         "win_rate_pct",
         "average_return_pct",
+        "median_return_pct",
         "best_trade_pct",
         "worst_trade_pct",
         "max_drawdown_pct",
@@ -365,9 +409,11 @@ def export_sweep_csv(path: str, rows: list[SweepResultRow]) -> None:
                     "flip_min_hold_trading_days": r.flip_min_hold_trading_days,
                     "flip_margin_weight": round(r.flip_margin_weight, 6),
                     "entry_dominance_gap_weight": round(r.entry_dominance_gap_weight, 6),
+                    "min_confidence_to_trade": r.min_confidence_to_trade,
                     "total_trades": r.total_trades,
                     "win_rate_pct": round(r.win_rate_pct, 4),
                     "average_return_pct": round(r.average_return_pct, 6),
+                    "median_return_pct": _csv_num_optional(r.median_return_pct),
                     "best_trade_pct": _csv_num_optional(r.best_trade_pct),
                     "worst_trade_pct": _csv_num_optional(r.worst_trade_pct),
                     "max_drawdown_pct": round(r.max_drawdown_pct, 6),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import math
+import statistics
 from collections import Counter
 from dataclasses import dataclass, field, fields
 from datetime import datetime
@@ -31,6 +32,7 @@ class BacktestResult:
     losing_trades: int
     win_rate_pct: float
     average_return_per_trade_pct: float
+    median_return_per_trade_pct: float | None
     best_trade_pct: float | None
     worst_trade_pct: float | None
     max_drawdown_pct: float
@@ -495,6 +497,7 @@ def run_backtest(
     total_trades = closed
     win_rate = (wins / closed * 100.0) if closed else 0.0
     avg_ret = (sum(trade_returns) / len(trade_returns)) if trade_returns else 0.0
+    median_ret = float(statistics.median(trade_returns)) if trade_returns else None
     best_trade = max(trade_returns) if trade_returns else None
     worst_trade = min(trade_returns) if trade_returns else None
     avg_hold_days = (sum(hold_days_values) / len(hold_days_values)) if hold_days_values else 0.0
@@ -530,6 +533,7 @@ def run_backtest(
         losing_trades=losses,
         win_rate_pct=win_rate,
         average_return_per_trade_pct=avg_ret,
+        median_return_per_trade_pct=median_ret,
         best_trade_pct=best_trade,
         worst_trade_pct=worst_trade,
         max_drawdown_pct=max_drawdown,
@@ -568,6 +572,11 @@ def format_backtest_report(result: BacktestResult, ticker: str) -> str:
             ),
             f"Total trades: {result.total_trades}",
             f"Average return/trade: {result.average_return_per_trade_pct:.2f}%",
+            (
+                f"Median return/trade: {result.median_return_per_trade_pct:.2f}%"
+                if result.median_return_per_trade_pct is not None
+                else "Median return/trade: N/A"
+            ),
             (
                 f"Best trade: {result.best_trade_pct:.2f}% | "
                 f"Worst trade: {result.worst_trade_pct:.2f}%"

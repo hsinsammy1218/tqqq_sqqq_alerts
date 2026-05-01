@@ -169,8 +169,9 @@ Define grids via comma-separated env vars (omit a variable to keep only its sing
 | `BACKTEST_SWEEP_FLIP_HOLD` | `FLIP_MIN_HOLD_TRADING_DAYS` |
 | `BACKTEST_SWEEP_FLIP_MARGIN` | `FLIP_MARGIN_WEIGHT` |
 | `BACKTEST_SWEEP_DOM_GAP` | `ENTRY_DOMINANCE_GAP_WEIGHT` |
+| `BACKTEST_SWEEP_MIN_CONFIDENCE` | `MIN_CONFIDENCE_TO_TRADE` |
 
-Legacy aliases (`BACKTEST_SWEEP_BULL_ENTRY_THRESHOLD`, `BACKTEST_SWEEP_BEAR_ENTRY_THRESHOLD`, etc.) are still read if the short name is unset.
+Legacy aliases (`BACKTEST_SWEEP_BULL_ENTRY_THRESHOLD`, `BACKTEST_SWEEP_BEAR_ENTRY_THRESHOLD`, etc.) are still read if the short name is unset (`BACKTEST_SWEEP_MIN_CONFIDENCE_TO_TRADE` for confidence).
 
 Example grid:
 
@@ -181,11 +182,12 @@ BACKTEST_SWEEP_WEAK=2,3
 BACKTEST_SWEEP_RANGE_ADD=0.0,0.25,0.5
 BACKTEST_SWEEP_FLIP_HOLD=0,1,2
 BACKTEST_SWEEP_FLIP_MARGIN=0.0,0.5,1.0
+BACKTEST_SWEEP_MIN_CONFIDENCE=55,60,65,70,75
 ```
 
-Console shows the **top 10** combinations by **balanced score** (simple formula in `backtest_sweep.py`, easy to tune):
+Console shows the **top 10** combinations by **balanced score** (`compute_balanced_score` in `backtest_sweep.py`):
 
-`balanced_score = total_return_pct + (win_rate_pct * 0.25) - abs(max_drawdown_pct * 1.5) - (flip_count * 0.4)`
+`balanced_score` (see `compute_balanced_score` in `backtest_sweep.py`): combines total return, win rate (×0.22), average per-trade return (×0.18), median per-trade return when trades exist (×0.12), penalties for drawdown (×1.55) and flips (×0.42), plus mild penalties when trades fall below 6 or above 42 (anti-underfitting / anti-overtrading).
 
 `--backtest-sweep-csv` writes **one row per combination** with full parameters and metrics (complete ranked list).
 
@@ -195,6 +197,7 @@ Backtest report now includes:
 - total trades
 - win rate
 - average return per trade
+- median return per trade (closed legs only)
 - best trade / worst trade
 - max drawdown
 - average hold days
