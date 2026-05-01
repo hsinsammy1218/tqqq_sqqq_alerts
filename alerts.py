@@ -91,6 +91,11 @@ def build_discord_embed(
         {"name": "Alert", "value": alert.alert_type, "inline": True},
         {"name": "Symbol", "value": alert.symbol, "inline": True},
         {"name": "Confidence", "value": f"{alert.confidence_score}% (norm.)", "inline": True},
+        *(
+            [{"name": "Signal quality", "value": alert.signal_quality, "inline": True}]
+            if alert.signal_quality
+            else []
+        ),
         {"name": "Bull strength", "value": f"{alert.bullish_score}/100", "inline": True},
         {"name": "Bear strength", "value": f"{alert.bearish_score}/100", "inline": True},
         {"name": "Time (UTC)", "value": alert.timestamp, "inline": True},
@@ -157,6 +162,9 @@ def build_discord_embed(
             f"bull_sum<{technical_meta.effective_bull_entry:.2f}\n"
             f"Flat BUY minimum confidence: **{technical_meta.min_confidence_to_trade}%** "
             f"(below → CASH; does not apply to SELL/FLIP)\n"
+            f"BUY quality bands: **HIGH** ≥75% · **MEDIUM** ≥{technical_meta.min_confidence_to_trade}% and <75%\n"
+            f"`--high-confidence-only`: **{'on' if technical_meta.high_confidence_only else 'off'}** "
+            "(flat BUY requires ≥75% when on)\n"
             f"Exit while holding: weak / opposite / stop / TP / **{technical_meta.max_hold_days}** trading-day max hold "
             f"(flip suppression may apply)\n"
             f"Range chop FLIPs: **{'allowed' if technical_meta.flip_in_range_regime else 'off'}** "
@@ -213,6 +221,7 @@ def build_discord_embed(
 
 
 def format_alert_message(alert: AlertDecision) -> str:
+    sq_line = f"Signal quality: {alert.signal_quality}\n" if alert.signal_quality else ""
     return (
         f"{_action_line(alert)}\n"
         f"(You trade manually - alerts only, no broker execution.)\n"
@@ -223,6 +232,7 @@ def format_alert_message(alert: AlertDecision) -> str:
         f"Bullish strength: {alert.bullish_score}/100 (weighted checklist)\n"
         f"Bearish strength: {alert.bearish_score}/100 (weighted checklist)\n"
         f"Confidence (normalized): {alert.confidence_score}%\n"
+        f"{sq_line}"
         f"Entry zone: {alert.entry_zone_low:.2f} - {alert.entry_zone_high:.2f}\n"
         f"Stop loss: {alert.stop_loss:.2f}\n"
         f"Take profit: {alert.take_profit:.2f}\n"

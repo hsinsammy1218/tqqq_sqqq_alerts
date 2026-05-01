@@ -24,6 +24,9 @@ def _fmt_px(value: float, decimals: int = 2) -> str:
 
 _VALID_SIDES = frozenset({"TQQQ", "SQQQ"})
 
+# Flat BUY signal quality: HIGH at or above this normalized confidence; MEDIUM up to it but ≥ MIN_CONFIDENCE_TO_TRADE.
+HIGH_SIGNAL_QUALITY_THRESHOLD = 75
+
 
 @dataclass
 class PositionState:
@@ -50,6 +53,8 @@ class AlertDecision:
     max_hold_date: str
     timestamp: str
     notes: str = ""
+    # Set only for flat BUY after confidence gates (HIGH ≥75%, MEDIUM otherwise above minimum).
+    signal_quality: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +74,8 @@ class DecideOptions:
     """Optional hooks for research/backtest; live runs pass None (same as defaults)."""
 
     debug_sanity_dominate: bool = False
+    # When True, flat BUY requires normalized confidence ≥ HIGH_SIGNAL_QUALITY_THRESHOLD (75%).
+    high_confidence_only: bool = False
 
 
 def _coerce_entry_price(raw: object) -> tuple[float | None, bool]:
@@ -243,6 +250,7 @@ class RunTechnicalMeta:
     anchor_date_label: str
     flip_in_range_regime: bool
     min_confidence_to_trade: int
+    high_confidence_only: bool
 
 
 def format_technical_breakdown(
@@ -301,6 +309,15 @@ def format_technical_breakdown(
             (
                 f"  Flat BUY confidence gate: normalized confidence ≥{meta.min_confidence_to_trade}% "
                 f"(MIN_CONFIDENCE_TO_TRADE; 0 disables)"
+            ),
+            (
+                f"  BUY signal quality (after gates): HIGH ≥{HIGH_SIGNAL_QUALITY_THRESHOLD}% · "
+                f"MEDIUM ≥{meta.min_confidence_to_trade}% and <{HIGH_SIGNAL_QUALITY_THRESHOLD}%"
+            ),
+            (
+                "  CLI --high-confidence-only: flat BUY allowed only when normalized confidence "
+                f"≥{HIGH_SIGNAL_QUALITY_THRESHOLD}% "
+                f"({'ON' if meta.high_confidence_only else 'OFF'})"
             ),
             f"  Base thresholds (legacy 0–8 scale): bull≥{meta.base_bull_entry_threshold}, "
             f"bear≥{meta.base_bear_entry_threshold}, weak<{meta.base_weak_threshold}",
@@ -488,6 +505,20 @@ def decide(
             f"({params.min_confidence_to_trade}%)."
         )
 
+    if (
+        position.active_symbol is None
+        and not blocked
+        and alert_type == "BUY"
+        and opts.high_confidence_only
+        and confidence < HIGH_SIGNAL_QUALITY_THRESHOLD
+    ):
+        alert_type = "CASH"
+        symbol = "CASH"
+        notes = (
+            f"Entry skipped: --high-confidence-only requires normalized confidence "
+            f"≥{HIGH_SIGNAL_QUALITY_THRESHOLD}% (current {confidence}%)."
+        )
+
     stop_loss = 0.0
     take_profit = 0.0
     stretch_tp = 0.0
@@ -604,6 +635,14 @@ def decide(
                 updated_at=ts,
             )
 
+    signal_quality: str | None = None
+    if alert_type == "BUY":
+        signal_quality = (
+            "HIGH"
+            if confidence >= HIGH_SIGNAL_QUALITY_THRESHOLD
+            else "MEDIUM"
+        )
+
     dbg = StrategyDebug(
         regime=regime,
         weighted_bull=wb,
@@ -630,6 +669,7 @@ def decide(
         max_hold_date=max_hold_date,
         timestamp=ts,
         notes=notes,
+        signal_quality=signal_quality,
     )
     return decision, new_position, dbg
 

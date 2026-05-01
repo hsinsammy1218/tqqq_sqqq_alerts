@@ -107,7 +107,7 @@ Optional strategy tuning (baseline **5/5** entry, **3 weak** with equal weights;
 | `FLIP_MARGIN_WEIGHT` | Opposite stack must exceed its threshold by this many weight-units to flip early |
 | `ENTRY_DOMINANCE_GAP_WEIGHT` | Minimum weighted bull−bear separation for dominance fallback entry after strict gates fail (`0` disables) |
 | `FLIP_ALLOW_IN_RANGE` | When `false` (default), **no FLIP on reversal** during `range` chop — exit via weaken / stop / TP / max hold only; set `true` to allow reversal flips in range |
-| `MIN_CONFIDENCE_TO_TRADE` | Minimum normalized confidence (0–100) for **flat** BUY TQQQ/SQQQ; weaker dominance → **CASH** (`0` disables) |
+| `MIN_CONFIDENCE_TO_TRADE` | Minimum normalized confidence (0–100) for **flat** BUY TQQQ/SQQQ; weaker dominance → **CASH** (`0` disables). Repo default **62** matches walk-forward rank 1 (`reports/walk_forward_results.csv`). |
 
 ## Run
 
@@ -116,6 +116,14 @@ Dry-run:
 ```bash
 python main.py --dry-run
 ```
+
+Optional **stricter flat entries**: require normalized confidence ≥75% (still after `MIN_CONFIDENCE_TO_TRADE`):
+
+```bash
+python main.py --dry-run --high-confidence-only
+```
+
+Same flag applies to `--backtest`, `--backtest-sweep`, and `--walk-forward` research runs.
 
 Set logging verbosity (default `INFO`):
 
@@ -314,6 +322,7 @@ Legacy knobs `BULL_ENTRY_THRESHOLD`, `BEAR_ENTRY_THRESHOLD`, `WEAK_SCORE_THRESHO
 
 - BUY TQQQ when **weighted bull sum ≥ effective bull target**, **weighted bear sum < effective bear target**, flat, not blocked.
 - BUY SQQQ when **weighted bear sum ≥ effective bear target**, **weighted bull sum < effective bull target**, flat, not blocked.
+- Flat BUY additionally requires **normalized confidence ≥ `MIN_CONFIDENCE_TO_TRADE`** (below → CASH). **`--high-confidence-only`** raises that cutoff to **75%**.
 - **Effective targets** shift by regime (stricter in `range`, slightly easier with the trend in `trend_up` / `trend_down`).
 - FLIP when the opposite side clears its effective threshold **and** flip-suppression rules pass (otherwise HOLD with a note).
 - CASH when mixed/weak/conflicting while flat, or HOLD messaging while in a position without exit/flip.
@@ -332,7 +341,8 @@ Symbol: TQQQ
 QQQ trend: daily close > EMA20; daily EMA20 > EMA50; 4h EMA20 > EMA50 | regime=trend_up
 Bullish strength: 75/100 (weighted checklist)
 Bearish strength: 25/100 (weighted checklist)
-Confidence (normalized): 50%
+Confidence (normalized): 78%
+Signal quality: HIGH
 Entry zone: 432.10 - 439.70
 Stop loss: 400.65
 Take profit: 502.13
@@ -342,12 +352,16 @@ Timestamp: 2026-05-01T14:20:00Z
 Notes: Bullish QQQ setup.
 ```
 
+Flat **BUY** alerts include **Signal quality**: **HIGH** when normalized confidence ≥75%, **MEDIUM** when ≥`MIN_CONFIDENCE_TO_TRADE` and below 75%. Non-BUY alerts omit the line.
+
 ## Sample CSV journal format
 
 ```csv
-timestamp_utc,alert_type,execution_symbol,qqq_trend_reason,bull_score,bear_score,confidence,entry_zone_low,entry_zone_high,stop_price,take_profit_price,take_profit_stretch_price,max_hold_date,notes
-2026-05-01T14:20:00Z,BUY,TQQQ,"daily close > EMA20; daily EMA20 > EMA50 | regime=trend_up",75,25,50,432.1,439.7,400.65,502.13,545.79,2026-05-15,Bullish QQQ setup.
+timestamp_utc,alert_type,execution_symbol,qqq_trend_reason,bull_score,bear_score,confidence,entry_zone_low,entry_zone_high,stop_price,take_profit_price,take_profit_stretch_price,max_hold_date,notes,signal_quality
+2026-05-01T14:20:00Z,BUY,TQQQ,"daily close > EMA20; daily EMA20 > EMA50 | regime=trend_up",75,25,78,432.1,439.7,400.65,502.13,545.79,2026-05-15,Bullish QQQ setup.,HIGH
 ```
+
+Older journal files without the `signal_quality` column may misalign if appended after upgrading; rotate or archive the CSV if needed.
 
 ## Notes
 

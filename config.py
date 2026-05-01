@@ -135,5 +135,6 @@ def load_settings() -> Settings:
         flip_margin_weight=float(os.getenv("FLIP_MARGIN_WEIGHT", "1.25")),
         entry_dominance_gap_weight=float(os.getenv("ENTRY_DOMINANCE_GAP_WEIGHT", "1.25")),
         flip_in_range_regime=_to_bool(os.getenv("FLIP_ALLOW_IN_RANGE", "false"), default=False),
+        # Locked from walk-forward rank 1 (reports/walk_forward_results.csv): avg_score best row → 62.
         min_confidence_to_trade=int(os.getenv("MIN_CONFIDENCE_TO_TRADE", "62")),
     )

@@ -21,6 +21,7 @@ FIELDS = [
     "take_profit_stretch_price",
     "max_hold_date",
     "notes",
+    "signal_quality",
 ]
 
 
@@ -46,5 +47,6 @@ def append_journal(path: Path, alert: AlertDecision) -> None:
                 "take_profit_stretch_price": round(alert.stretch_take_profit, 4),
                 "max_hold_date": alert.max_hold_date,
                 "notes": alert.notes,
+                "signal_quality": alert.signal_quality or "",
             }
         )

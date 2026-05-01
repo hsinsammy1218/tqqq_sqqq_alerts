@@ -328,12 +328,17 @@ def run() -> int:
     parser.add_argument(
         "--debug-strategy",
         action="store_true",
-        help="With --backtest or --backtest-sweep only: print score/regime/threshold diagnostics.",
+        help="With --backtest, --backtest-sweep, or --walk-forward: print score/regime/threshold diagnostics.",
     )
     parser.add_argument(
         "--debug-strategy-sanity",
         action="store_true",
         help="Requires --debug-strategy: flat entries use weighted dominance only (debug; not for live).",
+    )
+    parser.add_argument(
+        "--high-confidence-only",
+        action="store_true",
+        help="Flat BUY only when normalized confidence ≥75% (after MIN_CONFIDENCE_TO_TRADE). Applies to live and research modes.",
     )
     pos = parser.add_mutually_exclusive_group()
     pos.add_argument(
@@ -383,6 +388,7 @@ def run() -> int:
         walk_forward_csv=args.walk_forward_csv,
         debug_strategy=args.debug_strategy,
         debug_strategy_sanity=args.debug_strategy_sanity,
+        high_confidence_only=args.high_confidence_only,
     )
 
     if args.set_position is not None and args.entry_price is not None and args.entry_price <= 0:
@@ -529,7 +535,10 @@ def run() -> int:
     if args.debug_strategy and not args.backtest and not args.backtest_sweep and not args.walk_forward:
         print("[debug-strategy] Ignored unless combined with --backtest, --backtest-sweep, or --walk-forward.")
 
-    research_decide_options = DecideOptions(debug_sanity_dominate=args.debug_strategy_sanity)
+    research_decide_options = DecideOptions(
+        debug_sanity_dominate=args.debug_strategy_sanity,
+        high_confidence_only=args.high_confidence_only,
+    )
 
     if args.walk_forward:
         try:
@@ -663,6 +672,7 @@ def run() -> int:
         blocked_dates=blocked_dates,
         now_utc=now_utc,
         params=strategy_params,
+        decide_options=research_decide_options,
     )
 
     last_daily = candles.daily.index[-1]
@@ -696,6 +706,7 @@ def run() -> int:
         anchor_date_label=anchor_label,
         flip_in_range_regime=strategy_params.flip_in_range_regime,
         min_confidence_to_trade=strategy_params.min_confidence_to_trade,
+        high_confidence_only=args.high_confidence_only,
     )
 
     message = format_alert_message(alert)
@@ -709,6 +720,7 @@ def run() -> int:
             "symbol": alert.symbol,
             "notes": alert.notes,
             "confidence": alert.confidence_score,
+            "signal_quality": alert.signal_quality,
             "bull_score": alert.bullish_score,
             "bear_score": alert.bearish_score,
             "timestamp": alert.timestamp,

@@ -33,6 +33,7 @@ class StrategyParams:
     # When False (default), never FLIP on reversal while regime is range/chop (exit via weaken/SL/TP/max hold).
     flip_in_range_regime: bool
     # Minimum normalized confidence (0-100 stack dominance) required for a flat BUY; 0 disables.
+    # Default in load_settings matches walk-forward best row (see config.load_settings).
     min_confidence_to_trade: int
 
     def __post_init__(self) -> None:
