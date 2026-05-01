@@ -9,8 +9,16 @@ if (-not (Test-Path -LiteralPath $runBotPath)) {
     exit 1
 }
 
-$psArgs = "-ExecutionPolicy Bypass -File `"$runBotPath`""
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $psArgs
+# Scheduled tasks often run with a minimal PATH; bare "powershell.exe" can fail with HRESULT 0x80070002.
+$runBotFull = (Resolve-Path -LiteralPath $runBotPath).Path
+$powershellExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if (-not (Test-Path -LiteralPath $powershellExe)) {
+    Write-Error "PowerShell not found at $powershellExe"
+    exit 1
+}
+
+$psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$runBotFull`""
+$action = New-ScheduledTaskAction -Execute $powershellExe -Argument $psArgs -WorkingDirectory $PSScriptRoot
 
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
@@ -41,4 +49,7 @@ foreach ($def in $definitions) {
     Write-Host "Registered scheduled task: $($def.Name) daily at $($def.At)"
 }
 
-Write-Host "Done. Tasks invoke: powershell.exe -ExecutionPolicy Bypass -File `"$runBotPath`""
+Write-Host "Done. Tasks invoke:"
+Write-Host "  Execute: $powershellExe"
+Write-Host "  Args:    $psArgs"
+Write-Host "Verify:    Get-ScheduledTask -TaskName TQQQ_SQQQ_Alerts_1000"

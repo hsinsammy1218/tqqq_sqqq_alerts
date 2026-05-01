@@ -165,11 +165,16 @@ Creates tasks:
 | `TQQQ_SQQQ_Alerts_1230` | 12:30 PM |
 | `TQQQ_SQQQ_Alerts_1530` | 3:30 PM |
 
-Each runs:
+`setup_scheduler.ps1` registers each task with **full paths** (Task Scheduler often cannot resolve `powershell.exe` on `PATH`):
+
+- **Program:** `%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe`
+- **Arguments:** `-NoProfile -ExecutionPolicy Bypass -File "<repo>\run_bot.ps1"` (repo folder = folder containing the scripts)
+
+Manual test equivalent:
 
 `powershell.exe -ExecutionPolicy Bypass -File "C:\Users\hsins\projects\tqqq-sqqq-alerts\run_bot.ps1"`
 
-(Adjust the path in Task Scheduler if your clone lives elsewhere, or keep scripts under `C:\Users\hsins\projects\tqqq-sqqq-alerts`.)
+(Adjust paths if your clone is not under `C:\Users\hsins\projects\tqqq-sqqq-alerts`.)
 
 **Remove**:
 
@@ -184,6 +189,28 @@ powershell -ExecutionPolicy Bypass -File .\run_bot.ps1
 ```
 
 **Logs**: wrapper timestamps and Python stdout/stderr append to `logs/scheduler.log` (the `logs/` directory is gitignored).
+
+**Troubleshooting `Start-ScheduledTask` / “The system cannot find the file specified” (0x80070002):**
+
+1. **Confirm the task exists** (if this returns nothing, the task was never registered):
+
+   ```powershell
+   Get-ScheduledTask -TaskName TQQQ_SQQQ_Alerts_1000 -ErrorAction SilentlyContinue
+   ```
+
+2. **Install or refresh tasks** from the project root (use **Run as administrator** if registration is denied):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\setup_scheduler.ps1
+   ```
+
+   Current scripts register **`%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe`** with an absolute path to `run_bot.ps1`, because Task Scheduler often cannot resolve `powershell.exe` on `PATH`.
+
+3. **Try starting again**:
+
+   ```powershell
+   Start-ScheduledTask -TaskName TQQQ_SQQQ_Alerts_1000
+   ```
 
 ### Backtest (optional)
 
