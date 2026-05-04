@@ -65,6 +65,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - `requirements.txt`
 - `events.example.json`
 - `position_state.example.json` (schema reference; runtime file `position_state.json` is gitignored)
+- [`dashboard/`](./dashboard/) — optional **Next.js + Supabase** “Stock Signal Dashboard” news layer (research-only; see [`dashboard/README.md`](./dashboard/README.md))
 
 ## Setup
 
