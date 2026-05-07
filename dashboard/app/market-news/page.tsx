@@ -3,7 +3,17 @@ import Link from "next/link";
 import { NewsArticleCard } from "@/components/NewsArticleCard";
 import { getMarketNewsCached } from "@/lib/news/queries";
 
-const SECTOR_FILTERS = ["", "technology", "financials", "energy", "etf_broad_market"];
+const SECTOR_FILTERS = [
+  "",
+  "technology",
+  "financials",
+  "energy",
+  "etf_broad_market",
+  "etf_broad_tech",
+  "etf_sector_tech",
+  "etf_sector_financials",
+  "etf_sector_energy",
+];
 
 interface PageProps {
   searchParams: Promise<{ page?: string; hours?: string; sector?: string }>;

@@ -9,6 +9,7 @@ export function SiteNav() {
         </Link>
         <nav className="flex flex-wrap gap-3 text-sm">
           <Link href="/">Home</Link>
+          <Link href="/leaderboard">Leaderboard</Link>
           <Link href="/market-news">Market news</Link>
           <Link href="/stock/QQQ">Sample: QQQ</Link>
           <Link href="/performance">Performance</Link>

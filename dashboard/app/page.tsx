@@ -1,7 +1,9 @@
 import Link from "next/link";
 
 import { NewsArticleCard } from "@/components/NewsArticleCard";
+import { TechnicalLeaderboard } from "@/components/TechnicalLeaderboard";
 import { getDashboardHeadlinesCached } from "@/lib/news/queries";
+import { getLeaderboardSnapshotsCached } from "@/lib/technical/queries";
 
 export default async function HomePage() {
   let headlines: Awaited<ReturnType<typeof getDashboardHeadlinesCached>> = [];
@@ -12,15 +14,42 @@ export default async function HomePage() {
     configError = String(e);
   }
 
+  let technicalRun: Awaited<ReturnType<typeof getLeaderboardSnapshotsCached>>["run"] = null;
+  let technicalSnapshots: Awaited<ReturnType<typeof getLeaderboardSnapshotsCached>>["snapshots"] = [];
+  let technicalError: string | null = null;
+  try {
+    const pack = await getLeaderboardSnapshotsCached();
+    technicalRun = pack.run;
+    technicalSnapshots = pack.snapshots;
+  } catch (e) {
+    technicalError = String(e);
+  }
+
   return (
     <div className="space-y-8">
       <section>
         <h1 className="text-2xl font-bold">Dashboard</h1>
         <p className="mt-2 max-w-3xl text-[var(--muted)]">
-          Technical analytics live in your existing routes (wire `stock_snapshots`, `dashboard_runs`, etc.). This
-          layer adds <strong>research-only news context</strong> — confirmation, catalyst, and narrative-risk hints —
-          without changing signal math.
+          <strong>Technical leaderboard</strong> below uses batch snapshots from Supabase (deterministic checklist scores,
+          same Python engine as the alert bot). <strong>News</strong> is separate research-only context — it never
+          changes technical scores.
         </p>
+      </section>
+
+      <section id="technical" className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-lg font-semibold">Technical leaderboard</h2>
+          <Link href="/leaderboard" className="text-sm">
+            Full table →
+          </Link>
+        </div>
+        {technicalError ? (
+          <p className="text-sm text-amber-200">
+            Could not load technical snapshots. ({technicalError})
+          </p>
+        ) : (
+          <TechnicalLeaderboard run={technicalRun} snapshots={technicalSnapshots} compact />
+        )}
       </section>
 
       <section className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-4">

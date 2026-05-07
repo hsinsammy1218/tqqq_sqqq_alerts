@@ -63,7 +63,7 @@ def weighted_signal_breakdown(snapshot: IndicatorSnapshot, weights: tuple[float,
     bear_hit(snapshot.daily_close < snapshot.daily_weekly_vwap, i, "price < weekly VWAP")
     i += 1
     bull_hit(snapshot.daily_volume > snapshot.daily_vol_sma20, i, "volume > 20 avg")
-    bear_hit(snapshot.daily_volume > snapshot.daily_vol_sma20, i, "volume > 20 avg")
+    bear_hit(snapshot.daily_volume < snapshot.daily_vol_sma20, i, "volume < 20 avg")
 
     max_total = float(sum(weights))
     return WeightedSignalBreakdown(

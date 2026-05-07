@@ -2,8 +2,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { NewsArticleCard } from "@/components/NewsArticleCard";
+import { TechnicalBreakdownPanel } from "@/components/TechnicalBreakdownPanel";
 import { computeNewsContextFlags } from "@/lib/news/riskFlags";
 import { getTickerNewsCached } from "@/lib/news/queries";
+import { getTickerSnapshotCached } from "@/lib/technical/queries";
 
 interface PageProps {
   params: Promise<{ ticker: string }>;
@@ -36,6 +38,17 @@ export default async function StockNewsPage({ params }: PageProps) {
   const catalyst = flags.catalystSoon;
   const risk = flags.narrativeRisk;
 
+  let techRun: Awaited<ReturnType<typeof getTickerSnapshotCached>>["run"] = null;
+  let techSnapshot: Awaited<ReturnType<typeof getTickerSnapshotCached>>["snapshot"] = null;
+  let techConfigError: string | null = null;
+  try {
+    const pack = await getTickerSnapshotCached(symbol);
+    techRun = pack.run;
+    techSnapshot = pack.snapshot;
+  } catch (e) {
+    techConfigError = String(e);
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -44,10 +57,12 @@ export default async function StockNewsPage({ params }: PageProps) {
         </p>
         <h1 className="mt-2 text-2xl font-bold">{symbol}</h1>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          News context for research (last ~72h in DB). Technical scoring stays unchanged — wire your signal columns
-          elsewhere.
+          Technical snapshot (batch scores from Supabase) plus news context for research (last ~72h in DB). News does
+          not affect technical numbers.
         </p>
       </div>
+
+      <TechnicalBreakdownPanel symbol={symbol} run={techRun} snapshot={techSnapshot} configError={techConfigError} />
 
       <div className="flex flex-wrap gap-2">
         <span
@@ -63,6 +78,8 @@ export default async function StockNewsPage({ params }: PageProps) {
       </div>
 
       <p className="text-sm text-[var(--muted)]">{flags.summary}</p>
+
+      <h2 className="text-lg font-semibold">News context</h2>
 
       {err ? (
         <p className="text-amber-200">{err}</p>
