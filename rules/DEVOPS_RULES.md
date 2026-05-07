@@ -9,6 +9,7 @@
   - build validation.
 - CI must run dependency/security scans for Python and Node dependencies.
 - Pull requests must run dependency review checks before merge.
+- CI must fail on detected high/critical dependency vulnerabilities unless there is an explicit risk acceptance record.
 - Enforced test entrypoints:
   - root: `pytest -q`
   - dashboard: `npm run test`
@@ -54,3 +55,12 @@
 - rollback procedure tested
 - critical alerts configured
 - dependency scan baseline clean or accepted with risk record.
+- no secrets detected in tracked files or release artifacts.
+
+## Pre-Push Safety Checks
+
+- Run local tests and lint before pushing.
+- Run local dependency/security checks where practical (`pip-audit`, `npm audit`).
+- Verify no secrets are staged:
+  - inspect staged diff for credential-like values
+  - ensure `.env` files with real values are not tracked.
