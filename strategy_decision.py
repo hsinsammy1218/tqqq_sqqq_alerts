@@ -109,6 +109,7 @@ def decide(
     symbol = "CASH"
     alert_type = "CASH"
     notes = "No high-confidence setup."
+    notes_kind = "other"
     flip_suppressed = False
     opts = decide_options or DecideOptions()
 
@@ -118,10 +119,12 @@ def decide(
             if wb > wbear:
                 symbol = "TQQQ"
                 alert_type = "BUY"
+                notes_kind = "buy_bull"
                 notes += " BUY TQQQ (weighted bull > bear)."
             elif wbear > wb:
                 symbol = "SQQQ"
                 alert_type = "BUY"
+                notes_kind = "buy_bear"
                 notes += " BUY SQQQ (weighted bear > bull)."
             else:
                 alert_type = "CASH"
@@ -129,22 +132,27 @@ def decide(
         elif wb >= bull_eff and wbear < bear_eff:
             symbol = "TQQQ"
             alert_type = "BUY"
+            notes_kind = "buy_bull"
             notes = "Bullish QQQ setup."
         elif wbear >= bear_eff and wb < bull_eff:
             symbol = "SQQQ"
             alert_type = "BUY"
+            notes_kind = "buy_bear"
             notes = "Bearish QQQ setup."
         elif params.entry_dominance_gap_weight > 0:
             gap_w = params.entry_dominance_gap_weight
             if wb > wbear and (wb - wbear) >= gap_w:
                 symbol = "TQQQ"
                 alert_type = "BUY"
+                notes_kind = "buy_bull"
                 notes = "Dominance entry: bull stack leads bear by weighted gap (fallback)."
             elif wbear > wb and (wbear - wb) >= gap_w:
                 symbol = "SQQQ"
                 alert_type = "BUY"
+                notes_kind = "buy_bear"
                 notes = "Dominance entry: bear stack leads bull by weighted gap (fallback)."
     elif position.active_symbol is None and blocked:
+        notes_kind = "blocked"
         notes = "Entry blocked by event calendar (manual blackout + optional CPI/FOMC/earnings risk dates)."
 
     if (
@@ -156,9 +164,10 @@ def decide(
     ):
         alert_type = "CASH"
         symbol = "CASH"
+        notes_kind = "entry_skipped_confidence"
         notes = (
-            f"Entry skipped: confidence {confidence}% is below MIN_CONFIDENCE_TO_TRADE "
-            f"({params.min_confidence_to_trade}%)."
+            f"Entry skipped: stack dominance {confidence}% is below minimum "
+            f"{params.min_confidence_to_trade}%."
         )
 
     if (
@@ -170,8 +179,9 @@ def decide(
     ):
         alert_type = "CASH"
         symbol = "CASH"
+        notes_kind = "entry_skipped_high_conf"
         notes = (
-            f"Entry skipped: --high-confidence-only requires normalized confidence "
+            f"Entry skipped: --high-confidence-only requires stack dominance "
             f">={HIGH_SIGNAL_QUALITY_THRESHOLD}% (current {confidence}%)."
         )
 
@@ -257,6 +267,7 @@ def decide(
         if reverse:
             flip_to = "SQQQ" if symbol == "TQQQ" else "TQQQ"
             alert_type = "FLIP"
+            notes_kind = "flip"
             symbol = flip_to
             notes = f"Reverse signal: sell {position.active_symbol} and buy {flip_to}."
             max_hold_date = _trading_days_after(ts, params.max_hold_days)
@@ -277,7 +288,17 @@ def decide(
                 stretch_tp = price * (1 - params.stretch_take_profit_pct)
         elif weaken or stop_hit or tp_hit or reached_max_hold:
             alert_type = "SELL"
-            notes = "Exit rule triggered."
+            notes_kind = "exit"
+            exit_reasons: list[str] = []
+            if stop_hit:
+                exit_reasons.append("stop loss hit")
+            if tp_hit:
+                exit_reasons.append("take profit hit")
+            if reached_max_hold:
+                exit_reasons.append(f"max hold date passed ({max_hold_date})")
+            if weaken:
+                exit_reasons.append("signal weakened vs threshold")
+            notes = "Exit: " + "; ".join(exit_reasons) + "."
             new_position = PositionState(
                 active_symbol=None,
                 entry_price=None,
@@ -287,6 +308,7 @@ def decide(
             )
         else:
             alert_type = "CASH"
+            notes_kind = "holding"
             notes = "Holding active position."
             if flip_suppressed:
                 notes += " Flip suppressed (whipsaw guard)."
@@ -328,6 +350,8 @@ def decide(
         max_hold_date=max_hold_date,
         timestamp=ts,
         notes=notes,
+        notes_kind=notes_kind,
+        flip_suppressed=flip_suppressed,
         signal_quality=signal_quality,
     )
     return decision, new_position, dbg

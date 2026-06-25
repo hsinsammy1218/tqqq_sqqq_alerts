@@ -1,4 +1,5 @@
-# Creates daily Windows Task Scheduler jobs that run run_bot.ps1 at US-market-friendly times.
+# Creates weekday Windows Task Scheduler jobs that run run_bot.ps1 at US-market-friendly times.
+# run_bot.ps1 passes --market-hours-only so holidays and off-hours runs exit without fetching data.
 # Alert-only: no broker integration. May require "Run as administrator" if task registration fails.
 
 $ErrorActionPreference = 'Stop'
@@ -26,10 +27,8 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew
 
-$principal = New-ScheduledTaskPrincipal `
-    -UserId $env:USERNAME `
-    -LogonType Interactive `
-    -RunLevel Limited
+$taskUser = if ($env:USERDOMAIN) { "$($env:USERDOMAIN)\$($env:USERNAME)" } else { $env:USERNAME }
+Write-Host "Registering tasks for user: $taskUser"
 
 $definitions = @(
     @{ Name = 'TQQQ_SQQQ_Alerts_1000'; At = '10:00AM' },
@@ -37,19 +36,70 @@ $definitions = @(
     @{ Name = 'TQQQ_SQQQ_Alerts_1530'; At = '3:30PM' }
 )
 
-foreach ($def in $definitions) {
-    $trigger = New-ScheduledTaskTrigger -Daily -At $def.At
-    Register-ScheduledTask `
-        -TaskName $def.Name `
-        -Action $action `
-        -Trigger $trigger `
-        -Settings $settings `
-        -Principal $principal `
-        -Force | Out-Null
-    Write-Host "Registered scheduled task: $($def.Name) daily at $($def.At)"
+function Register-AlertTask {
+    param(
+        [string]$TaskName,
+        [string]$At,
+        $TaskAction,
+        $TaskSettings,
+        [string]$UserId
+    )
+
+    $trigger = New-ScheduledTaskTrigger `
+        -Weekly `
+        -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday `
+        -At $At
+
+    try {
+        $s4uPrincipal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType S4U -RunLevel Limited
+        Register-ScheduledTask `
+            -TaskName $TaskName `
+            -Action $TaskAction `
+            -Trigger $trigger `
+            -Settings $TaskSettings `
+            -Principal $s4uPrincipal `
+            -Force | Out-Null
+        Write-Host "Registered scheduled task: $TaskName weekdays at $At (LogonType=S4U)"
+        return
+    }
+    catch {
+        Write-Warning "S4U registration failed for $TaskName ($($_.Exception.Message)). Trying Interactive mode."
+    }
+
+    try {
+        $interactivePrincipal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
+        Register-ScheduledTask `
+            -TaskName $TaskName `
+            -Action $TaskAction `
+            -Trigger $trigger `
+            -Settings $TaskSettings `
+            -Principal $interactivePrincipal `
+            -Force | Out-Null
+        Write-Host "Registered scheduled task: $TaskName weekdays at $At (LogonType=Interactive)"
+        return
+    }
+    catch {
+        Write-Error @"
+Failed to register $TaskName in both S4U and Interactive modes.
+Last error: $($_.Exception.Message)
+Try re-running this script from an elevated PowerShell session (Run as administrator).
+"@
+        exit 1
+    }
 }
 
-Write-Host "Done. Tasks invoke:"
+foreach ($def in $definitions) {
+    Register-AlertTask `
+        -TaskName $def.Name `
+        -At $def.At `
+        -TaskAction $action `
+        -TaskSettings $settings `
+        -UserId $taskUser
+}
+
+Write-Host "Done. Tasks invoke (Mon-Fri only, no weekends):"
 Write-Host "  Execute: $powershellExe"
 Write-Host "  Args:    $psArgs"
-Write-Host "Verify:    Get-ScheduledTask -TaskName TQQQ_SQQQ_Alerts_1000"
+Write-Host "Verify weekday schedule:"
+Write-Host "  Get-ScheduledTask -TaskName TQQQ_SQQQ_Alerts_1000 | Get-ScheduledTaskInfo"
+Write-Host "  schtasks /Query /TN TQQQ_SQQQ_Alerts_1000 /V /FO LIST | findstr /I \"Day\""

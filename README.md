@@ -150,7 +150,8 @@ Health check verifies:
 
 ## Windows scheduled alerts
 
-Alert-only scheduled runs on **Windows**: three daily tasks call `main.py --no-technical` via the project venv Python. No broker APIs or order execution—same behavior as a manual CLI run.
+Alert-only scheduled runs on **Windows**: three **weekday** tasks call `main.py --no-technical --market-hours-only` via the project venv Python. Tasks fire at fixed **local** clock times; the bot also skips when the US equity market is closed (weekends, NYSE holidays, before 9:30 AM or after the regular/early close in **US/Eastern**). No broker APIs or order execution—same behavior as a manual CLI run.
+The installer prefers Task Scheduler **S4U** logon mode so tasks can run even when the user is not actively logged in (falls back to Interactive mode only if S4U is unavailable by local policy).
 
 **Install** (from project root; elevated PowerShell may be required if registration is denied):
 
@@ -160,11 +161,13 @@ powershell -ExecutionPolicy Bypass -File .\setup_scheduler.ps1
 
 Creates tasks:
 
-| Task name | Local time |
-|-----------|------------|
+| Task name | Local time (Mon–Fri only) |
+|-----------|---------------------------|
 | `TQQQ_SQQQ_Alerts_1000` | 10:00 AM |
 | `TQQQ_SQQQ_Alerts_1230` | 12:30 PM |
 | `TQQQ_SQQQ_Alerts_1530` | 3:30 PM |
+
+All three times should fall inside regular US session hours (9:30 AM–4:00 PM Eastern) when your PC uses US Eastern time. If your machine uses another timezone, pick local times that map into that window, or the `--market-hours-only` guard will no-op outside session.
 
 `setup_scheduler.ps1` registers each task with **full paths** (Task Scheduler often cannot resolve `powershell.exe` on `PATH`):
 
@@ -212,6 +215,14 @@ powershell -ExecutionPolicy Bypass -File .\run_bot.ps1
    ```powershell
    Start-ScheduledTask -TaskName TQQQ_SQQQ_Alerts_1000
    ```
+
+4. **Check logon mode** (if tasks only run while you are signed in, they may still be Interactive):
+
+   ```powershell
+   schtasks /Query /TN TQQQ_SQQQ_Alerts_1000 /V /FO LIST
+   ```
+
+   Prefer `Logon Mode: S4U` for unattended runs. Re-run `setup_scheduler.ps1` to refresh registration.
 
 ### Backtest (optional)
 

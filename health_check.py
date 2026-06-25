@@ -4,9 +4,11 @@ import json
 import logging
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from data import load_candles
+from api_quota_notify import maybe_notify_klickanalytics_quota_reached
+from data import KlickAnalyticsQuotaError, load_candles
 from runtime_logging import format_utc_z, log_event
 from strategy import PositionState, load_position
 
@@ -73,6 +75,22 @@ def run_health_check(settings: Any, dry_run: bool, logger: logging.Logger) -> in
             latest_daily_candle=d_label,
             latest_h4_candle=h4_label,
         )
+    except KlickAnalyticsQuotaError as exc:
+        msg = f"Data fetch failed: {exc}"
+        print(f"[health] FAIL - {msg}")
+        log_event(logger, logging.ERROR, "Data fetch health check", ok=False, error=str(exc), quota_exhausted=True)
+        failures.append(msg)
+        try:
+            maybe_notify_klickanalytics_quota_reached(
+                webhook_url=settings.discord_webhook_url,
+                dry_run=dry_run,
+                state_path=Path("logs/api_quota_notified.json"),
+                detail=str(exc),
+                logger=logger,
+            )
+        except Exception as notify_exc:  # noqa: BLE001
+            print(f"[health] API quota Discord notice failed: {notify_exc}")
+            log_event(logger, logging.ERROR, "API quota Discord notice failed", error=str(notify_exc))
     except Exception as exc:  # noqa: BLE001
         msg = f"Data fetch failed: {exc}"
         print(f"[health] FAIL - {msg}")

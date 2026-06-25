@@ -85,6 +85,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Flat BUY only when normalized confidence ≥75% (after MIN_CONFIDENCE_TO_TRADE). Applies to live and research modes.",
     )
+    parser.add_argument(
+        "--market-hours-only",
+        action="store_true",
+        help=(
+            "Skip the live alert run when the US equity market is closed "
+            "(weekends, NYSE holidays, outside regular session in US/Eastern)."
+        ),
+    )
     pos = parser.add_mutually_exclusive_group()
     pos.add_argument(
         "--flat",

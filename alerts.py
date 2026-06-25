@@ -1,59 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 
 import requests
 
 from indicators import IndicatorSnapshot
 from strategy import AlertDecision, PositionState, RunTechnicalMeta, hold_exit_summary_line, score_signals
-
-
-def _action_line(alert: AlertDecision) -> str:
-    if alert.alert_type == "BUY":
-        return f"ACTION: BUY {alert.symbol}"
-    if alert.alert_type == "FLIP":
-        return f"ACTION: FLIP -> SELL current side and BUY {alert.symbol}"
-    if alert.alert_type == "SELL":
-        return f"ACTION: SELL {alert.symbol} (exit / close the position)"
-    notes_low = alert.notes.lower()
-    if "blocked" in notes_low or "blackout" in notes_low:
-        return "ACTION: WAIT - no new buys today (event calendar)"
-    if "holding" in notes_low:
-        return (
-            f"ACTION: HOLD {alert.symbol} - keep position; "
-            "do not add TQQQ/SQQQ on the other side"
-        )
-    return "ACTION: WAIT - stay in cash (no new BUY signal)"
-
-
-def _embed_title(alert: AlertDecision) -> str:
-    if alert.alert_type == "BUY":
-        return f"📈 Buy {alert.symbol}"
-    if alert.alert_type == "FLIP":
-        return f"🔁 Flip to {alert.symbol}"
-    if alert.alert_type == "SELL":
-        return f"📉 Sell {alert.symbol}"
-    notes_low = alert.notes.lower()
-    if "blocked" in notes_low or "blackout" in notes_low:
-        return "📆 Wait (calendar)"
-    if "holding" in notes_low:
-        return f"⏸️ Hold {alert.symbol}"
-    return "⏳ Wait (cash)"
-
-
-def _embed_color(alert: AlertDecision) -> int:
-    if alert.alert_type == "BUY":
-        return 0x2ECC71
-    if alert.alert_type == "FLIP":
-        return 0x9B59B6
-    if alert.alert_type == "SELL":
-        return 0xE74C3C
-    notes_low = alert.notes.lower()
-    if "blocked" in notes_low or "blackout" in notes_low:
-        return 0x95A5A6
-    if "holding" in notes_low:
-        return 0x3498DB
-    return 0xF39C12
+from strategy_types import HIGH_SIGNAL_QUALITY_THRESHOLD
 
 
 def _truncate(text: str, max_len: int) -> str:
@@ -63,9 +17,159 @@ def _truncate(text: str, max_len: int) -> str:
     return text[: max_len - 3] + "..."
 
 
+def _leading_etf(alert: AlertDecision) -> str | None:
+    if alert.bullish_score > alert.bearish_score:
+        return "TQQQ"
+    if alert.bearish_score > alert.bullish_score:
+        return "SQQQ"
+    return None
+
+
+def _show_trade_levels(alert: AlertDecision) -> bool:
+    if alert.alert_type == "SELL":
+        return False
+    if alert.alert_type in ("BUY", "FLIP"):
+        return True
+    return alert.notes_kind == "holding"
+
+
+def _action_line(
+    alert: AlertDecision,
+    *,
+    position_before: PositionState | None = None,
+    technical_meta: RunTechnicalMeta | None = None,
+) -> str:
+    kind = alert.notes_kind
+    if alert.alert_type == "BUY":
+        return f"BUY {alert.symbol} — consider opening a position"
+    if alert.alert_type == "FLIP":
+        held = position_before.active_symbol if position_before and position_before.active_symbol else "current ETF"
+        return f"FLIP — sell {held}, buy {alert.symbol}"
+    if alert.alert_type == "SELL":
+        return f"SELL {alert.symbol} — close your position"
+    if kind == "blocked":
+        return "NO TRADE — calendar blackout (no new entries today)"
+    if kind == "holding":
+        return f"HOLD {alert.symbol} — keep your position, do not add the other side"
+    if kind == "entry_skipped_confidence":
+        lead = _leading_etf(alert) or "mixed"
+        min_c = technical_meta.min_confidence_to_trade if technical_meta else 62
+        return (
+            f"NO TRADE — {lead} setup not strong enough "
+            f"({alert.confidence_score}% dominance, need >={min_c}%)"
+        )
+    if kind == "entry_skipped_high_conf":
+        return (
+            f"NO TRADE — dominance {alert.confidence_score}% is below "
+            f"high-confidence mode (need >={HIGH_SIGNAL_QUALITY_THRESHOLD}%)"
+        )
+    return "NO TRADE — stay in cash (no clear entry)"
+
+
+def _embed_title(alert: AlertDecision) -> str:
+    kind = alert.notes_kind
+    if alert.alert_type == "BUY":
+        return f"Buy {alert.symbol}"
+    if alert.alert_type == "FLIP":
+        return f"Flip to {alert.symbol}"
+    if alert.alert_type == "SELL":
+        return f"Sell {alert.symbol}"
+    if kind == "blocked":
+        return "No trade (calendar)"
+    if kind == "holding":
+        return f"Hold {alert.symbol}"
+    if kind in ("entry_skipped_confidence", "entry_skipped_high_conf"):
+        lead = _leading_etf(alert)
+        if lead:
+            return f"No trade (weak {lead} signal)"
+        return "No trade (low dominance)"
+    return "No trade (cash)"
+
+
+def _embed_color(alert: AlertDecision) -> int:
+    if alert.alert_type == "BUY":
+        return 0x2ECC71
+    if alert.alert_type == "FLIP":
+        return 0x9B59B6
+    if alert.alert_type == "SELL":
+        return 0xE74C3C
+    kind = alert.notes_kind
+    if kind == "blocked":
+        return 0x95A5A6
+    if kind == "holding":
+        return 0x3498DB
+    if kind in ("entry_skipped_confidence", "entry_skipped_high_conf"):
+        return 0xE67E22
+    return 0xF39C12
+
+
+def _summary_line(
+    alert: AlertDecision,
+    *,
+    position_before: PositionState | None = None,
+    technical_meta: RunTechnicalMeta | None = None,
+) -> str:
+    kind = alert.notes_kind
+    lead = _leading_etf(alert)
+    bull, bear = alert.bullish_score, alert.bearish_score
+
+    if alert.alert_type == "BUY":
+        quality = f" ({alert.signal_quality})" if alert.signal_quality else ""
+        return (
+            f"QQQ looks {'bullish' if alert.symbol == 'TQQQ' else 'bearish'} "
+            f"(checklist {bull}/{bear}, dominance {alert.confidence_score}%){quality}."
+        )
+    if alert.alert_type == "FLIP":
+        held = position_before.active_symbol if position_before and position_before.active_symbol else "position"
+        return f"Trend reversed — rotate from {held} to {alert.symbol}."
+    if alert.alert_type == "SELL":
+        detail = alert.notes.removeprefix("Exit: ").removesuffix(".") if kind == "exit" else alert.notes
+        return f"Close {alert.symbol}: {detail}."
+    if kind == "holding":
+        extra = ""
+        if alert.flip_suppressed:
+            extra = " Opposite signal seen but flip blocked (whipsaw guard)."
+        return f"Still in {alert.symbol}; no exit rule fired yet.{extra}"
+    if kind == "blocked":
+        return "Today is blocked for new entries (manual or event-risk calendar)."
+    if kind == "entry_skipped_confidence":
+        min_c = technical_meta.min_confidence_to_trade if technical_meta else 62
+        if lead:
+            return (
+                f"Leans {lead} (checklist {bull}/{bear}) but dominance is only "
+                f"{alert.confidence_score}% — below your {min_c}% minimum, so no buy."
+            )
+        return f"Mixed checklist ({bull}/{bear}); dominance {alert.confidence_score}% is below {min_c}%."
+    if kind == "entry_skipped_high_conf":
+        return (
+            f"Would lean {lead or 'mixed'} but dominance {alert.confidence_score}% "
+            f"is under the {HIGH_SIGNAL_QUALITY_THRESHOLD}% high-confidence bar."
+        )
+    if kind == "buy_bull" or kind == "buy_bear":
+        return "Setup detected; see action line."
+    return f"No actionable entry. Checklist {bull}/{bear}, dominance {alert.confidence_score}%."
+
+
 def _checklist_embed_value(reasons: list[str], max_len: int = 950) -> str:
     body = "\n".join(f"• {r}" for r in reasons) if reasons else "• (none)"
     return _truncate(body, max_len)
+
+
+def _trade_levels_value(alert: AlertDecision) -> str:
+    return (
+        f"**QQQ entry zone:** {alert.entry_zone_low:.2f} – {alert.entry_zone_high:.2f}\n"
+        f"**Stop:** {alert.stop_loss:.2f} · **TP:** {alert.take_profit:.2f} · "
+        f"**Stretch:** {alert.stretch_take_profit:.2f}\n"
+        f"**Max hold date:** {alert.max_hold_date or 'N/A'}"
+    )
+
+
+def _dominance_field(alert: AlertDecision, technical_meta: RunTechnicalMeta | None) -> str:
+    min_c = technical_meta.min_confidence_to_trade if technical_meta else None
+    if min_c is not None and alert.alert_type == "CASH":
+        status = "OK for entry" if alert.confidence_score >= min_c else f"need >={min_c}% to buy"
+        return f"**{alert.confidence_score}%** ({status})"
+    return f"**{alert.confidence_score}%**"
 
 
 def build_discord_embed(
@@ -77,38 +181,62 @@ def build_discord_embed(
     today_iso: str | None = None,
 ) -> dict[str, object]:
     trend = _truncate(alert.qqq_trend_reason, 3800)
-    notes = _truncate(alert.notes, 1024) or "-"
+    notes = _truncate(alert.notes, 1024) or "—"
+    action = _action_line(alert, position_before=position_before, technical_meta=technical_meta)
+    summary = _summary_line(alert, position_before=position_before, technical_meta=technical_meta)
+
+    position_label = "Flat"
+    if alert.alert_type in ("BUY", "FLIP"):
+        position_label = f"Opening {alert.symbol}"
+    elif alert.alert_type == "SELL":
+        position_label = f"Closing {alert.symbol}"
+    elif alert.notes_kind == "holding":
+        position_label = f"Holding {alert.symbol}"
+    elif alert.symbol not in ("CASH", ""):
+        position_label = alert.symbol
 
     description_lines = [
-        f"**{_action_line(alert)}**",
+        f"**{action}**",
         "",
-        f"**QQQ trend:** {trend}",
+        summary,
         "",
-        "_Alerts only — you place orders manually._",
+        f"**Regime:** {_regime_from_trend(trend)} · **Checklist:** bull {alert.bullish_score} / bear {alert.bearish_score}",
+        "",
+        "_Alerts only — you place orders manually in your broker._",
     ]
 
     fields: list[dict[str, object]] = [
-        {"name": "Alert", "value": alert.alert_type, "inline": True},
-        {"name": "Symbol", "value": alert.symbol, "inline": True},
-        {"name": "Confidence", "value": f"{alert.confidence_score}% (norm.)", "inline": True},
-        *(
-            [{"name": "Signal quality", "value": alert.signal_quality, "inline": True}]
-            if alert.signal_quality
-            else []
-        ),
-        {"name": "Bull strength", "value": f"{alert.bullish_score}/100", "inline": True},
-        {"name": "Bear strength", "value": f"{alert.bearish_score}/100", "inline": True},
-        {"name": "Time (UTC)", "value": alert.timestamp, "inline": True},
+        {"name": "Signal", "value": alert.alert_type, "inline": True},
+        {"name": "Position", "value": position_label, "inline": True},
         {
-            "name": "Entry zone (QQQ)",
-            "value": f"{alert.entry_zone_low:.2f} – {alert.entry_zone_high:.2f}",
-            "inline": False,
+            "name": "Stack dominance",
+            "value": _dominance_field(alert, technical_meta),
+            "inline": True,
         },
-        {"name": "Stop loss", "value": f"{alert.stop_loss:.2f}", "inline": True},
-        {"name": "Take profit", "value": f"{alert.take_profit:.2f}", "inline": True},
-        {"name": "Stretch", "value": f"{alert.stretch_take_profit:.2f}", "inline": True},
-        {"name": "Max hold", "value": alert.max_hold_date or "N/A", "inline": True},
     ]
+
+    if alert.signal_quality:
+        fields.append({"name": "Quality", "value": alert.signal_quality, "inline": True})
+
+    fields.append({"name": "Why", "value": notes, "inline": False})
+
+    if _show_trade_levels(alert):
+        fields.append(
+            {
+                "name": "Levels (QQQ-based)",
+                "value": _truncate(_trade_levels_value(alert), 1024),
+                "inline": False,
+            }
+        )
+
+    fields.append(
+        {
+            "name": "QQQ trend (detail)",
+            "value": trend,
+            "inline": False,
+        }
+    )
+    fields.append({"name": "Time (UTC)", "value": alert.timestamp or "—", "inline": True})
 
     enriched = (
         snapshot is not None
@@ -130,88 +258,61 @@ def build_discord_embed(
 
         persist_bits = []
         if position_before.last_signal:
-            persist_bits.append(f"last_signal `{position_before.last_signal}`")
+            persist_bits.append(f"last `{position_before.last_signal}`")
         if position_before.updated_at:
-            persist_bits.append(f"updated_at `{position_before.updated_at}`")
+            persist_bits.append(f"updated `{position_before.updated_at}`")
         if persist_bits:
             mem += "\n" + " · ".join(persist_bits)
 
-        data_ctx = (
-            f"Daily bar end: `{technical_meta.daily_bar_end}`\n"
-            f"4h bar end: `{technical_meta.h4_bar_end}`\n"
-            f"Regime: **{technical_meta.regime}**\n"
-            f"Event blackout: **{'yes' if technical_meta.blocked_today else 'no'}**\n"
-            f"VWAP anchor: {technical_meta.anchor_date_label}"
-        )
         daily_txt = (
-            f"**Close** {snapshot.daily_close:.2f} · **EMA20** {snapshot.daily_ema20:.2f} · "
-            f"**EMA50** {snapshot.daily_ema50:.2f}\n"
-            f"**RSI14** {snapshot.daily_rsi14:.1f} · **MACD** {snapshot.daily_macd:.3f} · "
-            f"**sig** {snapshot.daily_macd_signal:.3f}\n"
-            f"**ATR14** {snapshot.daily_atr14:.2f} · **wk VWAP** {snapshot.daily_weekly_vwap:.2f} · "
-            f"**anch VWAP** {snapshot.daily_anchored_vwap:.2f}\n"
-            f"**Vol** {snapshot.daily_volume:,.0f} · **vol SMA20** {snapshot.daily_vol_sma20:,.0f}"
+            f"Close {snapshot.daily_close:.2f} · EMA20 {snapshot.daily_ema20:.2f} · "
+            f"EMA50 {snapshot.daily_ema50:.2f} · RSI {snapshot.daily_rsi14:.1f}"
         )
         h4_txt = (
-            f"**Close** {snapshot.h4_close:.2f} · **EMA20** {snapshot.h4_ema20:.2f} · **EMA50** {snapshot.h4_ema50:.2f}"
+            f"Close {snapshot.h4_close:.2f} · EMA20 {snapshot.h4_ema20:.2f} · "
+            f"EMA50 {snapshot.h4_ema50:.2f}"
         )
         rules = (
-            f"TQQQ BUY (weighted): bull_sum≥{technical_meta.effective_bull_entry:.2f}, "
-            f"bear_sum<{technical_meta.effective_bear_entry:.2f}\n"
-            f"SQQQ BUY (weighted): bear_sum≥{technical_meta.effective_bear_entry:.2f}, "
-            f"bull_sum<{technical_meta.effective_bull_entry:.2f}\n"
-            f"Flat BUY minimum confidence: **{technical_meta.min_confidence_to_trade}%** "
-            f"(below → CASH; does not apply to SELL/FLIP)\n"
-            f"BUY quality bands: **HIGH** ≥75% · **MEDIUM** ≥{technical_meta.min_confidence_to_trade}% and <75%\n"
-            f"`--high-confidence-only`: **{'on' if technical_meta.high_confidence_only else 'off'}** "
-            "(flat BUY requires ≥75% when on)\n"
-            f"Exit while holding: weak / opposite / stop / TP / **{technical_meta.max_hold_days}** trading-day max hold "
-            f"(flip suppression may apply)\n"
-            f"Range chop FLIPs: **{'allowed' if technical_meta.flip_in_range_regime else 'off'}** "
-            f"(when off, reversals in range use exits only)\n"
-            f"Weak: TQQQ bull_sum<{technical_meta.effective_weak:.2f} · "
-            f"SQQQ bear_sum<{technical_meta.effective_weak:.2f}\n"
-            f"Risk %: stop {technical_meta.stop_loss_pct:.0%}, TP {technical_meta.take_profit_pct:.0%}, "
-            f"stretch {technical_meta.stretch_take_profit_pct:.0%} · entry zone ±{technical_meta.entry_atr_multiplier}×ATR14"
+            f"Buy TQQQ: bull stack >={technical_meta.effective_bull_entry:.1f}, bear below bear entry · "
+            f"Buy SQQQ: bear stack >={technical_meta.effective_bear_entry:.1f}, bull below bull entry · "
+            f"Flat buy needs dominance >={technical_meta.min_confidence_to_trade}% · "
+            f"Max hold {technical_meta.max_hold_days} trading days"
         )
 
         fields.extend(
             [
-                {"name": "Bot memory (before this alert)", "value": _truncate(mem, 1024), "inline": False},
-                {"name": "Data context", "value": _truncate(data_ctx, 1024), "inline": False},
-                {"name": "QQQ — daily snapshot", "value": _truncate(daily_txt, 1024), "inline": False},
-                {"name": "QQQ — 4h snapshot", "value": _truncate(h4_txt, 1024), "inline": False},
+                {"name": "Bot memory (before alert)", "value": _truncate(mem, 1024), "inline": False},
+                {"name": "QQQ daily", "value": _truncate(daily_txt, 1024), "inline": True},
+                {"name": "QQQ 4h", "value": _truncate(h4_txt, 1024), "inline": True},
                 {
-                    "name": f"Bull checklist (strength {bull}/100)",
+                    "name": f"Bull checklist ({bull}/100)",
                     "value": _checklist_embed_value(bull_reasons),
                     "inline": False,
                 },
                 {
-                    "name": f"Bear checklist (strength {bear}/100)",
+                    "name": f"Bear checklist ({bear}/100)",
                     "value": _checklist_embed_value(bear_reasons),
                     "inline": False,
                 },
-                {"name": "Rule thresholds", "value": _truncate(rules, 1024), "inline": False},
+                {"name": "Rules (reference)", "value": _truncate(rules, 1024), "inline": False},
             ]
         )
         exit_line = hold_exit_summary_line(snapshot, alert, position_before, technical_meta, today_iso)
         if exit_line:
             fields.append(
                 {
-                    "name": "Hold exit flags (QQQ vs your levels)",
-                    "value": _truncate(exit_line, 1024),
+                    "name": "Exit flags (if holding)",
+                    "value": _truncate(exit_line.replace("weaken=", "weakened=").replace("_hit=", " "), 1024),
                     "inline": False,
                 }
             )
-
-    fields.append({"name": "Notes", "value": notes, "inline": False})
 
     embed: dict[str, object] = {
         "title": _embed_title(alert),
         "description": "\n".join(description_lines),
         "color": _embed_color(alert),
         "fields": fields,
-        "footer": {"text": "QQQ swing alerts • TQQQ / SQQQ"},
+        "footer": {"text": "QQQ swing alerts · TQQQ / SQQQ · not financial advice"},
     }
 
     if alert.timestamp:
@@ -220,10 +321,32 @@ def build_discord_embed(
     return embed
 
 
-def format_alert_message(alert: AlertDecision) -> str:
+def _regime_from_trend(trend: str) -> str:
+    m = re.search(r"regime=(\w+)", trend)
+    return m.group(1) if m else "—"
+
+
+def format_alert_message(
+    alert: AlertDecision,
+    *,
+    position_before: PositionState | None = None,
+    technical_meta: RunTechnicalMeta | None = None,
+) -> str:
+    action = _action_line(alert, position_before=position_before, technical_meta=technical_meta)
+    summary = _summary_line(alert, position_before=position_before, technical_meta=technical_meta)
     sq_line = f"Signal quality: {alert.signal_quality}\n" if alert.signal_quality else ""
+    levels = ""
+    if _show_trade_levels(alert):
+        levels = (
+            f"Entry zone (QQQ): {alert.entry_zone_low:.2f} - {alert.entry_zone_high:.2f}\n"
+            f"Stop loss: {alert.stop_loss:.2f}\n"
+            f"Take profit: {alert.take_profit:.2f}\n"
+            f"Stretch target: {alert.stretch_take_profit:.2f}\n"
+            f"Max hold date: {alert.max_hold_date or 'N/A'}\n"
+        )
     return (
-        f"{_action_line(alert)}\n"
+        f"{action}\n"
+        f"{summary}\n"
         f"(You trade manually - alerts only, no broker execution.)\n"
         f"\n"
         f"Alert: {alert.alert_type}\n"
@@ -231,15 +354,11 @@ def format_alert_message(alert: AlertDecision) -> str:
         f"QQQ trend: {alert.qqq_trend_reason}\n"
         f"Bullish strength: {alert.bullish_score}/100 (weighted checklist)\n"
         f"Bearish strength: {alert.bearish_score}/100 (weighted checklist)\n"
-        f"Confidence (normalized): {alert.confidence_score}%\n"
+        f"Stack dominance: {alert.confidence_score}%\n"
         f"{sq_line}"
-        f"Entry zone: {alert.entry_zone_low:.2f} - {alert.entry_zone_high:.2f}\n"
-        f"Stop loss: {alert.stop_loss:.2f}\n"
-        f"Take profit: {alert.take_profit:.2f}\n"
-        f"Stretch target: {alert.stretch_take_profit:.2f}\n"
-        f"Max hold date: {alert.max_hold_date or 'N/A'}\n"
+        f"{levels}"
         f"Timestamp: {alert.timestamp}\n"
-        f"Notes: {alert.notes}"
+        f"Why: {alert.notes}"
     )
 
 
@@ -271,6 +390,44 @@ def send_discord(
         return
     if not webhook_url:
         print("[Live] No DISCORD_WEBHOOK_URL - skipping Discord (journal + console only).")
+        return
+
+    response = requests.post(webhook_url, json=payload, timeout=15)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Discord webhook failed: {response.status_code} {response.text}")
+
+
+def send_discord_api_quota_alert(
+    webhook_url: str,
+    *,
+    detail: str,
+    timestamp: str,
+    dry_run: bool,
+) -> None:
+    embed: dict[str, object] = {
+        "title": "KlickAnalytics monthly limit reached",
+        "description": (
+            "Market data could not be fetched because the KlickAnalytics API "
+            "monthly usage limit appears to be exhausted.\n\n"
+            f"**Detail:** {_truncate(detail, 900)}"
+        ),
+        "color": 0xE74C3C,
+        "footer": {"text": "QQQ swing alerts · bot system notice"},
+    }
+    if timestamp:
+        embed["timestamp"] = timestamp
+
+    payload: dict[str, object] = {
+        "username": "QQQ Swing Alerts",
+        "embeds": [embed],
+    }
+
+    if dry_run:
+        print("[DRY RUN] Discord API quota payload:")
+        print(json.dumps(payload, indent=2))
+        return
+    if not webhook_url:
+        print("[Live] No DISCORD_WEBHOOK_URL - skipping API quota Discord notice.")
         return
 
     response = requests.post(webhook_url, json=payload, timeout=15)

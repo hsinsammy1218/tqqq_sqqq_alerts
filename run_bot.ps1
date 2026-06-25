@@ -17,6 +17,12 @@ function Write-SchedulerLog {
 
 Write-SchedulerLog 'START run_bot.ps1'
 
+$dayOfWeek = (Get-Date).DayOfWeek
+if ($dayOfWeek -eq 'Saturday' -or $dayOfWeek -eq 'Sunday') {
+    Write-SchedulerLog 'SKIP weekend - alert job does not run Sat/Sun'
+    exit 0
+}
+
 $python = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $python)) {
     Write-SchedulerLog "ERROR: Missing venv Python at $python"
@@ -31,7 +37,7 @@ $exitCode = 1
 try {
     $p = Start-Process `
         -FilePath $python `
-        -ArgumentList @('main.py', '--no-technical') `
+        -ArgumentList @('main.py', '--no-technical', '--market-hours-only') `
         -WorkingDirectory $ProjectRoot `
         -Wait `
         -PassThru `

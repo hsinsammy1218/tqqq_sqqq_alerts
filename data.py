@@ -12,6 +12,59 @@ class DataError(Exception):
     pass
 
 
+class KlickAnalyticsQuotaError(DataError):
+    """KlickAnalytics CLI reported monthly API usage limit reached."""
+
+
+_MONTHLY_LIMIT_MARKERS = (
+    "monthly limit",
+    "monthly quota",
+    "monthly api",
+    "monthly usage",
+    "monthly request",
+    "monthly call",
+    "monthly cli usage limit",
+    "monthly_cli_limit_reached",
+    "limit for the month",
+    "reached for the month",
+    "quota for the month",
+    "this month's limit",
+    "this month",
+)
+
+
+def _quota_error_code_in_payload(text: str) -> bool:
+    start = text.find("{")
+    if start < 0:
+        return False
+    try:
+        payload = json.loads(text[start:])
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    code = str(payload.get("error_code", "")).lower()
+    if "monthly" in code and ("limit" in code or "quota" in code):
+        return True
+    for key in ("stderr", "stdout", "message", "error"):
+        value = payload.get(key)
+        if isinstance(value, str) and is_klickanalytics_monthly_limit_message(value):
+            return True
+    return False
+
+
+def is_klickanalytics_monthly_limit_message(text: str) -> bool:
+    low = text.lower()
+    if not low:
+        return False
+    if any(marker in low for marker in _MONTHLY_LIMIT_MARKERS):
+        return True
+    monthly = "monthly" in low or " per month" in low or "this month" in low
+    limitish = any(word in low for word in ("limit", "quota", "usage", "calls", "requests"))
+    exhausted = any(word in low for word in ("reached", "exceeded", "exhausted", "depleted", "used up"))
+    return monthly and limitish and exhausted
+
+
 @dataclass(frozen=True)
 class CandleData:
     daily: pd.DataFrame
@@ -99,7 +152,11 @@ def _run_ka_json(cli_command: str, args: list[str], api_key: str) -> object:
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         stdout = (proc.stdout or "").strip()
-        raise DataError(f"KlickAnalytics CLI command failed: {stderr or stdout or 'unknown error'}")
+        detail = "\n".join(part for part in (stderr, stdout) if part).strip() or "unknown error"
+        message = f"KlickAnalytics CLI command failed: {detail}"
+        if is_klickanalytics_monthly_limit_message(detail) or _quota_error_code_in_payload(detail):
+            raise KlickAnalyticsQuotaError(message)
+        raise DataError(message)
 
     raw = (proc.stdout or "").strip()
     if not raw:

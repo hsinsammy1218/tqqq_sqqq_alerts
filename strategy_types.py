@@ -31,6 +31,9 @@ class AlertDecision:
     max_hold_date: str
     timestamp: str
     notes: str = ""
+    # Presentation category set in decide(); avoids parsing notes in alerts.py.
+    notes_kind: str = "other"
+    flip_suppressed: bool = False
     # Set only for flat BUY after confidence gates (HIGH ≥75%, MEDIUM otherwise above minimum).
     signal_quality: str | None = None
 

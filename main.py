@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from alerts import format_alert_message, send_discord
+from api_quota_notify import maybe_notify_klickanalytics_quota_reached
 from backtest import export_backtest_trades_csv, format_backtest_report, run_backtest
 from backtest_sweep import export_sweep_csv, format_sweep_report, run_parameter_sweep, sweep_grid_from_settings
 from cli_args import build_parser
 from config import ConfigError, load_settings, strategy_params_from_settings
-from data import DataError, load_candles
+from data import DataError, KlickAnalyticsQuotaError, load_candles
 from event_calendar import load_merged_blackout_dates
 from health_check import run_health_check
 from indicators import build_snapshot
 from journal import append_journal
+from market_hours import market_closed_reason
 from runtime_logging import format_utc_z, log_event, setup_logger
 from walk_forward import (
     export_walk_forward_csv,
@@ -79,6 +82,7 @@ def run() -> int:
         debug_strategy=args.debug_strategy,
         debug_strategy_sanity=args.debug_strategy_sanity,
         high_confidence_only=args.high_confidence_only,
+        market_hours_only=bool(args.market_hours_only),
     )
 
     if args.set_position is not None and args.entry_price is not None and args.entry_price <= 0:
@@ -179,6 +183,14 @@ def run() -> int:
     if args.health_check:
         return run_health_check(settings, settings.dry_run, logger)
 
+    is_research = args.backtest or args.backtest_sweep or args.walk_forward
+    if args.market_hours_only and not is_research:
+        closed_reason = market_closed_reason()
+        if closed_reason is not None:
+            print(f"Skipped: US equity market is closed ({closed_reason}).")
+            log_event(logger, logging.INFO, "Market hours skip", reason=closed_reason)
+            return 0
+
     try:
         candles = load_candles(
             ticker=settings.qqq_ticker,
@@ -197,6 +209,21 @@ def run() -> int:
             latest_daily_candle=daily_fetch_label,
             latest_h4_candle=h4_fetch_label,
         )
+    except KlickAnalyticsQuotaError as exc:
+        print(f"Data error: {exc}")
+        log_event(logger, logging.ERROR, "Data fetch failed", error=str(exc), quota_exhausted=True)
+        try:
+            maybe_notify_klickanalytics_quota_reached(
+                webhook_url=settings.discord_webhook_url,
+                dry_run=settings.dry_run,
+                state_path=Path("logs/api_quota_notified.json"),
+                detail=str(exc),
+                logger=logger,
+            )
+        except Exception as notify_exc:  # noqa: BLE001
+            print(f"API quota Discord notice failed: {notify_exc}")
+            log_event(logger, logging.ERROR, "API quota Discord notice failed", error=str(notify_exc))
+        return 1
     except DataError as exc:
         print(f"Data error: {exc}")
         log_event(logger, logging.ERROR, "Data fetch failed", error=str(exc))
@@ -399,7 +426,7 @@ def run() -> int:
         high_confidence_only=args.high_confidence_only,
     )
 
-    message = format_alert_message(alert)
+    message = format_alert_message(alert, position_before=position, technical_meta=tech_meta)
     print(message)
     log_event(
         logger,
