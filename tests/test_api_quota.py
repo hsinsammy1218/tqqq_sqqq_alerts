@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from api_quota_notify import maybe_notify_klickanalytics_quota_reached
+from alerts import build_api_quota_discord_embed
 from data import DataError, KlickAnalyticsQuotaError, is_klickanalytics_monthly_limit_message
 
 
@@ -88,3 +89,20 @@ def test_quota_notify_once_per_month(tmp_path: Path):
 
     saved = json.loads(state_path.read_text(encoding="utf-8"))
     assert "notified_month" in saved
+
+
+def test_api_quota_embed_pretty_fields():
+    detail = (
+        'KlickAnalytics CLI command failed: HTTPError: 429\n'
+        '{"ok": false, "error_code": "monthly_cli_limit_reached", '
+        '"stderr": "Monthly CLI usage limit reached (500)\\n", '
+        '"data": {"monthly_limit": 500, "total_hits": 500}}'
+    )
+    embed = build_api_quota_discord_embed(detail, "2026-06-25T14:00:00Z")
+    names = [f["name"] for f in embed["fields"]]  # type: ignore[index]
+    assert "CLI usage this month" in names
+    assert "What you can do" in names
+    usage = next(f["value"] for f in embed["fields"] if f["name"] == "CLI usage this month")  # type: ignore[index]
+    assert "500" in usage
+    assert "100%" in usage
+    assert "Data feed paused" in embed["description"]  # type: ignore[operator]

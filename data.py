@@ -71,6 +71,38 @@ class CandleData:
     four_hour: pd.DataFrame
 
 
+_cli_calls_this_run = 0
+
+
+def reset_cli_call_count() -> None:
+    global _cli_calls_this_run
+    _cli_calls_this_run = 0
+
+
+def cli_calls_attempted() -> int:
+    return _cli_calls_this_run
+
+
+def format_cli_usage_line(
+    *,
+    reason: str | None = None,
+    month_total: int | None = None,
+    month_limit: int | None = None,
+) -> str:
+    count = cli_calls_attempted()
+    noun = "call" if count == 1 else "calls"
+    suffix = f" ({reason})" if reason else ""
+    line = f"[klickanalytics] {count} CLI {noun} attempted this run{suffix}"
+    if month_total is not None and month_limit:
+        line += f" · month {month_total}/{month_limit}"
+    return line
+
+
+def _record_cli_call() -> None:
+    global _cli_calls_this_run
+    _cli_calls_this_run += 1
+
+
 def _normalize_ohlcv(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
     if frame is None or frame.empty:
         raise DataError(f"No data returned for {ticker}.")
@@ -129,6 +161,7 @@ def _extract_records(payload: object) -> list[dict]:
 
 
 def _run_ka_json(cli_command: str, args: list[str], api_key: str) -> object:
+    _record_cli_call()
     env = os.environ.copy()
     env["KLICKANALYTICS_CLI_API_KEY"] = api_key
     cmd = [cli_command] + args
@@ -188,6 +221,7 @@ def _fetch_hourly_intraday(ticker: str, cli_command: str, api_key: str, *, bars:
 
 
 def load_candles(ticker: str, api_key: str, cli_command: str) -> CandleData:
+    reset_cli_call_count()
     daily = _fetch_daily_prices(ticker=ticker, cli_command=cli_command, api_key=api_key)
     # Hourly history must cover the daily window (800 bars ~33d would otherwise blank older backtest dates).
     span_days = max(7, (daily.index[-1] - daily.index[0]).days + 14)

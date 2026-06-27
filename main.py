@@ -4,17 +4,18 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from alerts import format_alert_message, send_discord
+from alerts import format_alert_message, is_actionable_discord_alert, send_discord
 from api_quota_notify import maybe_notify_klickanalytics_quota_reached
 from backtest import export_backtest_trades_csv, format_backtest_report, run_backtest
 from backtest_sweep import export_sweep_csv, format_sweep_report, run_parameter_sweep, sweep_grid_from_settings
 from cli_args import build_parser
-from config import ConfigError, load_settings, strategy_params_from_settings
-from data import DataError, KlickAnalyticsQuotaError, load_candles
+from config import ConfigError, Settings, load_settings, strategy_params_from_settings
+from data import DataError, KlickAnalyticsQuotaError, cli_calls_attempted, format_cli_usage_line, load_candles
 from event_calendar import load_merged_blackout_dates
 from health_check import run_health_check
 from indicators import build_snapshot
 from journal import append_journal
+from klickanalytics_usage import track_and_maybe_warn_cli_usage
 from market_hours import market_closed_reason
 from runtime_logging import format_utc_z, log_event, setup_logger
 from walk_forward import (
@@ -53,6 +54,34 @@ def _position_to_dict(state: PositionState) -> dict[str, object]:
         "last_signal": state.last_signal,
         "updated_at": state.updated_at,
     }
+
+
+def _log_cli_usage(
+    settings: Settings,
+    logger: logging.Logger,
+    *,
+    reason: str | None = None,
+    quota_error_detail: str | None = None,
+) -> None:
+    calls = cli_calls_attempted()
+    snapshot = track_and_maybe_warn_cli_usage(
+        calls=calls,
+        webhook_url=settings.discord_webhook_url,
+        dry_run=settings.dry_run,
+        monthly_limit=settings.klickanalytics_monthly_limit,
+        warn_pct=settings.klickanalytics_usage_warn_pct,
+        logger=logger,
+        quota_error_detail=quota_error_detail,
+    )
+    month_total = snapshot.total_calls if snapshot else None
+    month_limit = settings.klickanalytics_monthly_limit if snapshot else None
+    print(
+        format_cli_usage_line(
+            reason=reason,
+            month_total=month_total,
+            month_limit=month_limit,
+        )
+    )
 
 
 def run() -> int:
@@ -188,7 +217,8 @@ def run() -> int:
         closed_reason = market_closed_reason()
         if closed_reason is not None:
             print(f"Skipped: US equity market is closed ({closed_reason}).")
-            log_event(logger, logging.INFO, "Market hours skip", reason=closed_reason)
+            print(format_cli_usage_line(reason="market closed"))
+            log_event(logger, logging.INFO, "Market hours skip", reason=closed_reason, klickanalytics_cli_calls=0)
             return 0
 
     try:
@@ -208,10 +238,20 @@ def run() -> int:
             qqq_ticker=settings.qqq_ticker,
             latest_daily_candle=daily_fetch_label,
             latest_h4_candle=h4_fetch_label,
+            klickanalytics_cli_calls=cli_calls_attempted(),
         )
+        _log_cli_usage(settings, logger)
     except KlickAnalyticsQuotaError as exc:
         print(f"Data error: {exc}")
-        log_event(logger, logging.ERROR, "Data fetch failed", error=str(exc), quota_exhausted=True)
+        _log_cli_usage(settings, logger, quota_error_detail=str(exc))
+        log_event(
+            logger,
+            logging.ERROR,
+            "Data fetch failed",
+            error=str(exc),
+            quota_exhausted=True,
+            klickanalytics_cli_calls=cli_calls_attempted(),
+        )
         try:
             maybe_notify_klickanalytics_quota_reached(
                 webhook_url=settings.discord_webhook_url,
@@ -226,7 +266,14 @@ def run() -> int:
         return 1
     except DataError as exc:
         print(f"Data error: {exc}")
-        log_event(logger, logging.ERROR, "Data fetch failed", error=str(exc))
+        _log_cli_usage(settings, logger)
+        log_event(
+            logger,
+            logging.ERROR,
+            "Data fetch failed",
+            error=str(exc),
+            klickanalytics_cli_calls=cli_calls_attempted(),
+        )
         return 1
     except Exception as exc:  # noqa: BLE001
         print(f"Unexpected data/indicator failure: {exc}")
@@ -470,24 +517,33 @@ def run() -> int:
             position_state_path=str(settings.position_state_json),
             position_after=_position_to_dict(new_position),
         )
-        send_discord(
-            settings.discord_webhook_url,
-            alert,
-            settings.dry_run,
-            snapshot=snapshot,
-            position_before=position,
-            technical_meta=tech_meta,
-            today_iso=today_iso,
-        )
-        log_event(
-            logger,
-            logging.INFO,
-            "Discord send completed",
-            dry_run=settings.dry_run,
-            webhook_configured=bool(settings.discord_webhook_url),
-            alert_type=alert.alert_type,
-            symbol=alert.symbol,
-        )
+        if is_actionable_discord_alert(alert):
+            send_discord(
+                settings.discord_webhook_url,
+                alert,
+                settings.dry_run,
+                snapshot=snapshot,
+                position_before=position,
+                technical_meta=tech_meta,
+                today_iso=today_iso,
+            )
+            log_event(
+                logger,
+                logging.INFO,
+                "Discord send completed",
+                dry_run=settings.dry_run,
+                webhook_configured=bool(settings.discord_webhook_url),
+                alert_type=alert.alert_type,
+                symbol=alert.symbol,
+            )
+        else:
+            log_event(
+                logger,
+                logging.INFO,
+                "Discord send skipped (non-actionable signal)",
+                alert_type=alert.alert_type,
+                symbol=alert.symbol,
+            )
     except Exception as exc:  # noqa: BLE001
         print(f"Output error: {exc}")
         log_event(logger, logging.ERROR, "Output stage failed", error=str(exc))

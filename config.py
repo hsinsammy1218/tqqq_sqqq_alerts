@@ -44,6 +44,8 @@ class Settings:
     entry_dominance_gap_weight: float
     flip_in_range_regime: bool
     min_confidence_to_trade: int
+    klickanalytics_monthly_limit: int
+    klickanalytics_usage_warn_pct: int
 
 
 def _to_bool(value: str, default: bool = False) -> bool:
@@ -137,4 +139,6 @@ def load_settings() -> Settings:
         flip_in_range_regime=_to_bool(os.getenv("FLIP_ALLOW_IN_RANGE", "false"), default=False),
         # Locked from walk-forward rank 1 (reports/walk_forward_results.csv): avg_score best row → 62.
         min_confidence_to_trade=int(os.getenv("MIN_CONFIDENCE_TO_TRADE", "62")),
+        klickanalytics_monthly_limit=int(os.getenv("KLICKANALYTICS_MONTHLY_LIMIT", "500")),
+        klickanalytics_usage_warn_pct=int(os.getenv("KLICKANALYTICS_USAGE_WARN_PCT", "80")),
     )

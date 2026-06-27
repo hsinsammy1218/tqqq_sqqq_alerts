@@ -20,6 +20,7 @@ Write-SchedulerLog 'START run_bot.ps1'
 $dayOfWeek = (Get-Date).DayOfWeek
 if ($dayOfWeek -eq 'Saturday' -or $dayOfWeek -eq 'Sunday') {
     Write-SchedulerLog 'SKIP weekend - alert job does not run Sat/Sun'
+    Write-SchedulerLog '[klickanalytics] 0 CLI calls attempted this run (weekend skip)'
     exit 0
 }
 

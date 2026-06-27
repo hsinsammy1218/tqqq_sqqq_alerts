@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from api_quota_notify import maybe_notify_klickanalytics_quota_reached
-from data import KlickAnalyticsQuotaError, load_candles
+from data import KlickAnalyticsQuotaError, cli_calls_attempted, format_cli_usage_line, load_candles
+from klickanalytics_usage import track_and_maybe_warn_cli_usage
 from runtime_logging import format_utc_z, log_event
 from strategy import PositionState, load_position
 
@@ -74,11 +75,49 @@ def run_health_check(settings: Any, dry_run: bool, logger: logging.Logger) -> in
             qqq_ticker=settings.qqq_ticker,
             latest_daily_candle=d_label,
             latest_h4_candle=h4_label,
+            klickanalytics_cli_calls=cli_calls_attempted(),
+        )
+        snapshot = track_and_maybe_warn_cli_usage(
+            calls=cli_calls_attempted(),
+            webhook_url=settings.discord_webhook_url,
+            dry_run=dry_run,
+            monthly_limit=settings.klickanalytics_monthly_limit,
+            warn_pct=settings.klickanalytics_usage_warn_pct,
+            logger=logger,
+        )
+        print(
+            format_cli_usage_line(
+                month_total=snapshot.total_calls if snapshot else None,
+                month_limit=settings.klickanalytics_monthly_limit if snapshot else None,
+            )
         )
     except KlickAnalyticsQuotaError as exc:
         msg = f"Data fetch failed: {exc}"
         print(f"[health] FAIL - {msg}")
-        log_event(logger, logging.ERROR, "Data fetch health check", ok=False, error=str(exc), quota_exhausted=True)
+        snapshot = track_and_maybe_warn_cli_usage(
+            calls=cli_calls_attempted(),
+            webhook_url=settings.discord_webhook_url,
+            dry_run=dry_run,
+            monthly_limit=settings.klickanalytics_monthly_limit,
+            warn_pct=settings.klickanalytics_usage_warn_pct,
+            logger=logger,
+            quota_error_detail=str(exc),
+        )
+        print(
+            format_cli_usage_line(
+                month_total=snapshot.total_calls if snapshot else None,
+                month_limit=settings.klickanalytics_monthly_limit if snapshot else None,
+            )
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            "Data fetch health check",
+            ok=False,
+            error=str(exc),
+            quota_exhausted=True,
+            klickanalytics_cli_calls=cli_calls_attempted(),
+        )
         failures.append(msg)
         try:
             maybe_notify_klickanalytics_quota_reached(
@@ -94,7 +133,21 @@ def run_health_check(settings: Any, dry_run: bool, logger: logging.Logger) -> in
     except Exception as exc:  # noqa: BLE001
         msg = f"Data fetch failed: {exc}"
         print(f"[health] FAIL - {msg}")
-        log_event(logger, logging.ERROR, "Data fetch health check", ok=False, error=str(exc))
+        snapshot = track_and_maybe_warn_cli_usage(
+            calls=cli_calls_attempted(),
+            webhook_url=settings.discord_webhook_url,
+            dry_run=dry_run,
+            monthly_limit=settings.klickanalytics_monthly_limit,
+            warn_pct=settings.klickanalytics_usage_warn_pct,
+            logger=logger,
+        )
+        print(
+            format_cli_usage_line(
+                month_total=snapshot.total_calls if snapshot else None,
+                month_limit=settings.klickanalytics_monthly_limit if snapshot else None,
+            )
+        )
+        log_event(logger, logging.ERROR, "Data fetch health check", ok=False, error=str(exc), klickanalytics_cli_calls=cli_calls_attempted())
         failures.append(msg)
 
     state, warnings = load_position(settings.position_state_json)

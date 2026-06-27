@@ -8,6 +8,7 @@ from alerts import (
     _summary_line,
     build_discord_embed,
     format_alert_message,
+    is_actionable_discord_alert,
 )
 from strategy_types import (
     HIGH_SIGNAL_QUALITY_THRESHOLD,
@@ -227,3 +228,16 @@ def test_discord_embed_empty_timestamp_guard():
     embed = build_discord_embed(alert)
     time_field = next(f for f in embed["fields"] if f["name"] == "Time (UTC)")  # type: ignore[index]
     assert time_field["value"] == "—"
+
+
+def test_actionable_discord_alert_types():
+    cash = _cash_alert()
+    assert not is_actionable_discord_alert(cash)
+    buy = _cash_alert(alert_type="BUY", symbol="TQQQ", notes_kind="buy_bull")
+    assert is_actionable_discord_alert(buy)
+    sell = _cash_alert(alert_type="SELL", symbol="TQQQ", notes_kind="exit")
+    assert is_actionable_discord_alert(sell)
+    flip = _cash_alert(alert_type="FLIP", symbol="SQQQ", notes_kind="flip")
+    assert is_actionable_discord_alert(flip)
+    hold = _cash_alert(alert_type="CASH", symbol="TQQQ", notes_kind="holding")
+    assert not is_actionable_discord_alert(hold)
