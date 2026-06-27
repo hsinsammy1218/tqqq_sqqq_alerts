@@ -54,7 +54,7 @@ Purpose: Track meaningful engineering, architecture, security, and process updat
 
 ### Documentation and Standards
 
-- Created and iteratively updated production-grade docs under `docs/`.
+- Created and iteratively updated production-grade docs under `docs/` (later moved to `archive/docs/`).
 - Created and updated engineering standards under `rules/`.
 - Synced docs/rules to reflect implemented changes in architecture, security, testing, and DevOps.
 - Added explicit no-secrets-in-git governance and pre-push secret-safety requirements in security/devops rules.
