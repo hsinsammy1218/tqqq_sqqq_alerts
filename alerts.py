@@ -362,13 +362,6 @@ def format_alert_message(
     )
 
 
-_ACTIONABLE_DISCORD_TYPES = frozenset({"BUY", "SELL", "FLIP"})
-
-
-def is_actionable_discord_alert(alert: AlertDecision) -> bool:
-    return alert.alert_type in _ACTIONABLE_DISCORD_TYPES
-
-
 def send_discord(
     webhook_url: str,
     alert: AlertDecision,

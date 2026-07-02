@@ -14,5 +14,8 @@ alerts_journal.csv
 position_state.json
 logs/
 
+# Local Cursor config (MCP, agent rules) — not part of this repo
+.cursor/
+
 # Local research outputs (backtest/sweep/walk-forward CSVs).
 reports/*.csv

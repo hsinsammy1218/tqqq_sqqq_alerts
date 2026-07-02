@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from alerts import format_alert_message, is_actionable_discord_alert, send_discord
+from alerts import format_alert_message, send_discord
 from api_quota_notify import maybe_notify_klickanalytics_quota_reached
 from backtest import export_backtest_trades_csv, format_backtest_report, run_backtest
 from backtest_sweep import export_sweep_csv, format_sweep_report, run_parameter_sweep, sweep_grid_from_settings
@@ -517,33 +517,24 @@ def run() -> int:
             position_state_path=str(settings.position_state_json),
             position_after=_position_to_dict(new_position),
         )
-        if is_actionable_discord_alert(alert):
-            send_discord(
-                settings.discord_webhook_url,
-                alert,
-                settings.dry_run,
-                snapshot=snapshot,
-                position_before=position,
-                technical_meta=tech_meta,
-                today_iso=today_iso,
-            )
-            log_event(
-                logger,
-                logging.INFO,
-                "Discord send completed",
-                dry_run=settings.dry_run,
-                webhook_configured=bool(settings.discord_webhook_url),
-                alert_type=alert.alert_type,
-                symbol=alert.symbol,
-            )
-        else:
-            log_event(
-                logger,
-                logging.INFO,
-                "Discord send skipped (non-actionable signal)",
-                alert_type=alert.alert_type,
-                symbol=alert.symbol,
-            )
+        send_discord(
+            settings.discord_webhook_url,
+            alert,
+            settings.dry_run,
+            snapshot=snapshot,
+            position_before=position,
+            technical_meta=tech_meta,
+            today_iso=today_iso,
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "Discord send completed",
+            dry_run=settings.dry_run,
+            webhook_configured=bool(settings.discord_webhook_url),
+            alert_type=alert.alert_type,
+            symbol=alert.symbol,
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"Output error: {exc}")
         log_event(logger, logging.ERROR, "Output stage failed", error=str(exc))
