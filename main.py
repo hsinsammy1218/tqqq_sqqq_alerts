@@ -25,14 +25,13 @@ from walk_forward import (
     walk_forward_fold_count,
     walk_forward_grid_from_settings,
 )
+from position_store import PositionStoreError, position_store_from_settings
 from strategy import (
     DecideOptions,
     PositionState,
     RunTechnicalMeta,
     decide,
     format_technical_breakdown,
-    load_position,
-    save_position,
 )
 
 
@@ -54,6 +53,12 @@ def _position_to_dict(state: PositionState) -> dict[str, object]:
         "last_signal": state.last_signal,
         "updated_at": state.updated_at,
     }
+
+
+def _missing_live_webhook_message(settings: Settings) -> str | None:
+    if settings.dry_run or settings.discord_webhook_url:
+        return None
+    return "DISCORD_WEBHOOK_URL is required when not in dry-run mode."
 
 
 def _log_cli_usage(
@@ -129,7 +134,9 @@ def run() -> int:
             logging.INFO,
             "Settings loaded",
             qqq_ticker=settings.qqq_ticker,
+            position_state_backend=settings.position_state_backend,
             position_state_json=str(settings.position_state_json),
+            position_state_bot_id=settings.position_state_bot_id,
             events_json=str(settings.events_json),
             dry_run=settings.dry_run,
             log_level=args.log_level,
@@ -139,24 +146,36 @@ def run() -> int:
         log_event(logger, logging.ERROR, "Config load failed", error=str(exc))
         return 1
 
+    try:
+        position_store = position_store_from_settings(settings)
+    except ConfigError as exc:
+        print(f"Config error: {exc}")
+        log_event(logger, logging.ERROR, "Position store init failed", error=str(exc))
+        return 1
+    position_state_label = position_store.describe()
+
     stamp = format_utc_z(datetime.now(timezone.utc))
     if args.flat:
-        save_position(
-            settings.position_state_json,
-            PositionState(
-                active_symbol=None,
-                entry_price=None,
-                entry_timestamp=None,
-                last_signal="MANUAL_FLAT",
-                updated_at=stamp,
-            ),
-        )
+        try:
+            position_store.save(
+                PositionState(
+                    active_symbol=None,
+                    entry_price=None,
+                    entry_timestamp=None,
+                    last_signal="MANUAL_FLAT",
+                    updated_at=stamp,
+                )
+            )
+        except PositionStoreError as exc:
+            print(f"Position store error: {exc}")
+            log_event(logger, logging.ERROR, "Manual flat save failed", error=str(exc))
+            return 1
         print("Position reset: flat (no active TQQQ/SQQQ in bot memory).")
         log_event(
             logger,
             logging.INFO,
             "Manual flat applied",
-            position_state_path=str(settings.position_state_json),
+            position_state_path=position_state_label,
             position_after={
                 "symbol": None,
                 "entry_price": None,
@@ -165,6 +184,7 @@ def run() -> int:
                 "updated_at": stamp,
             },
         )
+        return 0
     elif args.set_position is not None:
         entry_price_f = float(args.entry_price) if args.entry_price is not None else None
         entry_ts_str: str | None = None
@@ -175,16 +195,20 @@ def run() -> int:
                 print("Config error: --entry-time must be valid ISO8601 (e.g. 2026-05-01T16:00:00Z).")
                 log_event(logger, logging.ERROR, "Invalid entry time argument", entry_time=args.entry_time)
                 return 1
-        save_position(
-            settings.position_state_json,
-            PositionState(
-                active_symbol=args.set_position,
-                entry_price=entry_price_f,
-                entry_timestamp=entry_ts_str,
-                last_signal="MANUAL_SET",
-                updated_at=stamp,
-            ),
-        )
+        try:
+            position_store.save(
+                PositionState(
+                    active_symbol=args.set_position,
+                    entry_price=entry_price_f,
+                    entry_timestamp=entry_ts_str,
+                    last_signal="MANUAL_SET",
+                    updated_at=stamp,
+                )
+            )
+        except PositionStoreError as exc:
+            print(f"Position store error: {exc}")
+            log_event(logger, logging.ERROR, "Manual position set failed", error=str(exc))
+            return 1
         extra = []
         if entry_price_f is not None:
             extra.append(f"@ {entry_price_f}")
@@ -199,7 +223,7 @@ def run() -> int:
             logger,
             logging.INFO,
             "Manual position set",
-            position_state_path=str(settings.position_state_json),
+            position_state_path=position_state_label,
             position_after={
                 "symbol": args.set_position,
                 "entry_price": entry_price_f,
@@ -208,11 +232,17 @@ def run() -> int:
                 "updated_at": stamp,
             },
         )
+        return 0
 
     if args.health_check:
         return run_health_check(settings, settings.dry_run, logger)
 
     is_research = args.backtest or args.backtest_sweep or args.walk_forward
+    webhook_err = _missing_live_webhook_message(settings)
+    if webhook_err and not is_research:
+        print(f"Config error: {webhook_err}")
+        log_event(logger, logging.ERROR, "Live Discord webhook missing", error=webhook_err)
+        return 1
     if args.market_hours_only and not is_research:
         closed_reason = market_closed_reason()
         if closed_reason is not None:
@@ -419,14 +449,19 @@ def run() -> int:
         log_event(logger, logging.ERROR, "Indicator build failed", error=str(exc))
         return 1
 
-    position, position_warnings = load_position(settings.position_state_json)
+    try:
+        position, position_warnings = position_store.load()
+    except PositionStoreError as exc:
+        print(f"Position store error: {exc}")
+        log_event(logger, logging.ERROR, "Position state load failed", error=str(exc))
+        return 1
     for msg in position_warnings:
         print(f"[position] {msg}")
     log_event(
         logger,
         logging.WARNING if position_warnings else logging.INFO,
         "Position state loaded",
-        position_state_path=str(settings.position_state_json),
+        position_state_path=position_state_label,
         warnings=position_warnings,
         position_before=_position_to_dict(position),
     )
@@ -500,23 +535,6 @@ def run() -> int:
         print(format_technical_breakdown(snapshot, alert, position, tech_meta, today_iso))
 
     try:
-        append_journal(settings.journal_csv, alert)
-        log_event(
-            logger,
-            logging.INFO,
-            "Journal append succeeded",
-            journal_path=str(settings.journal_csv),
-            alert_type=alert.alert_type,
-            symbol=alert.symbol,
-        )
-        save_position(settings.position_state_json, new_position)
-        log_event(
-            logger,
-            logging.INFO,
-            "Position state saved",
-            position_state_path=str(settings.position_state_json),
-            position_after=_position_to_dict(new_position),
-        )
         send_discord(
             settings.discord_webhook_url,
             alert,
@@ -537,8 +555,34 @@ def run() -> int:
         )
     except Exception as exc:  # noqa: BLE001
         print(f"Output error: {exc}")
-        log_event(logger, logging.ERROR, "Output stage failed", error=str(exc))
+        log_event(logger, logging.ERROR, "Discord send failed", error=str(exc))
         return 1
+    try:
+        position_store.save(new_position)
+        log_event(
+            logger,
+            logging.INFO,
+            "Position state saved",
+            position_state_path=position_state_label,
+            position_after=_position_to_dict(new_position),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Position store error (Discord already sent): {exc}")
+        log_event(logger, logging.ERROR, "Position state save failed after Discord", error=str(exc))
+        return 1
+    try:
+        append_journal(settings.journal_csv, alert)
+        log_event(
+            logger,
+            logging.INFO,
+            "Journal append succeeded",
+            journal_path=str(settings.journal_csv),
+            alert_type=alert.alert_type,
+            symbol=alert.symbol,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Journal warning (alert already sent): {exc}")
+        log_event(logger, logging.WARNING, "Journal append failed after alert", error=str(exc))
     log_event(logger, logging.INFO, "Run completed", exit_code=0)
     return 0
 

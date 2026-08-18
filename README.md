@@ -224,6 +224,54 @@ powershell -ExecutionPolicy Bypass -File .\run_bot.ps1
 
    Prefer `Logon Mode: S4U` for unattended runs. Re-run `setup_scheduler.ps1` to refresh registration.
 
+## Deploy on Render
+
+Render Cron containers are **ephemeral** — local `position_state.json` does not survive between runs. Use **Supabase** for position memory.
+
+1. **Run the migration** in your Supabase SQL editor (same project as the dashboard):
+
+   [`dashboard/supabase/migrations/20260714180000_bot_position_state.sql`](./dashboard/supabase/migrations/20260714180000_bot_position_state.sql)
+
+2. **Create an Environment Group** in Render named `tqqq-sqqq-alerts` (matches [`render.yaml`](./render.yaml)) with at least:
+
+   | Key | Value |
+   |-----|--------|
+   | `KLICKANALYTICS_CLI_API_KEY` | your CLI key |
+   | `DISCORD_WEBHOOK_URL` | webhook URL |
+   | `DRY_RUN` | `false` |
+   | `POSITION_STATE_BACKEND` | `supabase` |
+   | `POSITION_STATE_BOT_ID` | `default` (or another id if you run multiple bots) |
+   | `SUPABASE_URL` | project URL |
+   | `SUPABASE_SERVICE_ROLE_KEY` | service role key |
+
+   Copy any other strategy knobs from your local `.env` as needed.
+
+3. **Deploy the Blueprint**: Dashboard → New → Blueprint → this repo (`render.yaml`). That creates three weekday crons (EDT / UTC−4):
+
+   | Service | Local Eastern | UTC cron |
+   |---------|---------------|----------|
+   | `tqqq-sqqq-alerts-1000` | 10:00 | `0 14 * * 1-5` |
+   | `tqqq-sqqq-alerts-1230` | 12:30 | `30 16 * * 1-5` |
+   | `tqqq-sqqq-alerts-1530` | 15:30 | `30 19 * * 1-5` |
+
+   Start command matches the Windows wrapper: `python main.py --no-technical --market-hours-only`.
+
+4. **Seed position** (once) from a machine with the same Supabase env (`POSITION_STATE_BACKEND=supabase` plus URL and service role). These flags **save memory and exit** — they do not fetch data or send Discord:
+
+   ```bash
+   python main.py --set-position TQQQ --entry-price 72.50
+   # or
+   python main.py --flat
+   ```
+
+   Do not add `--set-position` / `--flat` to the Render cron start command (that would skip the alert run). After seeding, weekday crons pick up the row on their own.
+
+5. **Disable Windows Task Scheduler** if you no longer want local duplicate alerts (`remove_scheduler.ps1`).
+
+**DST note:** Render cron expressions are UTC. The schedules above assume Eastern Daylight (UTC−4). In Eastern Standard (UTC−5), shift each hour +1, or leave as-is and rely on `--market-hours-only` (jobs may skip or run near the edge of the session).
+
+**Journal / usage JSON** on Render are best-effort only (ephemeral disk). Discord is sent **before** position is persisted so a webhook failure can retry on the next cron. Discord remains the durable alert channel.
+
 ### Backtest (optional)
 
 Replays the same scoring and `decide()` rules over recent historical QQQ daily bars (with expanding daily + 4h context). Useful for sanity-checking how often BUY / SELL / FLIP would have fired before trusting live alerts.
@@ -344,7 +392,7 @@ Tell the bot you have **no brokerage position** (sync bot memory to flat):
 python main.py --flat
 ```
 
-Use `--flat` once after you’ve closed everything on Robinhood (or on first setup). The next normal run still updates `position_state.json` if a BUY signal appears.
+`--flat` and `--set-position` **save bot memory and exit**. They do not fetch data, decide, or send Discord. Use `--flat` once after you’ve closed everything on Robinhood (or on first setup). The next **normal** run (`python main.py`) still updates position memory if a BUY signal appears.
 
 Tell the bot you **already hold** TQQQ or SQQQ (e.g. you bought on Robinhood before the bot tracked it):
 
@@ -356,7 +404,7 @@ python main.py --set-position SQQQ --entry-price 14.20 --entry-time 2026-05-01T1
 
 Only **which symbol** you hold is required. **`--entry-price`** (your ETF average cost) and **`--entry-time`** are optional: if you skip price, stop/target math uses **QQQ’s daily close** as a stand-in; if you skip time, **max hold** starts from the **first bot run** that finishes after this sync.
 
-Persistent position memory lives in `position_state.json` (path via env var `POSITION_STATE_JSON`). The bot writes canonical keys:
+Persistent position memory defaults to `position_state.json` (path via `POSITION_STATE_JSON`). On Render (or any ephemeral host), set `POSITION_STATE_BACKEND=supabase` so the same fields live in `public.bot_position_state` (row key `POSITION_STATE_BOT_ID`). The bot writes canonical keys:
 
 | Field | Meaning |
 |-------|---------|
@@ -392,7 +440,7 @@ Flat recovery (after closing everything at the broker):
 }
 ```
 
-If the file is missing, unreadable JSON, or has an invalid `symbol`, the bot prints `[position] …` and **starts flat** (never crashes). To recover: delete `position_state.json`, run `python main.py --flat`, or paste a valid JSON object from the example.
+If the **file** backend is missing, unreadable JSON, or has an invalid `symbol`, the bot prints `[position] …` and **starts flat** (never crashes). The **Supabase** backend fail-closes instead: API errors and invalid rows abort the run so a corrupt cloud row cannot be treated as flat. To recover a file: delete `position_state.json`, run `python main.py --flat`, or paste a valid JSON object from the example.
 
 Use `null` for `entry_price` / `entry_time` when you only want the bot to know the side. Prefer `python main.py --flat` / `--set-position` over hand-editing when possible.
 

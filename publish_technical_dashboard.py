@@ -82,15 +82,9 @@ def _indicator_blob(s: IndicatorSnapshot) -> dict[str, Any]:
 
 
 def _supabase_client():  # type: ignore[no-untyped-def]
-    try:
-        from supabase import create_client
-    except ImportError as exc:
-        raise ConfigError("Install supabase: pip install -r requirements.txt") from exc
-    url = (os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL") or "").strip()
-    key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    if not url or not key:
-        raise ConfigError("SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY are required.")
-    return create_client(url, key)
+    from supabase_client import create_supabase_client
+
+    return create_supabase_client()
 
 
 def _universe_symbols() -> list[str]:

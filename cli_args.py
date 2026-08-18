@@ -97,13 +97,13 @@ def build_parser() -> argparse.ArgumentParser:
     pos.add_argument(
         "--flat",
         action="store_true",
-        help="Reset tracked position to flat (no TQQQ/SQQQ). Use when you have zero broker positions.",
+        help="Reset tracked position to flat and exit (no alert run). Use when you have zero broker positions.",
     )
     pos.add_argument(
         "--set-position",
         choices=["TQQQ", "SQQQ"],
         metavar="SYMBOL",
-        help="Tell the bot you hold this ETF. Optional: --entry-price / --entry-time.",
+        help="Save that you hold this ETF and exit (no alert run). Optional: --entry-price / --entry-time.",
     )
     parser.add_argument(
         "--entry-price",

@@ -30,6 +30,8 @@ class Settings:
     entry_atr_multiplier: float
     journal_csv: Path
     position_state_json: Path
+    position_state_backend: str
+    position_state_bot_id: str
     events_json: Path
     event_risk_avoidance: bool
     event_risk_calendar_url: str
@@ -108,6 +110,19 @@ def load_settings() -> Settings:
     if not klickanalytics_api_key:
         raise ConfigError("KLICKANALYTICS_CLI_API_KEY is required.")
 
+    position_state_backend = os.getenv("POSITION_STATE_BACKEND", "file").strip().lower() or "file"
+    if position_state_backend not in {"file", "supabase"}:
+        raise ConfigError("POSITION_STATE_BACKEND must be 'file' or 'supabase'.")
+    position_state_bot_id = os.getenv("POSITION_STATE_BOT_ID", "default").strip() or "default"
+    if position_state_backend == "supabase":
+        supabase_url = (os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL") or "").strip()
+        supabase_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+        if not supabase_url or not supabase_key:
+            raise ConfigError(
+                "POSITION_STATE_BACKEND=supabase requires SUPABASE_URL "
+                "(or NEXT_PUBLIC_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY."
+            )
+
     return Settings(
         qqq_ticker=qqq_ticker,
         klickanalytics_api_key=klickanalytics_api_key,
@@ -124,6 +139,8 @@ def load_settings() -> Settings:
         entry_atr_multiplier=float(os.getenv("ENTRY_ATR_MULTIPLIER", "0.5")),
         journal_csv=Path(os.getenv("JOURNAL_CSV", "alerts_journal.csv")),
         position_state_json=Path(os.getenv("POSITION_STATE_JSON", "position_state.json")),
+        position_state_backend=position_state_backend,
+        position_state_bot_id=position_state_bot_id,
         events_json=Path(os.getenv("EVENTS_JSON", "events.json")),
         event_risk_avoidance=_to_bool(os.getenv("EVENT_RISK_AVOIDANCE", "false"), default=False),
         event_risk_calendar_url=os.getenv("EVENT_RISK_CALENDAR_URL", "").strip(),

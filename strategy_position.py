@@ -30,20 +30,19 @@ def _normalize_loaded_symbol(raw: object) -> tuple[str | None, bool]:
     return sym, False
 
 
-def load_position(path: Path) -> tuple[PositionState, list[str]]:
-    """Load position_state.json. Returns (flat state, warnings) on any problem."""
+def position_state_to_dict(position: PositionState) -> dict[str, object]:
+    return {
+        "symbol": position.active_symbol,
+        "entry_price": position.entry_price,
+        "entry_time": position.entry_timestamp,
+        "last_signal": position.last_signal,
+        "updated_at": position.updated_at,
+    }
+
+
+def position_state_from_dict(data: dict[str, Any]) -> tuple[PositionState, list[str]]:
+    """Validate and normalize a position payload. Returns (state, warnings)."""
     warnings: list[str] = []
-    if not path.exists():
-        return PositionState(), warnings
-    try:
-        raw_text = path.read_text(encoding="utf-8")
-        data = json.loads(raw_text)
-    except (OSError, json.JSONDecodeError) as exc:
-        warnings.append(f"Ignoring unreadable position_state.json ({exc}). Starting flat.")
-        return PositionState(), warnings
-    if not isinstance(data, dict):
-        warnings.append("position_state.json must be a JSON object. Starting flat.")
-        return PositionState(), warnings
 
     sym_raw = data.get("symbol", data.get("active_symbol"))
     sym, sym_bad = _normalize_loaded_symbol(sym_raw)
@@ -105,15 +104,25 @@ def load_position(path: Path) -> tuple[PositionState, list[str]]:
     )
 
 
+def load_position(path: Path) -> tuple[PositionState, list[str]]:
+    """Load position_state.json. Returns (flat state, warnings) on any problem."""
+    warnings: list[str] = []
+    if not path.exists():
+        return PositionState(), warnings
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+        data = json.loads(raw_text)
+    except (OSError, json.JSONDecodeError) as exc:
+        warnings.append(f"Ignoring unreadable position_state.json ({exc}). Starting flat.")
+        return PositionState(), warnings
+    if not isinstance(data, dict):
+        warnings.append("position_state.json must be a JSON object. Starting flat.")
+        return PositionState(), warnings
+    return position_state_from_dict(data)
+
+
 def save_position(path: Path, position: PositionState) -> None:
-    payload = {
-        "symbol": position.active_symbol,
-        "entry_price": position.entry_price,
-        "entry_time": position.entry_timestamp,
-        "last_signal": position.last_signal,
-        "updated_at": position.updated_at,
-    }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(position_state_to_dict(position), indent=2), encoding="utf-8")
 
 
 def load_blocked_dates(path: Path) -> set[str]:

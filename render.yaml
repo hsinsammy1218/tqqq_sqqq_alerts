@@ -1,0 +1,54 @@
+# Render Blueprint: weekday alert crons (US Eastern / EDT = UTC-4).
+# After apply: fill secret values for the tqqq-sqqq-alerts env group in the Dashboard.
+# Requires POSITION_STATE_BACKEND=supabase so position survives ephemeral disks.
+#
+# Winter (EST = UTC-5): shift each schedule one hour later, or rely on
+# --market-hours-only and accept occasional skip near the edges.
+#
+# Docs: README.md → "Deploy on Render"
+
+services:
+  - type: cron
+    name: tqqq-sqqq-alerts-1000
+    runtime: python
+    schedule: "0 14 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --no-technical --market-hours-only
+    envVars:
+      - fromGroup: tqqq-sqqq-alerts
+
+  - type: cron
+    name: tqqq-sqqq-alerts-1230
+    runtime: python
+    schedule: "30 16 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --no-technical --market-hours-only
+    envVars:
+      - fromGroup: tqqq-sqqq-alerts
+
+  - type: cron
+    name: tqqq-sqqq-alerts-1530
+    runtime: python
+    schedule: "30 19 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --no-technical --market-hours-only
+    envVars:
+      - fromGroup: tqqq-sqqq-alerts
+
+envVarGroups:
+  - name: tqqq-sqqq-alerts
+    envVars:
+      - key: POSITION_STATE_BACKEND
+        value: supabase
+      - key: POSITION_STATE_BOT_ID
+        value: default
+      - key: DRY_RUN
+        value: "false"
+      - key: KLICKANALYTICS_CLI_API_KEY
+        sync: false
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false

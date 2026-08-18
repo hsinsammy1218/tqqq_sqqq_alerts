@@ -8,6 +8,7 @@ Next.js App Router + Supabase research UI: **technical leaderboard** (batch snap
 
    - [`supabase/migrations/20260201120000_market_news.sql`](./supabase/migrations/20260201120000_market_news.sql)
    - [`supabase/migrations/20260202120000_technical_snapshots.sql`](./supabase/migrations/20260202120000_technical_snapshots.sql)
+   - [`supabase/migrations/20260714180000_bot_position_state.sql`](./supabase/migrations/20260714180000_bot_position_state.sql) (alert bot cloud position memory)
 
 2. Copy env:
 

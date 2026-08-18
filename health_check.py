@@ -8,20 +8,17 @@ from pathlib import Path
 from typing import Any
 
 from api_quota_notify import maybe_notify_klickanalytics_quota_reached
+from config import ConfigError
 from data import KlickAnalyticsQuotaError, cli_calls_attempted, format_cli_usage_line, load_candles
 from klickanalytics_usage import track_and_maybe_warn_cli_usage
+from position_store import PositionStoreError, position_store_from_settings
 from runtime_logging import format_utc_z, log_event
-from strategy import PositionState, load_position
+from strategy import PositionState
+from strategy_position import position_state_to_dict
 
 
 def _position_to_dict(state: PositionState) -> dict[str, Any]:
-    return {
-        "symbol": state.active_symbol,
-        "entry_price": state.entry_price,
-        "entry_time": state.entry_timestamp,
-        "last_signal": state.last_signal,
-        "updated_at": state.updated_at,
-    }
+    return position_state_to_dict(state)
 
 
 def _check_cli_available(cli_command: str) -> tuple[bool, str]:
@@ -150,30 +147,39 @@ def run_health_check(settings: Any, dry_run: bool, logger: logging.Logger) -> in
         log_event(logger, logging.ERROR, "Data fetch health check", ok=False, error=str(exc), klickanalytics_cli_calls=cli_calls_attempted())
         failures.append(msg)
 
-    state, warnings = load_position(settings.position_state_json)
-    if warnings:
-        msg = f"Recoverable state issue(s): {'; '.join(warnings)}"
-        print(f"[health] WARN - {msg}")
-        log_event(
-            logger,
-            logging.WARNING,
-            "Position state recovered with warnings",
-            ok=True,
-            warnings=warnings,
-            position_state_path=str(settings.position_state_json),
-            recovered_state=_position_to_dict(state),
-        )
+    try:
+        position_store = position_store_from_settings(settings)
+        state, warnings = position_store.load()
+        position_label = position_store.describe()
+    except (ConfigError, PositionStoreError) as exc:
+        msg = f"Position store unavailable: {exc}"
+        print(f"[health] FAIL - {msg}")
+        log_event(logger, logging.ERROR, "Position state health check", ok=False, error=str(exc))
+        failures.append(msg)
     else:
-        msg = f"Position state readable at {settings.position_state_json}."
-        print(f"[health] PASS - {msg}")
-        log_event(
-            logger,
-            logging.INFO,
-            "Position state health check",
-            ok=True,
-            position_state_path=str(settings.position_state_json),
-            recovered_state=_position_to_dict(state),
-        )
+        if warnings:
+            msg = f"Recoverable state issue(s): {'; '.join(warnings)}"
+            print(f"[health] WARN - {msg}")
+            log_event(
+                logger,
+                logging.WARNING,
+                "Position state recovered with warnings",
+                ok=True,
+                warnings=warnings,
+                position_state_path=position_label,
+                recovered_state=_position_to_dict(state),
+            )
+        else:
+            msg = f"Position state readable at {position_label}."
+            print(f"[health] PASS - {msg}")
+            log_event(
+                logger,
+                logging.INFO,
+                "Position state health check",
+                ok=True,
+                position_state_path=position_label,
+                recovered_state=_position_to_dict(state),
+            )
 
     if settings.events_json.exists():
         try:
