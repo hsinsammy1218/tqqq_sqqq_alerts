@@ -42,7 +42,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - Optional `--backtest` mode for historical rule replay (QQQ directional proxy; see below)
 - Discord **rich embeds** match the console breakdown: bot memory (flat vs symbol), bar timestamps + blackout, full QQQ daily/4h indicator lines, every bull/bear checklist item, rule thresholds, hold exit flags when applicable, then notes
 - KlickAnalytics CLI market data backend
-- Optional **Windows Task Scheduler** wrappers (`run_bot.ps1`, `setup_scheduler.ps1`, `remove_scheduler.ps1`) for timed runs (alert-only; see below)
+- Cloud scheduling via Render (worker/cron) — local Windows Task Scheduler is not used
 
 ## File layout
 
@@ -59,8 +59,6 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - `backtest_sweep.py`
 - `walk_forward.py`
 - `main.py`
-- `run_bot.ps1` (scheduled runner wrapper)
-- `setup_scheduler.ps1` / `remove_scheduler.ps1` (Windows Task Scheduler install/remove)
 - `.env.example`
 - `requirements.txt`
 - `events.example.json`
@@ -148,82 +146,6 @@ Health check verifies:
 - `events.json` readability if present
 - Discord webhook configuration when not in dry-run mode
 
-## Windows scheduled alerts
-
-Alert-only scheduled runs on **Windows**: three **weekday** tasks call `main.py --no-technical --market-hours-only` via the project venv Python. Tasks fire at fixed **local** clock times; the bot also skips when the US equity market is closed (weekends, NYSE holidays, before 9:30 AM or after the regular/early close in **US/Eastern**). No broker APIs or order execution—same behavior as a manual CLI run.
-The installer prefers Task Scheduler **S4U** logon mode so tasks can run even when the user is not actively logged in (falls back to Interactive mode only if S4U is unavailable by local policy).
-
-**Install** (from project root; elevated PowerShell may be required if registration is denied):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\setup_scheduler.ps1
-```
-
-Creates tasks:
-
-| Task name | Local time (Mon–Fri only) |
-|-----------|---------------------------|
-| `TQQQ_SQQQ_Alerts_1000` | 10:00 AM |
-| `TQQQ_SQQQ_Alerts_1230` | 12:30 PM |
-| `TQQQ_SQQQ_Alerts_1530` | 3:30 PM |
-
-All three times should fall inside regular US session hours (9:30 AM–4:00 PM Eastern) when your PC uses US Eastern time. If your machine uses another timezone, pick local times that map into that window, or the `--market-hours-only` guard will no-op outside session.
-
-`setup_scheduler.ps1` registers each task with **full paths** (Task Scheduler often cannot resolve `powershell.exe` on `PATH`):
-
-- **Program:** `%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe`
-- **Arguments:** `-NoProfile -ExecutionPolicy Bypass -File "<repo>\run_bot.ps1"` (repo folder = folder containing the scripts)
-
-Manual test equivalent:
-
-`powershell.exe -ExecutionPolicy Bypass -File "C:\Users\hsins\projects\tqqq-sqqq-alerts\run_bot.ps1"`
-
-(Adjust paths if your clone is not under `C:\Users\hsins\projects\tqqq-sqqq-alerts`.)
-
-**Remove**:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\remove_scheduler.ps1
-```
-
-**Test manually**:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_bot.ps1
-```
-
-**Logs**: wrapper timestamps and Python stdout/stderr append to `logs/scheduler.log` (the `logs/` directory is gitignored).
-
-**Troubleshooting `Start-ScheduledTask` / “The system cannot find the file specified” (0x80070002):**
-
-1. **Confirm the task exists** (if this returns nothing, the task was never registered):
-
-   ```powershell
-   Get-ScheduledTask -TaskName TQQQ_SQQQ_Alerts_1000 -ErrorAction SilentlyContinue
-   ```
-
-2. **Install or refresh tasks** from the project root (use **Run as administrator** if registration is denied):
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\setup_scheduler.ps1
-   ```
-
-   Current scripts register **`%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe`** with an absolute path to `run_bot.ps1`, because Task Scheduler often cannot resolve `powershell.exe` on `PATH`.
-
-3. **Try starting again**:
-
-   ```powershell
-   Start-ScheduledTask -TaskName TQQQ_SQQQ_Alerts_1000
-   ```
-
-4. **Check logon mode** (if tasks only run while you are signed in, they may still be Interactive):
-
-   ```powershell
-   schtasks /Query /TN TQQQ_SQQQ_Alerts_1000 /V /FO LIST
-   ```
-
-   Prefer `Logon Mode: S4U` for unattended runs. Re-run `setup_scheduler.ps1` to refresh registration.
-
 ## Deploy on Render
 
 Render Cron containers are **ephemeral** — local `position_state.json` does not survive between runs. Use **Supabase** for position memory.
@@ -254,7 +176,7 @@ Render Cron containers are **ephemeral** — local `position_state.json` does no
    | `tqqq-sqqq-alerts-1230` | 12:30 | `30 16 * * 1-5` |
    | `tqqq-sqqq-alerts-1530` | 15:30 | `30 19 * * 1-5` |
 
-   Start command matches the Windows wrapper: `python main.py --no-technical --market-hours-only`.
+   Start command: `python main.py --no-technical --market-hours-only`.
 
 4. **Seed position** (once) from a machine with the same Supabase env (`POSITION_STATE_BACKEND=supabase` plus URL and service role). These flags **save memory and exit** — they do not fetch data or send Discord:
 
@@ -265,8 +187,6 @@ Render Cron containers are **ephemeral** — local `position_state.json` does no
    ```
 
    Do not add `--set-position` / `--flat` to the Render cron start command (that would skip the alert run). After seeding, weekday crons pick up the row on their own.
-
-5. **Disable Windows Task Scheduler** if you no longer want local duplicate alerts (`remove_scheduler.ps1`).
 
 **DST note:** Render cron expressions are UTC. The schedules above assume Eastern Daylight (UTC−4). In Eastern Standard (UTC−5), shift each hour +1, or leave as-is and rely on `--market-hours-only` (jobs may skip or run near the edge of the session).
 

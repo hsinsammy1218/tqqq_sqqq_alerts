@@ -16,7 +16,7 @@ The repository contains two connected systems:
 | Signal engine | Python, pandas, requests, KlickAnalytics CLI |
 | Web app | Next.js App Router, React, TypeScript |
 | Data store | Supabase Postgres |
-| Scheduling | Windows Task Scheduler scripts (Python); Vercel cron (dashboard ingest) |
+| Scheduling | Render worker/cron (Python); Vercel cron (dashboard ingest) |
 | Messaging | Discord webhook |
 
 ## Repository Responsibilities
