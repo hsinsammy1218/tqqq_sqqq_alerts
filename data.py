@@ -19,7 +19,9 @@ class KlickAnalyticsQuotaError(DataError):
     """KlickAnalytics CLI reported monthly API usage limit reached."""
 
 
-SUPPORTED_PROVIDERS = ("klickanalytics", "polygon", "yahoo")
+SUPPORTED_PROVIDERS = ("klickanalytics", "polygon", "alpaca", "yahoo")
+# Delayed-only backends. Rejected when MARKET_DATA_REALTIME=true.
+DELAYED_PROVIDERS = ("yahoo",)
 
 _MONTHLY_LIMIT_MARKERS = (
     "monthly limit",
@@ -337,7 +339,10 @@ def _fetch_polygon_aggs(
     return _normalize_ohlcv(pd.DataFrame(rows), ticker=ticker)
 
 
-def _load_candles_polygon(ticker: str, api_key: str) -> CandleData:
+def _load_candles_polygon(ticker: str, api_key: str, *, require_realtime: bool) -> CandleData:
+    if require_realtime:
+        # Fail fast if the key cannot access live snapshots (Advanced-tier entitlement).
+        _fetch_polygon_snapshot(ticker, api_key=api_key)
     end = datetime.now(timezone.utc).date()
     daily_start = end - timedelta(days=800)
     daily = _fetch_polygon_aggs(
@@ -361,6 +366,212 @@ def _load_candles_polygon(ticker: str, api_key: str) -> CandleData:
         end=end,
     )
     return _finalize_candles(daily, hourly)
+
+
+def _alpaca_data_base_url() -> str:
+    return (os.getenv("ALPACA_DATA_BASE_URL") or "https://data.alpaca.markets").rstrip("/")
+
+
+def _alpaca_headers(api_key: str, api_secret: str) -> dict[str, str]:
+    return {
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": api_secret,
+        "Accept": "application/json",
+    }
+
+
+def _fetch_alpaca_bars(
+    ticker: str,
+    *,
+    api_key: str,
+    api_secret: str,
+    timeframe: str,
+    start: datetime,
+    end: datetime,
+    feed: str,
+) -> pd.DataFrame:
+    """Fetch stock bars from Alpaca Market Data API v2.
+
+    ``feed=sip`` is consolidated real-time (paid). ``feed=iex`` is free/delayed.
+    """
+    _record_cli_call()
+    url = f"{_alpaca_data_base_url()}/v2/stocks/{ticker.upper()}/bars"
+    headers = _alpaca_headers(api_key, api_secret)
+    params: dict[str, str | int] = {
+        "timeframe": timeframe,
+        "start": start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end": end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "adjustment": "raw",
+        "feed": feed,
+        "limit": 10000,
+        "sort": "asc",
+    }
+    rows: list[dict[str, Any]] = []
+    page_token: str | None = None
+    while True:
+        page_params = dict(params)
+        if page_token:
+            page_params["page_token"] = page_token
+        try:
+            response = requests.get(url, headers=headers, params=page_params, timeout=60)
+        except requests.RequestException as exc:
+            raise DataError(f"Alpaca request failed for {ticker}: {exc}") from exc
+
+        if response.status_code == 401:
+            raise DataError("Alpaca authentication failed. Check ALPACA_API_KEY / ALPACA_API_SECRET.")
+        if response.status_code == 403:
+            raise DataError(
+                f"Alpaca denied bars for feed={feed!r}. "
+                "Real-time SIP requires a paid market-data subscription; "
+                "free accounts only get delayed IEX (feed=iex)."
+            )
+        if response.status_code == 429:
+            raise DataError("Alpaca rate limit exceeded. Wait and retry.")
+        if response.status_code >= 400:
+            detail = (response.text or "").strip()[:500] or response.reason
+            raise DataError(f"Alpaca HTTP {response.status_code} for {ticker}: {detail}")
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise DataError("Alpaca returned non-JSON response.") from exc
+
+        bars = payload.get("bars")
+        if isinstance(bars, list):
+            for item in bars:
+                if not isinstance(item, dict):
+                    continue
+                ts = item.get("t")
+                if not ts:
+                    continue
+                rows.append(
+                    {
+                        "timestamp": pd.to_datetime(ts, utc=True),
+                        "open": item.get("o"),
+                        "high": item.get("h"),
+                        "low": item.get("l"),
+                        "close": item.get("c"),
+                        "volume": item.get("v", 0),
+                    }
+                )
+        page_token = payload.get("next_page_token")
+        if not page_token:
+            break
+        _record_cli_call()
+
+    if not rows:
+        raise DataError(f"Alpaca returned no {timeframe} bars for {ticker} (feed={feed}).")
+    return _normalize_ohlcv(pd.DataFrame(rows), ticker=ticker)
+
+
+def _fetch_alpaca_latest_trade(
+    ticker: str,
+    *,
+    api_key: str,
+    api_secret: str,
+    feed: str,
+) -> dict[str, Any] | None:
+    """Probe real-time access via latest trade (fails closed on SIP without entitlement)."""
+    _record_cli_call()
+    url = f"{_alpaca_data_base_url()}/v2/stocks/{ticker.upper()}/trades/latest"
+    try:
+        response = requests.get(
+            url,
+            headers=_alpaca_headers(api_key, api_secret),
+            params={"feed": feed},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise DataError(f"Alpaca latest-trade request failed for {ticker}: {exc}") from exc
+    if response.status_code == 403:
+        raise DataError(
+            f"Alpaca real-time feed={feed!r} is not entitled on this key. "
+            "Subscribe to SIP market data (paid) or set MARKET_DATA_REALTIME=false "
+            "with ALPACA_DATA_FEED=iex for delayed data."
+        )
+    if response.status_code >= 400:
+        detail = (response.text or "").strip()[:400] or response.reason
+        raise DataError(f"Alpaca latest-trade HTTP {response.status_code}: {detail}")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise DataError("Alpaca latest-trade returned non-JSON.") from exc
+    trade = payload.get("trade")
+    return trade if isinstance(trade, dict) else None
+
+
+def _load_candles_alpaca(
+    ticker: str,
+    *,
+    api_key: str,
+    api_secret: str,
+    feed: str,
+    require_realtime: bool,
+) -> CandleData:
+    normalized_feed = (feed or ("sip" if require_realtime else "iex")).strip().lower() or "iex"
+    if require_realtime and normalized_feed != "sip":
+        raise DataError(
+            f"MARKET_DATA_REALTIME=true requires ALPACA_DATA_FEED=sip (got {normalized_feed!r}). "
+            "IEX is delayed-only on free Alpaca plans."
+        )
+    # Confirm entitlement before pulling history (clearer error than empty bars).
+    if require_realtime or normalized_feed == "sip":
+        _fetch_alpaca_latest_trade(
+            ticker, api_key=api_key, api_secret=api_secret, feed=normalized_feed
+        )
+
+    end = datetime.now(timezone.utc)
+    daily_start = end - timedelta(days=800)
+    daily = _fetch_alpaca_bars(
+        ticker,
+        api_key=api_key,
+        api_secret=api_secret,
+        timeframe="1Day",
+        start=daily_start,
+        end=end,
+        feed=normalized_feed,
+    )
+    span_days = max(7, (daily.index[-1] - daily.index[0]).days + 14)
+    hourly_days = min(span_days, 730)
+    hourly_start = end - timedelta(days=hourly_days)
+    hourly = _fetch_alpaca_bars(
+        ticker,
+        api_key=api_key,
+        api_secret=api_secret,
+        timeframe="1Hour",
+        start=hourly_start,
+        end=end,
+        feed=normalized_feed,
+    )
+    return _finalize_candles(daily, hourly)
+
+
+def _fetch_polygon_snapshot(ticker: str, *, api_key: str) -> dict[str, Any]:
+    """Stock snapshot — requires a real-time (or delayed snapshot) Polygon entitlement."""
+    _record_cli_call()
+    url = f"{_polygon_base_url()}/v2/snapshot/locale/us/markets/stocks/tickers/{ticker.upper()}"
+    try:
+        response = requests.get(url, params={"apiKey": api_key}, timeout=30)
+    except requests.RequestException as exc:
+        raise DataError(f"Polygon snapshot request failed for {ticker}: {exc}") from exc
+    if response.status_code == 401:
+        raise DataError("Polygon authentication failed on snapshot. Check POLYGON_API_KEY.")
+    if response.status_code == 403:
+        raise DataError(
+            "Polygon snapshot denied. Real-time US stock data needs Stocks Advanced "
+            "(~$199/mo). Starter ($29) is 15-minute delayed and is not real-time."
+        )
+    if response.status_code >= 400:
+        detail = (response.text or "").strip()[:500] or response.reason
+        raise DataError(f"Polygon snapshot HTTP {response.status_code}: {detail}")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise DataError("Polygon snapshot returned non-JSON.") from exc
+    ticker_payload = payload.get("ticker")
+    if not isinstance(ticker_payload, dict):
+        raise DataError(f"Polygon snapshot missing ticker payload for {ticker}.")
+    return ticker_payload
 
 
 def _load_candles_yahoo(ticker: str) -> CandleData:
@@ -420,13 +631,18 @@ def load_candles(
     *,
     provider: str = "klickanalytics",
     polygon_api_key: str = "",
+    alpaca_api_key: str = "",
+    alpaca_api_secret: str = "",
+    alpaca_data_feed: str = "sip",
+    require_realtime: bool = True,
 ) -> CandleData:
     """Fetch daily + synthetic 4h candles for ``ticker``.
 
     Providers (from https://www.timestored.com/data/realtime-stock-data-apis):
-    - ``klickanalytics`` — existing CLI (default; tight monthly quota)
-    - ``polygon`` — Polygon.io / Massive aggregates REST (recommended paid replacement)
-    - ``yahoo`` — free Yahoo Finance via yfinance (good unblock while Klick quota is exhausted)
+    - ``alpaca`` — Alpaca Market Data (``feed=sip`` = real-time paid; ``iex`` = delayed free)
+    - ``polygon`` — Polygon.io / Massive (real-time needs Stocks Advanced ~$199; Starter is delayed)
+    - ``klickanalytics`` — existing CLI (tight monthly quota)
+    - ``yahoo`` — delayed/free via yfinance (blocked when MARKET_DATA_REALTIME=true)
     """
     global _active_provider
     normalized = (provider or "klickanalytics").strip().lower()
@@ -434,6 +650,12 @@ def load_candles(
         raise DataError(
             f"Unsupported MARKET_DATA_PROVIDER={provider!r}. "
             f"Choose one of: {', '.join(SUPPORTED_PROVIDERS)}."
+        )
+    if require_realtime and normalized in DELAYED_PROVIDERS:
+        raise DataError(
+            f"MARKET_DATA_PROVIDER={normalized!r} is delayed-only. "
+            "For real-time data set MARKET_DATA_PROVIDER=alpaca (SIP) or polygon "
+            "(Stocks Advanced), or set MARKET_DATA_REALTIME=false to allow delayed feeds."
         )
     _active_provider = normalized
     reset_cli_call_count()
@@ -447,7 +669,22 @@ def load_candles(
         key = (polygon_api_key or api_key or "").strip()
         if not key:
             raise DataError("POLYGON_API_KEY (or MASSIVE_API_KEY) is required for MARKET_DATA_PROVIDER=polygon.")
-        return _load_candles_polygon(ticker, api_key=key)
+        return _load_candles_polygon(ticker, api_key=key, require_realtime=require_realtime)
+
+    if normalized == "alpaca":
+        key = (alpaca_api_key or "").strip()
+        secret = (alpaca_api_secret or "").strip()
+        if not key or not secret:
+            raise DataError(
+                "ALPACA_API_KEY and ALPACA_API_SECRET are required for MARKET_DATA_PROVIDER=alpaca."
+            )
+        return _load_candles_alpaca(
+            ticker,
+            api_key=key,
+            api_secret=secret,
+            feed=alpaca_data_feed,
+            require_realtime=require_realtime,
+        )
 
     return _load_candles_yahoo(ticker)
 
@@ -459,4 +696,8 @@ def load_candles_from_settings(settings: Any) -> CandleData:
         cli_command=getattr(settings, "klickanalytics_cli_command", "ka") or "ka",
         provider=getattr(settings, "market_data_provider", "klickanalytics") or "klickanalytics",
         polygon_api_key=getattr(settings, "polygon_api_key", "") or "",
+        alpaca_api_key=getattr(settings, "alpaca_api_key", "") or "",
+        alpaca_api_secret=getattr(settings, "alpaca_api_secret", "") or "",
+        alpaca_data_feed=getattr(settings, "alpaca_data_feed", "sip") or "sip",
+        require_realtime=bool(getattr(settings, "market_data_realtime", True)),
     )

@@ -41,7 +41,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - Dry-run mode for testing without Discord sends
 - Optional `--backtest` mode for historical rule replay (QQQ directional proxy; see below)
 - Discord **rich embeds** match the console breakdown: bot memory (flat vs symbol), bar timestamps + blackout, full QQQ daily/4h indicator lines, every bull/bear checklist item, rule thresholds, hold exit flags when applicable, then notes
-- KlickAnalytics CLI market data backend (default), with pluggable **Polygon.io** and **Yahoo Finance** providers via `MARKET_DATA_PROVIDER`
+- Pluggable market-data backends: **Alpaca SIP (real-time)**, Polygon Advanced, KlickAnalytics CLI, Yahoo (delayed)
 - Cloud scheduling via Render (worker/cron) — local Windows Task Scheduler is not used
 
 ## File layout
@@ -75,20 +75,22 @@ pip install -r requirements.txt
 
 Copy `.env.example` to `.env` and fill values:
 
-- `MARKET_DATA_PROVIDER` — `klickanalytics` (default), `polygon`, or `yahoo`
+- `MARKET_DATA_PROVIDER` — `alpaca` (default, real-time), `polygon`, `klickanalytics`, or `yahoo`
   ([provider comparison](https://www.timestored.com/data/realtime-stock-data-apis))
+- `MARKET_DATA_REALTIME=true` — rejects delayed backends (`yahoo`) and forces Alpaca `sip`
+- `ALPACA_API_KEY` / `ALPACA_API_SECRET` / `ALPACA_DATA_FEED=sip` (required for `alpaca`)
+- `POLYGON_API_KEY` (required for `polygon`; real-time needs Stocks Advanced ~$199)
 - `KLICKANALYTICS_CLI_API_KEY` (required when provider is `klickanalytics`)
-- `KLICKANALYTICS_CLI_COMMAND=ka` (override only if your executable name/path differs)
-- `POLYGON_API_KEY` (required when provider is `polygon`; `MASSIVE_API_KEY` also accepted)
 - `DISCORD_WEBHOOK_URL` only required when `DRY_RUN=false`
 
-**Provider guidance (QQQ daily + hourly → 4h context):**
+**Real-time guidance (QQQ daily + hourly → 4h context):**
 
-| Provider | Cost fit | Notes |
-|----------|----------|-------|
-| `yahoo` | Free | Fast unblock when Klick monthly quota is exhausted; ~60d of 1h history (fine for live alerts, thin for deep backtests) |
-| `polygon` | ~$29/mo Starter | Best paid match from the comparison page: unlimited REST aggregates, hourly bars, websockets available. Free Basic is EOD-only (no hourly). |
-| `klickanalytics` | Existing | Keep if quota allows; ~2 CLI calls per poll burns a 500/mo plan quickly |
+| Provider | Real-time? | Notes |
+|----------|------------|-------|
+| `alpaca` + `sip` | Yes (paid ~$99) | Default. Free Alpaca `iex` feed is delayed — blocked when `MARKET_DATA_REALTIME=true`. |
+| `polygon` Advanced | Yes (~$199) | Snapshot probe fails closed if the key lacks live US stock entitlement. Starter ($29) is 15-min delayed. |
+| `klickanalytics` | Depends on plan | Existing CLI; tight monthly quota under a 60s poll loop. |
+| `yahoo` | No (delayed) | Only with `MARKET_DATA_REALTIME=false`. |
 
 Discord webhook quick setup:
 

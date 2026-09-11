@@ -44,8 +44,19 @@ envVarGroups:
         value: default
       - key: DRY_RUN
         value: "false"
+      # Real-time market data (not Yahoo/delayed).
+      # alpaca + SIP is the default real-time path from the comparison page (~$99).
+      # polygon needs Stocks Advanced (~$199) for true real-time; Starter is delayed.
       - key: MARKET_DATA_PROVIDER
-        value: yahoo
+        value: alpaca
+      - key: MARKET_DATA_REALTIME
+        value: "true"
+      - key: ALPACA_DATA_FEED
+        value: sip
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_API_SECRET
+        sync: false
       - key: KLICKANALYTICS_CLI_API_KEY
         sync: false
       - key: POLYGON_API_KEY

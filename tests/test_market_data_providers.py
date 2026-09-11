@@ -34,13 +34,40 @@ def test_load_settings_requires_polygon_key(monkeypatch: pytest.MonkeyPatch):
         load_settings()
 
 
-def test_load_settings_yahoo_does_not_require_klick_key(monkeypatch: pytest.MonkeyPatch):
+def test_load_settings_requires_alpaca_keys(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MARKET_DATA_PROVIDER", "alpaca")
+    monkeypatch.setenv("MARKET_DATA_REALTIME", "true")
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_API_SECRET", raising=False)
+    with pytest.raises(ConfigError, match="ALPACA_API_KEY"):
+        load_settings()
+
+
+def test_load_settings_rejects_yahoo_when_realtime(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MARKET_DATA_PROVIDER", "yahoo")
+    monkeypatch.setenv("MARKET_DATA_REALTIME", "true")
+    with pytest.raises(ConfigError, match="delayed-only"):
+        load_settings()
+
+
+def test_load_settings_yahoo_allowed_when_realtime_false(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MARKET_DATA_PROVIDER", "yahoo")
+    monkeypatch.setenv("MARKET_DATA_REALTIME", "false")
     monkeypatch.delenv("KLICKANALYTICS_CLI_API_KEY", raising=False)
     monkeypatch.delenv("POLYGON_API_KEY", raising=False)
     settings = load_settings()
     assert settings.market_data_provider == "yahoo"
-    assert settings.klickanalytics_api_key == ""
+    assert settings.market_data_realtime is False
+
+
+def test_load_settings_rejects_alpaca_iex_when_realtime(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MARKET_DATA_PROVIDER", "alpaca")
+    monkeypatch.setenv("MARKET_DATA_REALTIME", "true")
+    monkeypatch.setenv("ALPACA_API_KEY", "key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "secret")
+    monkeypatch.setenv("ALPACA_DATA_FEED", "iex")
+    with pytest.raises(ConfigError, match="ALPACA_DATA_FEED=sip"):
+        load_settings()
 
 
 def test_load_settings_rejects_unknown_provider(monkeypatch: pytest.MonkeyPatch):
@@ -62,41 +89,92 @@ def test_load_candles_polygon_uses_aggs(monkeypatch: pytest.MonkeyPatch):
         return daily if timespan == "day" else hourly
 
     monkeypatch.setattr(data, "_fetch_polygon_aggs", fake_aggs)
-    candles = data.load_candles("QQQ", provider="polygon", polygon_api_key="poly-key")
+    monkeypatch.setattr(data, "_fetch_polygon_snapshot", lambda *a, **k: {"status": "OK"})
+    candles = data.load_candles(
+        "QQQ",
+        provider="polygon",
+        polygon_api_key="poly-key",
+        require_realtime=True,
+    )
     assert calls == ["day", "hour"]
     assert len(candles.daily) == 100
     assert len(candles.four_hour) >= 5
-    assert data.cli_calls_attempted() == 0  # fake_aggs does not record; real path records inside
+
+
+def test_load_candles_rejects_yahoo_when_realtime_required():
+    with pytest.raises(data.DataError, match="delayed-only"):
+        data.load_candles("QQQ", provider="yahoo", require_realtime=True)
+
+
+def test_load_candles_alpaca_uses_sip(monkeypatch: pytest.MonkeyPatch):
+    daily = _ohlcv_frame(100, freq="1D")
+    hourly = _ohlcv_frame(200, freq="1h")
+    seen: dict[str, object] = {}
+
+    def fake_latest(ticker, *, api_key, api_secret, feed):
+        seen["latest_feed"] = feed
+        return {"p": 100.0}
+
+    def fake_bars(ticker, *, api_key, api_secret, timeframe, start, end, feed):
+        seen.setdefault("feeds", []).append(feed)
+        seen.setdefault("timeframes", []).append(timeframe)
+        return daily if timeframe == "1Day" else hourly
+
+    monkeypatch.setattr(data, "_fetch_alpaca_latest_trade", fake_latest)
+    monkeypatch.setattr(data, "_fetch_alpaca_bars", fake_bars)
+    candles = data.load_candles(
+        "QQQ",
+        provider="alpaca",
+        alpaca_api_key="k",
+        alpaca_api_secret="s",
+        alpaca_data_feed="sip",
+        require_realtime=True,
+    )
+    assert seen["latest_feed"] == "sip"
+    assert seen["feeds"] == ["sip", "sip"]
+    assert seen["timeframes"] == ["1Day", "1Hour"]
+    assert len(candles.daily) == 100
+    assert len(candles.four_hour) >= 5
 
 
 def test_load_candles_from_settings_routes_provider(monkeypatch: pytest.MonkeyPatch):
     sentinel = data.CandleData(daily=_ohlcv_frame(80), four_hour=_ohlcv_frame(20, freq="4h"))
     seen: dict[str, object] = {}
 
-    def fake_load(ticker, api_key="", cli_command="ka", *, provider="klickanalytics", polygon_api_key=""):
+    def fake_load(ticker, api_key="", cli_command="ka", **kwargs):
         seen["ticker"] = ticker
-        seen["provider"] = provider
-        seen["polygon_api_key"] = polygon_api_key
+        seen["provider"] = kwargs.get("provider")
+        seen["alpaca_api_key"] = kwargs.get("alpaca_api_key")
+        seen["require_realtime"] = kwargs.get("require_realtime")
         return sentinel
 
     monkeypatch.setattr(data, "load_candles", fake_load)
     settings = SimpleNamespace(
         qqq_ticker="QQQ",
-        market_data_provider="polygon",
+        market_data_provider="alpaca",
+        market_data_realtime=True,
         klickanalytics_api_key="",
         klickanalytics_cli_command="ka",
-        polygon_api_key="pk",
+        polygon_api_key="",
+        alpaca_api_key="ak",
+        alpaca_api_secret="as",
+        alpaca_data_feed="sip",
     )
     out = data.load_candles_from_settings(settings)
     assert out is sentinel
-    assert seen == {"ticker": "QQQ", "provider": "polygon", "polygon_api_key": "pk"}
+    assert seen == {
+        "ticker": "QQQ",
+        "provider": "alpaca",
+        "alpaca_api_key": "ak",
+        "require_realtime": True,
+    }
 
 
 def test_format_cli_usage_line_provider_label():
     data.reset_cli_call_count()
     data._record_cli_call()
-    line = data.format_cli_usage_line(provider="yahoo")
-    assert line == "[yahoo] 1 API call attempted this run"
+    line = data.format_cli_usage_line(provider="alpaca")
+    assert line == "[alpaca] 1 API call attempted this run"
 
 
 def test_polygon_http_maps_results(monkeypatch: pytest.MonkeyPatch):

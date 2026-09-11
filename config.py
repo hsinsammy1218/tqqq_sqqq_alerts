@@ -13,16 +13,22 @@ class ConfigError(Exception):
     pass
 
 
-SUPPORTED_MARKET_DATA_PROVIDERS = ("klickanalytics", "polygon", "yahoo")
+SUPPORTED_MARKET_DATA_PROVIDERS = ("klickanalytics", "polygon", "alpaca", "yahoo")
+REALTIME_MARKET_DATA_PROVIDERS = ("alpaca", "polygon", "klickanalytics")
+DELAYED_MARKET_DATA_PROVIDERS = ("yahoo",)
 
 
 @dataclass(frozen=True)
 class Settings:
     qqq_ticker: str
     market_data_provider: str
+    market_data_realtime: bool
     klickanalytics_api_key: str
     klickanalytics_cli_command: str
     polygon_api_key: str
+    alpaca_api_key: str
+    alpaca_api_secret: str
+    alpaca_data_feed: str
     discord_webhook_url: str
     dry_run: bool
     bull_entry_threshold: int
@@ -108,14 +114,18 @@ def load_settings() -> Settings:
 
     qqq_ticker = os.getenv("QQQ_TICKER", "QQQ").strip().upper()
     market_data_provider = (
-        os.getenv("MARKET_DATA_PROVIDER", "klickanalytics").strip().lower() or "klickanalytics"
+        os.getenv("MARKET_DATA_PROVIDER", "alpaca").strip().lower() or "alpaca"
     )
+    market_data_realtime = _to_bool(os.getenv("MARKET_DATA_REALTIME", "true"), default=True)
     klickanalytics_api_key = os.getenv("KLICKANALYTICS_CLI_API_KEY", "").strip()
     klickanalytics_cli_command = os.getenv("KLICKANALYTICS_CLI_COMMAND", "ka").strip()
     polygon_api_key = (
         os.getenv("POLYGON_API_KEY", "").strip()
         or os.getenv("MASSIVE_API_KEY", "").strip()
     )
+    alpaca_api_key = os.getenv("ALPACA_API_KEY", "").strip()
+    alpaca_api_secret = os.getenv("ALPACA_API_SECRET", "").strip()
+    alpaca_data_feed = (os.getenv("ALPACA_DATA_FEED", "sip").strip().lower() or "sip")
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     dry_run = _to_bool(os.getenv("DRY_RUN", "true"), default=True)
 
@@ -123,11 +133,26 @@ def load_settings() -> Settings:
         raise ConfigError(
             f"MARKET_DATA_PROVIDER must be one of: {', '.join(SUPPORTED_MARKET_DATA_PROVIDERS)}."
         )
+    if market_data_realtime and market_data_provider in DELAYED_MARKET_DATA_PROVIDERS:
+        raise ConfigError(
+            f"MARKET_DATA_PROVIDER={market_data_provider} is delayed-only. "
+            "For real-time data use alpaca (SIP) or polygon (Stocks Advanced), "
+            "or set MARKET_DATA_REALTIME=false."
+        )
     if market_data_provider == "klickanalytics" and not klickanalytics_api_key:
         raise ConfigError("KLICKANALYTICS_CLI_API_KEY is required when MARKET_DATA_PROVIDER=klickanalytics.")
     if market_data_provider == "polygon" and not polygon_api_key:
         raise ConfigError(
             "POLYGON_API_KEY (or MASSIVE_API_KEY) is required when MARKET_DATA_PROVIDER=polygon."
+        )
+    if market_data_provider == "alpaca" and (not alpaca_api_key or not alpaca_api_secret):
+        raise ConfigError(
+            "ALPACA_API_KEY and ALPACA_API_SECRET are required when MARKET_DATA_PROVIDER=alpaca."
+        )
+    if market_data_provider == "alpaca" and market_data_realtime and alpaca_data_feed != "sip":
+        raise ConfigError(
+            "MARKET_DATA_REALTIME=true requires ALPACA_DATA_FEED=sip (consolidated real-time). "
+            "Use feed=iex only with MARKET_DATA_REALTIME=false (delayed)."
         )
 
     position_state_backend = os.getenv("POSITION_STATE_BACKEND", "file").strip().lower() or "file"
@@ -146,9 +171,13 @@ def load_settings() -> Settings:
     return Settings(
         qqq_ticker=qqq_ticker,
         market_data_provider=market_data_provider,
+        market_data_realtime=market_data_realtime,
         klickanalytics_api_key=klickanalytics_api_key,
         klickanalytics_cli_command=klickanalytics_cli_command,
         polygon_api_key=polygon_api_key,
+        alpaca_api_key=alpaca_api_key,
+        alpaca_api_secret=alpaca_api_secret,
+        alpaca_data_feed=alpaca_data_feed,
         discord_webhook_url=webhook,
         dry_run=dry_run,
         bull_entry_threshold=int(os.getenv("BULL_ENTRY_THRESHOLD", "5")),
