@@ -4,8 +4,11 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 import pandas as pd
+import requests
 
 
 class DataError(Exception):
@@ -15,6 +18,8 @@ class DataError(Exception):
 class KlickAnalyticsQuotaError(DataError):
     """KlickAnalytics CLI reported monthly API usage limit reached."""
 
+
+SUPPORTED_PROVIDERS = ("klickanalytics", "polygon", "yahoo")
 
 _MONTHLY_LIMIT_MARKERS = (
     "monthly limit",
@@ -72,15 +77,21 @@ class CandleData:
 
 
 _cli_calls_this_run = 0
+_active_provider = "klickanalytics"
 
 
 def reset_cli_call_count() -> None:
-    global _cli_calls_this_run
+    global _cli_calls_this_run, _active_provider
     _cli_calls_this_run = 0
+    _active_provider = "klickanalytics"
 
 
 def cli_calls_attempted() -> int:
     return _cli_calls_this_run
+
+
+def active_provider() -> str:
+    return _active_provider
 
 
 def format_cli_usage_line(
@@ -88,11 +99,13 @@ def format_cli_usage_line(
     reason: str | None = None,
     month_total: int | None = None,
     month_limit: int | None = None,
+    provider: str | None = None,
 ) -> str:
     count = cli_calls_attempted()
     noun = "call" if count == 1 else "calls"
     suffix = f" ({reason})" if reason else ""
-    line = f"[klickanalytics] {count} CLI {noun} attempted this run{suffix}"
+    label = (provider or _active_provider or "klickanalytics").strip().lower() or "klickanalytics"
+    line = f"[{label}] {count} API {noun} attempted this run{suffix}"
     if month_total is not None and month_limit:
         line += f" · month {month_total}/{month_limit}"
     return line
@@ -220,8 +233,25 @@ def _fetch_hourly_intraday(ticker: str, cli_command: str, api_key: str, *, bars:
     return _normalize_ohlcv(pd.DataFrame(records), ticker=ticker)
 
 
-def load_candles(ticker: str, api_key: str, cli_command: str) -> CandleData:
-    reset_cli_call_count()
+def _synthesize_four_hour(hourly: pd.DataFrame) -> pd.DataFrame:
+    four_hour = (
+        hourly.resample("4h")
+        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        .dropna()
+    )
+    return four_hour
+
+
+def _finalize_candles(daily: pd.DataFrame, hourly: pd.DataFrame) -> CandleData:
+    four_hour = _synthesize_four_hour(hourly)
+    if len(daily) < 60:
+        raise DataError("Not enough daily candles to compute indicators safely.")
+    if len(four_hour) < 5:
+        raise DataError("Not enough intraday candles to compute 4h context safely.")
+    return CandleData(daily=daily, four_hour=four_hour)
+
+
+def _load_candles_klickanalytics(ticker: str, api_key: str, cli_command: str) -> CandleData:
     daily = _fetch_daily_prices(ticker=ticker, cli_command=cli_command, api_key=api_key)
     # Hourly history must cover the daily window (800 bars ~33d would otherwise blank older backtest dates).
     span_days = max(7, (daily.index[-1] - daily.index[0]).days + 14)
@@ -229,15 +259,204 @@ def load_candles(ticker: str, api_key: str, cli_command: str) -> CandleData:
     hourly = _fetch_hourly_intraday(
         ticker=ticker, cli_command=cli_command, api_key=api_key, bars=hourly_bars
     )
+    return _finalize_candles(daily, hourly)
 
-    # Build synthetic 4h candles from 1h bars from KlickAnalytics.
-    four_hour = (
-        hourly.resample("4h")
-        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
-        .dropna()
+
+def _polygon_base_url() -> str:
+    return (os.getenv("POLYGON_API_BASE_URL") or "https://api.polygon.io").rstrip("/")
+
+
+def _fetch_polygon_aggs(
+    ticker: str,
+    *,
+    api_key: str,
+    multiplier: int,
+    timespan: str,
+    start: date,
+    end: date,
+) -> pd.DataFrame:
+    _record_cli_call()
+    url = (
+        f"{_polygon_base_url()}/v2/aggs/ticker/{ticker.upper()}/range/"
+        f"{multiplier}/{timespan}/{start.isoformat()}/{end.isoformat()}"
     )
-    if len(daily) < 60:
-        raise DataError("Not enough daily candles to compute indicators safely.")
-    if len(four_hour) < 5:
-        raise DataError("Not enough intraday candles to compute 4h context safely.")
-    return CandleData(daily=daily, four_hour=four_hour)
+    params = {
+        "adjusted": "true",
+        "sort": "asc",
+        "limit": "50000",
+        "apiKey": api_key,
+    }
+    try:
+        response = requests.get(url, params=params, timeout=60)
+    except requests.RequestException as exc:
+        raise DataError(f"Polygon request failed for {ticker}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise DataError("Polygon authentication failed. Check POLYGON_API_KEY / MASSIVE_API_KEY.")
+    if response.status_code == 403:
+        raise DataError(
+            "Polygon denied this request (plan may lack intraday aggregates). "
+            "Starter+ is required for hourly bars; free Basic is end-of-day only."
+        )
+    if response.status_code == 429:
+        raise DataError("Polygon rate limit exceeded. Wait and retry, or upgrade the plan.")
+    if response.status_code >= 400:
+        detail = (response.text or "").strip()[:500] or response.reason
+        raise DataError(f"Polygon HTTP {response.status_code} for {ticker}: {detail}")
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise DataError("Polygon returned non-JSON response.") from exc
+
+    status = str(payload.get("status") or "").upper()
+    results = payload.get("results")
+    if status in {"ERROR", "NOT_AUTHORIZED"}:
+        raise DataError(f"Polygon error for {ticker}: {payload.get('error') or payload}")
+    if not isinstance(results, list) or not results:
+        # Polygon returns OK with empty results when the window has no bars.
+        raise DataError(f"Polygon returned no aggregate bars for {ticker} ({timespan}).")
+
+    rows = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        ts_ms = item.get("t")
+        if ts_ms is None:
+            continue
+        rows.append(
+            {
+                "timestamp": datetime.fromtimestamp(float(ts_ms) / 1000.0, tz=timezone.utc),
+                "open": item.get("o"),
+                "high": item.get("h"),
+                "low": item.get("l"),
+                "close": item.get("c"),
+                "volume": item.get("v", 0),
+            }
+        )
+    return _normalize_ohlcv(pd.DataFrame(rows), ticker=ticker)
+
+
+def _load_candles_polygon(ticker: str, api_key: str) -> CandleData:
+    end = datetime.now(timezone.utc).date()
+    daily_start = end - timedelta(days=800)
+    daily = _fetch_polygon_aggs(
+        ticker,
+        api_key=api_key,
+        multiplier=1,
+        timespan="day",
+        start=daily_start,
+        end=end,
+    )
+    span_days = max(7, (daily.index[-1] - daily.index[0]).days + 14)
+    # Cap hourly lookback; Polygon pages at 50k bars and free/basic may refuse intraday.
+    hourly_days = min(span_days, 730)
+    hourly_start = end - timedelta(days=hourly_days)
+    hourly = _fetch_polygon_aggs(
+        ticker,
+        api_key=api_key,
+        multiplier=1,
+        timespan="hour",
+        start=hourly_start,
+        end=end,
+    )
+    return _finalize_candles(daily, hourly)
+
+
+def _load_candles_yahoo(ticker: str) -> CandleData:
+    try:
+        import yfinance as yf
+    except ImportError as exc:
+        raise DataError(
+            "Yahoo provider requires yfinance. Install with 'pip install yfinance'."
+        ) from exc
+
+    reset_cli_call_count()
+    _record_cli_call()
+    try:
+        daily_raw = yf.download(
+            ticker,
+            period="2y",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            threads=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise DataError(f"Yahoo daily download failed for {ticker}: {exc}") from exc
+
+    _record_cli_call()
+    try:
+        # Yahoo limits 1h history (~60 days). Enough for live 4h context; not for deep backtests.
+        hourly_raw = yf.download(
+            ticker,
+            period="60d",
+            interval="1h",
+            auto_adjust=False,
+            progress=False,
+            threads=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise DataError(f"Yahoo hourly download failed for {ticker}: {exc}") from exc
+
+    def _frame_from_yahoo(raw: Any) -> pd.DataFrame:
+        if raw is None or getattr(raw, "empty", True):
+            raise DataError(f"Yahoo returned empty data for {ticker}.")
+        frame = raw.copy()
+        if isinstance(frame.columns, pd.MultiIndex):
+            frame.columns = [str(col[0]).title() if isinstance(col, tuple) else str(col) for col in frame.columns]
+        frame = frame.reset_index()
+        return _normalize_ohlcv(frame, ticker=ticker)
+
+    daily = _frame_from_yahoo(daily_raw)
+    hourly = _frame_from_yahoo(hourly_raw)
+    return _finalize_candles(daily, hourly)
+
+
+def load_candles(
+    ticker: str,
+    api_key: str = "",
+    cli_command: str = "ka",
+    *,
+    provider: str = "klickanalytics",
+    polygon_api_key: str = "",
+) -> CandleData:
+    """Fetch daily + synthetic 4h candles for ``ticker``.
+
+    Providers (from https://www.timestored.com/data/realtime-stock-data-apis):
+    - ``klickanalytics`` — existing CLI (default; tight monthly quota)
+    - ``polygon`` — Polygon.io / Massive aggregates REST (recommended paid replacement)
+    - ``yahoo`` — free Yahoo Finance via yfinance (good unblock while Klick quota is exhausted)
+    """
+    global _active_provider
+    normalized = (provider or "klickanalytics").strip().lower()
+    if normalized not in SUPPORTED_PROVIDERS:
+        raise DataError(
+            f"Unsupported MARKET_DATA_PROVIDER={provider!r}. "
+            f"Choose one of: {', '.join(SUPPORTED_PROVIDERS)}."
+        )
+    _active_provider = normalized
+    reset_cli_call_count()
+
+    if normalized == "klickanalytics":
+        if not api_key:
+            raise DataError("KLICKANALYTICS_CLI_API_KEY is required for MARKET_DATA_PROVIDER=klickanalytics.")
+        return _load_candles_klickanalytics(ticker, api_key=api_key, cli_command=cli_command or "ka")
+
+    if normalized == "polygon":
+        key = (polygon_api_key or api_key or "").strip()
+        if not key:
+            raise DataError("POLYGON_API_KEY (or MASSIVE_API_KEY) is required for MARKET_DATA_PROVIDER=polygon.")
+        return _load_candles_polygon(ticker, api_key=key)
+
+    return _load_candles_yahoo(ticker)
+
+
+def load_candles_from_settings(settings: Any) -> CandleData:
+    return load_candles(
+        ticker=settings.qqq_ticker,
+        api_key=getattr(settings, "klickanalytics_api_key", "") or "",
+        cli_command=getattr(settings, "klickanalytics_cli_command", "ka") or "ka",
+        provider=getattr(settings, "market_data_provider", "klickanalytics") or "klickanalytics",
+        polygon_api_key=getattr(settings, "polygon_api_key", "") or "",
+    )

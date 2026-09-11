@@ -13,11 +13,16 @@ class ConfigError(Exception):
     pass
 
 
+SUPPORTED_MARKET_DATA_PROVIDERS = ("klickanalytics", "polygon", "yahoo")
+
+
 @dataclass(frozen=True)
 class Settings:
     qqq_ticker: str
+    market_data_provider: str
     klickanalytics_api_key: str
     klickanalytics_cli_command: str
+    polygon_api_key: str
     discord_webhook_url: str
     dry_run: bool
     bull_entry_threshold: int
@@ -102,13 +107,28 @@ def load_settings() -> Settings:
     load_dotenv()
 
     qqq_ticker = os.getenv("QQQ_TICKER", "QQQ").strip().upper()
+    market_data_provider = (
+        os.getenv("MARKET_DATA_PROVIDER", "klickanalytics").strip().lower() or "klickanalytics"
+    )
     klickanalytics_api_key = os.getenv("KLICKANALYTICS_CLI_API_KEY", "").strip()
     klickanalytics_cli_command = os.getenv("KLICKANALYTICS_CLI_COMMAND", "ka").strip()
+    polygon_api_key = (
+        os.getenv("POLYGON_API_KEY", "").strip()
+        or os.getenv("MASSIVE_API_KEY", "").strip()
+    )
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     dry_run = _to_bool(os.getenv("DRY_RUN", "true"), default=True)
 
-    if not klickanalytics_api_key:
-        raise ConfigError("KLICKANALYTICS_CLI_API_KEY is required.")
+    if market_data_provider not in SUPPORTED_MARKET_DATA_PROVIDERS:
+        raise ConfigError(
+            f"MARKET_DATA_PROVIDER must be one of: {', '.join(SUPPORTED_MARKET_DATA_PROVIDERS)}."
+        )
+    if market_data_provider == "klickanalytics" and not klickanalytics_api_key:
+        raise ConfigError("KLICKANALYTICS_CLI_API_KEY is required when MARKET_DATA_PROVIDER=klickanalytics.")
+    if market_data_provider == "polygon" and not polygon_api_key:
+        raise ConfigError(
+            "POLYGON_API_KEY (or MASSIVE_API_KEY) is required when MARKET_DATA_PROVIDER=polygon."
+        )
 
     position_state_backend = os.getenv("POSITION_STATE_BACKEND", "file").strip().lower() or "file"
     if position_state_backend not in {"file", "supabase"}:
@@ -125,8 +145,10 @@ def load_settings() -> Settings:
 
     return Settings(
         qqq_ticker=qqq_ticker,
+        market_data_provider=market_data_provider,
         klickanalytics_api_key=klickanalytics_api_key,
         klickanalytics_cli_command=klickanalytics_cli_command,
+        polygon_api_key=polygon_api_key,
         discord_webhook_url=webhook,
         dry_run=dry_run,
         bull_entry_threshold=int(os.getenv("BULL_ENTRY_THRESHOLD", "5")),

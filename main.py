@@ -10,7 +10,13 @@ from backtest import export_backtest_trades_csv, format_backtest_report, run_bac
 from backtest_sweep import export_sweep_csv, format_sweep_report, run_parameter_sweep, sweep_grid_from_settings
 from cli_args import build_parser
 from config import ConfigError, Settings, load_settings, strategy_params_from_settings
-from data import DataError, KlickAnalyticsQuotaError, cli_calls_attempted, format_cli_usage_line, load_candles
+from data import (
+    DataError,
+    KlickAnalyticsQuotaError,
+    cli_calls_attempted,
+    format_cli_usage_line,
+    load_candles_from_settings,
+)
 from event_calendar import load_merged_blackout_dates
 from health_check import run_health_check
 from indicators import build_snapshot
@@ -69,15 +75,17 @@ def _log_cli_usage(
     quota_error_detail: str | None = None,
 ) -> None:
     calls = cli_calls_attempted()
-    snapshot = track_and_maybe_warn_cli_usage(
-        calls=calls,
-        webhook_url=settings.discord_webhook_url,
-        dry_run=settings.dry_run,
-        monthly_limit=settings.klickanalytics_monthly_limit,
-        warn_pct=settings.klickanalytics_usage_warn_pct,
-        logger=logger,
-        quota_error_detail=quota_error_detail,
-    )
+    snapshot = None
+    if settings.market_data_provider == "klickanalytics":
+        snapshot = track_and_maybe_warn_cli_usage(
+            calls=calls,
+            webhook_url=settings.discord_webhook_url,
+            dry_run=settings.dry_run,
+            monthly_limit=settings.klickanalytics_monthly_limit,
+            warn_pct=settings.klickanalytics_usage_warn_pct,
+            logger=logger,
+            quota_error_detail=quota_error_detail,
+        )
     month_total = snapshot.total_calls if snapshot else None
     month_limit = settings.klickanalytics_monthly_limit if snapshot else None
     print(
@@ -85,6 +93,7 @@ def _log_cli_usage(
             reason=reason,
             month_total=month_total,
             month_limit=month_limit,
+            provider=settings.market_data_provider,
         )
     )
 
@@ -134,6 +143,7 @@ def run() -> int:
             logging.INFO,
             "Settings loaded",
             qqq_ticker=settings.qqq_ticker,
+            market_data_provider=settings.market_data_provider,
             position_state_backend=settings.position_state_backend,
             position_state_json=str(settings.position_state_json),
             position_state_bot_id=settings.position_state_bot_id,
@@ -247,16 +257,12 @@ def run() -> int:
         closed_reason = market_closed_reason()
         if closed_reason is not None:
             print(f"Skipped: US equity market is closed ({closed_reason}).")
-            print(format_cli_usage_line(reason="market closed"))
+            print(format_cli_usage_line(reason="market closed", provider=settings.market_data_provider))
             log_event(logger, logging.INFO, "Market hours skip", reason=closed_reason, klickanalytics_cli_calls=0)
             return 0
 
     try:
-        candles = load_candles(
-            ticker=settings.qqq_ticker,
-            api_key=settings.klickanalytics_api_key,
-            cli_command=settings.klickanalytics_cli_command,
-        )
+        candles = load_candles_from_settings(settings)
         last_daily = candles.daily.index[-1]
         last_h4 = candles.four_hour.index[-1]
         daily_fetch_label = last_daily.isoformat() if hasattr(last_daily, "isoformat") else str(last_daily)
@@ -266,6 +272,7 @@ def run() -> int:
             logging.INFO,
             "Data fetch succeeded",
             qqq_ticker=settings.qqq_ticker,
+            market_data_provider=settings.market_data_provider,
             latest_daily_candle=daily_fetch_label,
             latest_h4_candle=h4_fetch_label,
             klickanalytics_cli_calls=cli_calls_attempted(),

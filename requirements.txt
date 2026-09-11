@@ -2,5 +2,6 @@ pandas
 klickanalytics-cli
 python-dotenv
 requests
+yfinance
 supabase>=2.0.0
 pytest

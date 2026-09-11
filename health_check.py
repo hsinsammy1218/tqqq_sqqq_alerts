@@ -9,7 +9,12 @@ from typing import Any
 
 from api_quota_notify import maybe_notify_klickanalytics_quota_reached
 from config import ConfigError
-from data import KlickAnalyticsQuotaError, cli_calls_attempted, format_cli_usage_line, load_candles
+from data import (
+    KlickAnalyticsQuotaError,
+    cli_calls_attempted,
+    format_cli_usage_line,
+    load_candles_from_settings,
+)
 from klickanalytics_usage import track_and_maybe_warn_cli_usage
 from position_store import PositionStoreError, position_store_from_settings
 from runtime_logging import format_utc_z, log_event
@@ -46,23 +51,30 @@ def run_health_check(settings: Any, dry_run: bool, logger: logging.Logger) -> in
     run_ts = format_utc_z(datetime.now(timezone.utc))
     log_event(logger, logging.INFO, "Health check started", run_timestamp=run_ts, dry_run=dry_run)
 
-    ok, msg = _check_cli_available(settings.klickanalytics_cli_command)
-    print(f"[health] {'PASS' if ok else 'FAIL'} - {msg}")
-    log_event(logger, logging.INFO if ok else logging.ERROR, "KlickAnalytics CLI check", ok=ok, detail=msg)
-    if not ok:
-        failures.append(msg)
+    if settings.market_data_provider == "klickanalytics":
+        ok, msg = _check_cli_available(settings.klickanalytics_cli_command)
+        print(f"[health] {'PASS' if ok else 'FAIL'} - {msg}")
+        log_event(logger, logging.INFO if ok else logging.ERROR, "KlickAnalytics CLI check", ok=ok, detail=msg)
+        if not ok:
+            failures.append(msg)
+    else:
+        msg = f"Using MARKET_DATA_PROVIDER={settings.market_data_provider} (KlickAnalytics CLI not required)."
+        print(f"[health] PASS - {msg}")
+        log_event(
+            logger,
+            logging.INFO,
+            "Market data provider check",
+            ok=True,
+            market_data_provider=settings.market_data_provider,
+        )
 
     try:
-        candles = load_candles(
-            ticker=settings.qqq_ticker,
-            api_key=settings.klickanalytics_api_key,
-            cli_command=settings.klickanalytics_cli_command,
-        )
+        candles = load_candles_from_settings(settings)
         last_daily = candles.daily.index[-1]
         last_h4 = candles.four_hour.index[-1]
         d_label = last_daily.isoformat() if hasattr(last_daily, "isoformat") else str(last_daily)
         h4_label = last_h4.isoformat() if hasattr(last_h4, "isoformat") else str(last_h4)
-        msg = f"Fetched data (daily={d_label}, h4={h4_label})."
+        msg = f"Fetched data via {settings.market_data_provider} (daily={d_label}, h4={h4_label})."
         print(f"[health] PASS - {msg}")
         log_event(
             logger,
@@ -70,22 +82,26 @@ def run_health_check(settings: Any, dry_run: bool, logger: logging.Logger) -> in
             "Data fetch health check",
             ok=True,
             qqq_ticker=settings.qqq_ticker,
+            market_data_provider=settings.market_data_provider,
             latest_daily_candle=d_label,
             latest_h4_candle=h4_label,
             klickanalytics_cli_calls=cli_calls_attempted(),
         )
-        snapshot = track_and_maybe_warn_cli_usage(
-            calls=cli_calls_attempted(),
-            webhook_url=settings.discord_webhook_url,
-            dry_run=dry_run,
-            monthly_limit=settings.klickanalytics_monthly_limit,
-            warn_pct=settings.klickanalytics_usage_warn_pct,
-            logger=logger,
-        )
+        snapshot = None
+        if settings.market_data_provider == "klickanalytics":
+            snapshot = track_and_maybe_warn_cli_usage(
+                calls=cli_calls_attempted(),
+                webhook_url=settings.discord_webhook_url,
+                dry_run=dry_run,
+                monthly_limit=settings.klickanalytics_monthly_limit,
+                warn_pct=settings.klickanalytics_usage_warn_pct,
+                logger=logger,
+            )
         print(
             format_cli_usage_line(
                 month_total=snapshot.total_calls if snapshot else None,
                 month_limit=settings.klickanalytics_monthly_limit if snapshot else None,
+                provider=settings.market_data_provider,
             )
         )
     except KlickAnalyticsQuotaError as exc:

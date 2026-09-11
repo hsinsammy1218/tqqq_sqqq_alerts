@@ -10,7 +10,7 @@ from pathlib import Path
 from alerts import send_discord_api_quota_alert
 from api_quota_notify import maybe_notify_klickanalytics_quota_reached
 from config import ConfigError, load_settings
-from data import KlickAnalyticsQuotaError, load_candles
+from data import KlickAnalyticsQuotaError, load_candles_from_settings
 from runtime_logging import format_utc_z
 
 logging.basicConfig(level=logging.INFO)
@@ -31,8 +31,15 @@ def main() -> int:
         print(f"Config error: {exc}")
         return 1
 
+    if settings.market_data_provider != "klickanalytics":
+        print(
+            f"MARKET_DATA_PROVIDER={settings.market_data_provider} — "
+            "KlickAnalytics quota probe skipped."
+        )
+        return 0
+
     try:
-        load_candles(settings.qqq_ticker, settings.klickanalytics_api_key, settings.klickanalytics_cli_command)
+        load_candles_from_settings(settings)
         print("KlickAnalytics fetch succeeded — monthly limit is not currently hit.")
         return 0
     except KlickAnalyticsQuotaError as exc:

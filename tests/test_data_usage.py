@@ -14,7 +14,7 @@ def test_cli_call_counter_tracks_attempts(monkeypatch):
     data._run_ka_json("ka", ["prices", "-s", "QQQ"], "key")
     data._run_ka_json("ka", ["intraday", "-s", "QQQ"], "key")
     assert data.cli_calls_attempted() == 2
-    assert data.format_cli_usage_line() == "[klickanalytics] 2 CLI calls attempted this run"
+    assert data.format_cli_usage_line() == "[klickanalytics] 2 API calls attempted this run"
 
 
 def test_format_cli_usage_line_with_reason_and_month():

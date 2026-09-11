@@ -1,7 +1,7 @@
 """
 Batch-publish technical snapshots to Supabase for the Next.js dashboard.
 
-Uses the same data path as the alert bot (KlickAnalytics CLI via data.load_candles)
+Uses the same data path as the alert bot (MARKET_DATA_PROVIDER via data.load_candles_from_settings)
 and the same scoring stack (build_snapshot, regime, weighted checklist, dominance confidence).
 
 Does not run trading logic or alerts. Configure SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
@@ -27,7 +27,7 @@ from typing import Any
 import pandas as pd
 
 from config import ConfigError, load_settings, strategy_params_from_settings
-from data import DataError, load_candles
+from data import DataError, load_candles_from_settings
 from indicators import IndicatorSnapshot, build_snapshot
 from strategy import score_signals
 from strategy_params import StrategyParams
@@ -201,7 +201,9 @@ def run_publish(*, dry_run: bool) -> int:
 
     for sym in symbols:
         try:
-            candles = load_candles(sym, settings.klickanalytics_api_key, settings.klickanalytics_cli_command)
+            candles = load_candles_from_settings(
+                settings.__class__(**{**settings.__dict__, "qqq_ticker": sym})
+            )
             snap = build_snapshot(candles.daily, candles.four_hour, anchor)
             regime = detect_market_regime(snap, params)
             bd = weighted_signal_breakdown(snap, params.score_weights)

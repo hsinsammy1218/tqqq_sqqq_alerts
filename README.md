@@ -41,7 +41,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - Dry-run mode for testing without Discord sends
 - Optional `--backtest` mode for historical rule replay (QQQ directional proxy; see below)
 - Discord **rich embeds** match the console breakdown: bot memory (flat vs symbol), bar timestamps + blackout, full QQQ daily/4h indicator lines, every bull/bear checklist item, rule thresholds, hold exit flags when applicable, then notes
-- KlickAnalytics CLI market data backend
+- KlickAnalytics CLI market data backend (default), with pluggable **Polygon.io** and **Yahoo Finance** providers via `MARKET_DATA_PROVIDER`
 - Cloud scheduling via Render (worker/cron) — local Windows Task Scheduler is not used
 
 ## File layout
@@ -75,9 +75,20 @@ pip install -r requirements.txt
 
 Copy `.env.example` to `.env` and fill values:
 
-- `KLICKANALYTICS_CLI_API_KEY` (required)
+- `MARKET_DATA_PROVIDER` — `klickanalytics` (default), `polygon`, or `yahoo`
+  ([provider comparison](https://www.timestored.com/data/realtime-stock-data-apis))
+- `KLICKANALYTICS_CLI_API_KEY` (required when provider is `klickanalytics`)
 - `KLICKANALYTICS_CLI_COMMAND=ka` (override only if your executable name/path differs)
+- `POLYGON_API_KEY` (required when provider is `polygon`; `MASSIVE_API_KEY` also accepted)
 - `DISCORD_WEBHOOK_URL` only required when `DRY_RUN=false`
+
+**Provider guidance (QQQ daily + hourly → 4h context):**
+
+| Provider | Cost fit | Notes |
+|----------|----------|-------|
+| `yahoo` | Free | Fast unblock when Klick monthly quota is exhausted; ~60d of 1h history (fine for live alerts, thin for deep backtests) |
+| `polygon` | ~$29/mo Starter | Best paid match from the comparison page: unlimited REST aggregates, hourly bars, websockets available. Free Basic is EOD-only (no hourly). |
+| `klickanalytics` | Existing | Keep if quota allows; ~2 CLI calls per poll burns a 500/mo plan quickly |
 
 Discord webhook quick setup:
 
