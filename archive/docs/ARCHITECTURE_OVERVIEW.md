@@ -13,7 +13,7 @@ The repository contains two connected systems:
 
 | Layer | Technology |
 |---|---|
-| Signal engine | Python, pandas, requests, KlickAnalytics CLI |
+| Signal engine | Python, pandas, requests, Alpaca Market Data API |
 | Web app | Next.js App Router, React, TypeScript |
 | Data store | Supabase Postgres |
 | Scheduling | Render worker/cron (Python); Vercel cron (dashboard ingest) |
@@ -27,7 +27,7 @@ The repository contains two connected systems:
 | `cli_args.py` | CLI parser and argument contract |
 | `runtime_logging.py` | Structured JSON logging utilities |
 | `health_check.py` | Non-destructive runtime health checks |
-| `data.py` | Market data ingest via external CLI |
+| `data.py` | Market data ingest via Alpaca Market Data API |
 | `indicators.py` | Indicator computation primitives |
 | `strategy_scoring.py` | Weighted scoring model |
 | `strategy.py` | Backward-compatible facade over split strategy modules |
@@ -48,7 +48,7 @@ The repository contains two connected systems:
 
 ```mermaid
 flowchart LR
-  A[KlickAnalytics CLI] --> B[data.py]
+  A[Alpaca Market Data API] --> B[data.py]
   B --> C[indicators.py]
   C --> D[strategy_scoring.py]
   D --> E[strategy.py decide]

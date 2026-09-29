@@ -410,7 +410,7 @@ def _extract_json_object(text: str) -> dict[str, object] | None:
 
 def _parse_api_quota_detail(detail: str) -> dict[str, str | int | None]:
     parsed: dict[str, str | int | None] = {
-        "message": "Monthly CLI usage limit reached.",
+        "message": "Monthly API usage limit reached.",
         "monthly_limit": None,
         "total_hits": None,
         "error_code": None,
@@ -458,7 +458,7 @@ def build_api_quota_discord_embed(detail: str, timestamp: str) -> dict[str, obje
     info = _parse_api_quota_detail(detail)
     limit = info["monthly_limit"]
     hits = info["total_hits"]
-    message = str(info["message"] or "Monthly CLI usage limit reached.")
+    message = str(info["message"] or "Monthly API usage limit reached.")
 
     description_lines = [
         "**Data feed paused** — Alpaca market-data rate/quota limit is blocking fetches.",

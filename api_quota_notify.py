@@ -70,7 +70,3 @@ def maybe_notify_quota_reached(
         state_path=str(state_path),
     )
     return True
-
-
-# Compatibility alias for older imports.
-maybe_notify_klickanalytics_quota_reached = maybe_notify_quota_reached

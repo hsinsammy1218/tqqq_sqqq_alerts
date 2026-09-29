@@ -110,10 +110,6 @@ def record_monthly_api_usage(
     )
 
 
-# Compatibility alias used by older tests during rename.
-record_monthly_cli_usage = record_monthly_api_usage
-
-
 def maybe_notify_api_usage_warning(
     snapshot: MonthlyUsageSnapshot,
     *,
@@ -167,9 +163,6 @@ def maybe_notify_api_usage_warning(
     return True
 
 
-maybe_notify_klickanalytics_usage_warning = maybe_notify_api_usage_warning
-
-
 def track_and_maybe_warn_api_usage(
     *,
     calls: int,
@@ -204,9 +197,6 @@ def track_and_maybe_warn_api_usage(
         logger=logger,
     )
     return snapshot
-
-
-track_and_maybe_warn_cli_usage = track_and_maybe_warn_api_usage
 
 
 def server_total_from_quota_detail(detail: str) -> int | None:

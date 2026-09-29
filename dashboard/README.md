@@ -52,7 +52,7 @@ From the **repository root** (not `dashboard/`), with the same `.env` as the ale
 ```bash
 pip install -r requirements.txt
 python publish_technical_dashboard.py --dry-run   # list TECHNICAL_UNIVERSE symbols
-python publish_technical_dashboard.py            # fetch via ka, score, insert dashboard_runs + stock_snapshots
+python publish_technical_dashboard.py            # fetch via Alpaca, score, insert dashboard_runs + stock_snapshots
 ```
 
 Requires `ALPACA_API_KEY`, `ALPACA_API_SECRET`, `SUPABASE_URL` (or `NEXT_PUBLIC_SUPABASE_URL`), `SUPABASE_SERVICE_ROLE_KEY`, and optionally `TECHNICAL_UNIVERSE` (comma-separated tickers).

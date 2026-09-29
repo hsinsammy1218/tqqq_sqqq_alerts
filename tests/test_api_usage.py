@@ -87,7 +87,7 @@ def test_track_and_warn_skips_at_limit(tmp_path: Path, monkeypatch):
             warn_pct=80,
             logger=logger,
             quota_error_detail=(
-                '{"error_code":"monthly_cli_limit_reached","data":{"monthly_limit":500,"total_hits":500}}'
+                '{"error_code":"rate_limit_exceeded","data":{"monthly_limit":500,"total_hits":500}}'
             ),
         )
         assert snapshot is not None

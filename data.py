@@ -17,9 +17,6 @@ class MarketDataQuotaError(DataError):
     """Alpaca (or market-data provider) reported rate limit / quota exhaustion."""
 
 
-# Backward-compatible alias for older imports/tests during the KA → Alpaca cutover.
-KlickAnalyticsQuotaError = MarketDataQuotaError
-
 DEFAULT_DATA_BASE_URL = "https://data.alpaca.markets"
 DEFAULT_DATA_FEED = "iex"
 
@@ -85,11 +82,6 @@ def is_rate_limit_message(text: str) -> bool:
     limitish = any(word in low for word in ("limit", "quota", "usage"))
     exhausted = any(word in low for word in ("reached", "exceeded", "exhausted", "depleted"))
     return monthly and limitish and exhausted
-
-
-# Kept for older tests / Discord parsers that still call the KA-era name.
-def is_klickanalytics_monthly_limit_message(text: str) -> bool:
-    return is_rate_limit_message(text)
 
 
 def _normalize_ohlcv(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
@@ -251,7 +243,7 @@ def load_candles(
         max_bars=400,
     )
 
-    # Hourly history must cover the daily window (same approach as the prior KA loader).
+    # Hourly history must cover the daily window used for indicators/backtests.
     span_days = max(7, (daily.index[-1] - daily.index[0]).days + 14)
     hourly_bars = min(12000, max(800, span_days * 24))
     hourly_start = now - timedelta(days=min(span_days + 14, 730))
