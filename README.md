@@ -41,7 +41,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - Dry-run mode for testing without Discord sends
 - Optional `--backtest` mode for historical rule replay (QQQ directional proxy; see below)
 - Discord **rich embeds** match the console breakdown: bot memory (flat vs symbol), bar timestamps + blackout, full QQQ daily/4h indicator lines, every bull/bear checklist item, rule thresholds, hold exit flags when applicable, then notes
-- KlickAnalytics CLI market data backend
+- Alpaca Market Data API backend (daily + 1h → synthetic 4h)
 - Cloud scheduling via Render (worker/cron) — local Windows Task Scheduler is not used
 
 ## File layout
@@ -75,8 +75,9 @@ pip install -r requirements.txt
 
 Copy `.env.example` to `.env` and fill values:
 
-- `KLICKANALYTICS_CLI_API_KEY` (required)
-- `KLICKANALYTICS_CLI_COMMAND=ka` (override only if your executable name/path differs)
+- `ALPACA_API_KEY` and `ALPACA_API_SECRET` (required)
+- `ALPACA_DATA_BASE_URL=https://data.alpaca.markets` (optional override)
+- `ALPACA_DATA_FEED=iex` (optional; use `sip` only with a paid Alpaca data plan)
 - `DISCORD_WEBHOOK_URL` only required when `DRY_RUN=false`
 
 Discord webhook quick setup:
@@ -140,7 +141,7 @@ python main.py --health-check --dry-run
 ```
 
 Health check verifies:
-- KlickAnalytics CLI command availability
+- Alpaca API key + secret are configured
 - Market data fetch success (and latest daily/4h bar timestamps)
 - `position_state.json` loadability (or safe recovery to flat with warnings)
 - `events.json` readability if present
@@ -158,7 +159,8 @@ Render Cron containers are **ephemeral** — local `position_state.json` does no
 
    | Key | Value |
    |-----|--------|
-   | `KLICKANALYTICS_CLI_API_KEY` | your CLI key |
+   | `ALPACA_API_KEY` | Alpaca key id |
+   | `ALPACA_API_SECRET` | Alpaca secret key |
    | `DISCORD_WEBHOOK_URL` | webhook URL |
    | `DRY_RUN` | `false` |
    | `POSITION_STATE_BACKEND` | `supabase` |
@@ -413,7 +415,7 @@ Older journal files without the `signal_quality` column may misalign if appended
 
 ## Notes
 
-- 4h candles are synthesized from 1h KlickAnalytics intraday bars.
-- Data is pulled via KlickAnalytics CLI commands (`ka prices` and `ka intraday`).
-- Real-time quality depends on your KlickAnalytics plan and your run cadence.
+- 4h candles are synthesized from Alpaca `1Hour` bars.
+- Data is pulled via Alpaca Market Data (`/v2/stocks/{symbol}/bars` for `1Day` and `1Hour`).
+- Real-time quality depends on your Alpaca data feed (`iex` vs `sip`) and your run cadence.
 - Educational use only. Not financial advice.

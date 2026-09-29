@@ -1,68 +1,27 @@
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from urllib.parse import urljoin
 
 import pandas as pd
+import requests
 
 
 class DataError(Exception):
     pass
 
 
-class KlickAnalyticsQuotaError(DataError):
-    """KlickAnalytics CLI reported monthly API usage limit reached."""
+class MarketDataQuotaError(DataError):
+    """Alpaca (or market-data provider) reported rate limit / quota exhaustion."""
 
 
-_MONTHLY_LIMIT_MARKERS = (
-    "monthly limit",
-    "monthly quota",
-    "monthly api",
-    "monthly usage",
-    "monthly request",
-    "monthly call",
-    "monthly cli usage limit",
-    "monthly_cli_limit_reached",
-    "limit for the month",
-    "reached for the month",
-    "quota for the month",
-    "this month's limit",
-    "this month",
-)
+# Backward-compatible alias for older imports/tests during the KA → Alpaca cutover.
+KlickAnalyticsQuotaError = MarketDataQuotaError
 
-
-def _quota_error_code_in_payload(text: str) -> bool:
-    start = text.find("{")
-    if start < 0:
-        return False
-    try:
-        payload = json.loads(text[start:])
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(payload, dict):
-        return False
-    code = str(payload.get("error_code", "")).lower()
-    if "monthly" in code and ("limit" in code or "quota" in code):
-        return True
-    for key in ("stderr", "stdout", "message", "error"):
-        value = payload.get(key)
-        if isinstance(value, str) and is_klickanalytics_monthly_limit_message(value):
-            return True
-    return False
-
-
-def is_klickanalytics_monthly_limit_message(text: str) -> bool:
-    low = text.lower()
-    if not low:
-        return False
-    if any(marker in low for marker in _MONTHLY_LIMIT_MARKERS):
-        return True
-    monthly = "monthly" in low or " per month" in low or "this month" in low
-    limitish = any(word in low for word in ("limit", "quota", "usage", "calls", "requests"))
-    exhausted = any(word in low for word in ("reached", "exceeded", "exhausted", "depleted", "used up"))
-    return monthly and limitish and exhausted
+DEFAULT_DATA_BASE_URL = "https://data.alpaca.markets"
+DEFAULT_DATA_FEED = "iex"
 
 
 @dataclass(frozen=True)
@@ -71,16 +30,17 @@ class CandleData:
     four_hour: pd.DataFrame
 
 
-_cli_calls_this_run = 0
+_api_calls_this_run = 0
 
 
 def reset_cli_call_count() -> None:
-    global _cli_calls_this_run
-    _cli_calls_this_run = 0
+    """Reset per-run market-data API call counter (name kept for call-site compatibility)."""
+    global _api_calls_this_run
+    _api_calls_this_run = 0
 
 
 def cli_calls_attempted() -> int:
-    return _cli_calls_this_run
+    return _api_calls_this_run
 
 
 def format_cli_usage_line(
@@ -92,15 +52,44 @@ def format_cli_usage_line(
     count = cli_calls_attempted()
     noun = "call" if count == 1 else "calls"
     suffix = f" ({reason})" if reason else ""
-    line = f"[klickanalytics] {count} CLI {noun} attempted this run{suffix}"
+    line = f"[alpaca] {count} API {noun} attempted this run{suffix}"
     if month_total is not None and month_limit:
         line += f" · month {month_total}/{month_limit}"
     return line
 
 
-def _record_cli_call() -> None:
-    global _cli_calls_this_run
-    _cli_calls_this_run += 1
+def _record_api_call() -> None:
+    global _api_calls_this_run
+    _api_calls_this_run += 1
+
+
+def is_rate_limit_message(text: str) -> bool:
+    low = (text or "").lower()
+    if not low:
+        return False
+    markers = (
+        "rate limit",
+        "too many requests",
+        "429",
+        "quota exceeded",
+        "quota exhausted",
+        "request limit",
+        "monthly limit",
+        "monthly quota",
+        "monthly api limit",
+        "usage limit",
+    )
+    if any(marker in low for marker in markers):
+        return True
+    monthly = "monthly" in low or "this month" in low
+    limitish = any(word in low for word in ("limit", "quota", "usage"))
+    exhausted = any(word in low for word in ("reached", "exceeded", "exhausted", "depleted"))
+    return monthly and limitish and exhausted
+
+
+# Kept for older tests / Discord parsers that still call the KA-era name.
+def is_klickanalytics_monthly_limit_message(text: str) -> bool:
+    return is_rate_limit_message(text)
 
 
 def _normalize_ohlcv(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
@@ -110,7 +99,8 @@ def _normalize_ohlcv(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
     rename_map = {
         "Date": "timestamp",
         "Datetime": "timestamp",
-        "px_date": "timestamp",
+        "t": "timestamp",
+        "timestamp": "timestamp",
         "date": "timestamp",
         "datetime": "timestamp",
         "Open": "open",
@@ -118,6 +108,11 @@ def _normalize_ohlcv(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
         "Low": "low",
         "Close": "close",
         "Volume": "volume",
+        "o": "open",
+        "h": "high",
+        "l": "low",
+        "c": "close",
+        "v": "volume",
         "open": "open",
         "high": "high",
         "low": "low",
@@ -147,90 +142,130 @@ def _normalize_ohlcv(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
     return frame.sort_index()
 
 
-def _extract_records(payload: object) -> list[dict]:
-    if isinstance(payload, list):
-        return [row for row in payload if isinstance(row, dict)]
-    if isinstance(payload, dict):
-        for key in ("results", "data", "rows", "items", "bars", "prices", "recent_bars"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return [row for row in value if isinstance(row, dict)]
-        if "result" in payload and isinstance(payload["result"], list):
-            return [row for row in payload["result"] if isinstance(row, dict)]
-    raise DataError("KlickAnalytics returned an unsupported JSON shape.")
+def _auth_headers(api_key: str, api_secret: str) -> dict[str, str]:
+    return {
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": api_secret,
+        "Accept": "application/json",
+    }
 
 
-def _run_ka_json(cli_command: str, args: list[str], api_key: str) -> object:
-    _record_cli_call()
-    env = os.environ.copy()
-    env["KLICKANALYTICS_CLI_API_KEY"] = api_key
-    cmd = [cli_command] + args
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            timeout=60,
-        )
-    except FileNotFoundError as exc:
-        raise DataError(
-            f"KlickAnalytics CLI not found: '{cli_command}'. Install with 'pip install klickanalytics-cli'."
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise DataError(f"KlickAnalytics CLI timed out for command: {' '.join(cmd)}") from exc
-
-    if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()
-        stdout = (proc.stdout or "").strip()
-        detail = "\n".join(part for part in (stderr, stdout) if part).strip() or "unknown error"
-        message = f"KlickAnalytics CLI command failed: {detail}"
-        if is_klickanalytics_monthly_limit_message(detail) or _quota_error_code_in_payload(detail):
-            raise KlickAnalyticsQuotaError(message)
-        raise DataError(message)
-
-    raw = (proc.stdout or "").strip()
-    if not raw:
-        raise DataError("KlickAnalytics CLI returned empty output.")
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise DataError("KlickAnalytics CLI did not return valid JSON. Use -output json.") from exc
+def _raise_for_alpaca_response(response: requests.Response, *, context: str) -> None:
+    if response.status_code < 400:
+        return
+    body = (response.text or "").strip()
+    message = f"Alpaca market data {context} failed ({response.status_code}): {body or response.reason}"
+    if response.status_code == 429 or is_rate_limit_message(body):
+        raise MarketDataQuotaError(message)
+    raise DataError(message)
 
 
-def _fetch_daily_prices(ticker: str, cli_command: str, api_key: str) -> pd.DataFrame:
-    payload = _run_ka_json(
-        cli_command=cli_command,
-        args=["prices", "-s", ticker, "-l", "400", "-output", "json"],
-        api_key=api_key,
-    )
-    records = _extract_records(payload)
-    return _normalize_ohlcv(pd.DataFrame(records), ticker=ticker)
+def _fetch_bars(
+    ticker: str,
+    *,
+    timeframe: str,
+    start: datetime,
+    api_key: str,
+    api_secret: str,
+    data_base_url: str,
+    feed: str,
+    max_bars: int,
+    session: requests.Session | None = None,
+) -> pd.DataFrame:
+    base = data_base_url.rstrip("/") + "/"
+    path = f"v2/stocks/{ticker}/bars"
+    url = urljoin(base, path)
+    headers = _auth_headers(api_key, api_secret)
+    params: dict[str, Any] = {
+        "timeframe": timeframe,
+        "start": start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "limit": min(10000, max(1, max_bars)),
+        "adjustment": "split",
+        "feed": feed,
+        "sort": "asc",
+    }
+
+    rows: list[dict[str, Any]] = []
+    page_token: str | None = None
+    client = session or requests
+
+    while True:
+        call_params = dict(params)
+        if page_token:
+            call_params["page_token"] = page_token
+        _record_api_call()
+        try:
+            response = client.get(url, headers=headers, params=call_params, timeout=60)
+        except requests.RequestException as exc:
+            raise DataError(f"Alpaca market data request failed for {ticker} ({timeframe}): {exc}") from exc
+
+        _raise_for_alpaca_response(response, context=f"{ticker} {timeframe}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise DataError(f"Alpaca market data returned non-JSON for {ticker} ({timeframe}).") from exc
+
+        if not isinstance(payload, dict):
+            raise DataError(f"Alpaca market data returned an unsupported JSON shape for {ticker}.")
+
+        bars = payload.get("bars") or []
+        if not isinstance(bars, list):
+            raise DataError(f"Alpaca market data returned an unsupported bars payload for {ticker}.")
+        rows.extend(row for row in bars if isinstance(row, dict))
+
+        if len(rows) >= max_bars:
+            rows = rows[:max_bars]
+            break
+
+        next_token = payload.get("next_page_token")
+        if not next_token:
+            break
+        page_token = str(next_token)
+
+    return _normalize_ohlcv(pd.DataFrame(rows), ticker=ticker)
 
 
-def _fetch_hourly_intraday(ticker: str, cli_command: str, api_key: str, *, bars: int) -> pd.DataFrame:
-    payload = _run_ka_json(
-        cli_command=cli_command,
-        args=["intraday", "-s", ticker, "-tf", "1hour", "-bars", str(int(bars)), "-output", "json"],
-        api_key=api_key,
-    )
-    records = _extract_records(payload)
-    return _normalize_ohlcv(pd.DataFrame(records), ticker=ticker)
+def load_candles(
+    ticker: str,
+    *,
+    api_key: str,
+    api_secret: str,
+    data_base_url: str = DEFAULT_DATA_BASE_URL,
+    feed: str = DEFAULT_DATA_FEED,
+) -> CandleData:
+    """Load daily + synthetic 4h candles for ``ticker`` from Alpaca Market Data."""
+    if not api_key or not api_secret:
+        raise DataError("ALPACA_API_KEY and ALPACA_API_SECRET are required to load candles.")
 
-
-def load_candles(ticker: str, api_key: str, cli_command: str) -> CandleData:
     reset_cli_call_count()
-    daily = _fetch_daily_prices(ticker=ticker, cli_command=cli_command, api_key=api_key)
-    # Hourly history must cover the daily window (800 bars ~33d would otherwise blank older backtest dates).
+    now = datetime.now(timezone.utc)
+    daily_start = now - timedelta(days=650)
+    daily = _fetch_bars(
+        ticker,
+        timeframe="1Day",
+        start=daily_start,
+        api_key=api_key,
+        api_secret=api_secret,
+        data_base_url=data_base_url,
+        feed=feed,
+        max_bars=400,
+    )
+
+    # Hourly history must cover the daily window (same approach as the prior KA loader).
     span_days = max(7, (daily.index[-1] - daily.index[0]).days + 14)
     hourly_bars = min(12000, max(800, span_days * 24))
-    hourly = _fetch_hourly_intraday(
-        ticker=ticker, cli_command=cli_command, api_key=api_key, bars=hourly_bars
+    hourly_start = now - timedelta(days=min(span_days + 14, 730))
+    hourly = _fetch_bars(
+        ticker,
+        timeframe="1Hour",
+        start=hourly_start,
+        api_key=api_key,
+        api_secret=api_secret,
+        data_base_url=data_base_url,
+        feed=feed,
+        max_bars=hourly_bars,
     )
 
-    # Build synthetic 4h candles from 1h bars from KlickAnalytics.
     four_hour = (
         hourly.resample("4h")
         .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})

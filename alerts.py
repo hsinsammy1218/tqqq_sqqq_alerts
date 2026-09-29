@@ -461,9 +461,9 @@ def build_api_quota_discord_embed(detail: str, timestamp: str) -> dict[str, obje
     message = str(info["message"] or "Monthly CLI usage limit reached.")
 
     description_lines = [
-        "**Data feed paused** — KlickAnalytics monthly CLI quota is full.",
+        "**Data feed paused** — Alpaca market-data rate/quota limit is blocking fetches.",
         "",
-        "Scheduled runs can't pull fresh QQQ bars until usage resets. "
+        "Scheduled runs can't pull fresh QQQ bars until the limit clears. "
         "Bot memory and your journal are unchanged; only new alerts are blocked.",
     ]
 
@@ -471,7 +471,7 @@ def build_api_quota_discord_embed(detail: str, timestamp: str) -> dict[str, obje
     if isinstance(limit, int) and isinstance(hits, int):
         fields.append(
             {
-                "name": "CLI usage this month",
+                "name": "API usage this month",
                 "value": _usage_meter(hits, limit),
                 "inline": False,
             }
@@ -483,7 +483,7 @@ def build_api_quota_discord_embed(detail: str, timestamp: str) -> dict[str, obje
         [
             {
                 "name": "Quota resets",
-                "value": "Start of next calendar month",
+                "value": "When Alpaca rate limits clear (or next calendar month for soft budgets)",
                 "inline": True,
             },
             {
@@ -494,7 +494,7 @@ def build_api_quota_discord_embed(detail: str, timestamp: str) -> dict[str, obje
             {
                 "name": "What you can do",
                 "value": (
-                    "\u2022 Wait for the monthly reset, or upgrade your KlickAnalytics plan\n"
+                    "\u2022 Wait for the rate limit to clear, or review your Alpaca data plan\n"
                     "\u2022 Trade manually from your broker if you still hold TQQQ/SQQQ\n"
                     "\u2022 Re-run after reset: `python main.py --health-check`"
                 ),
@@ -521,7 +521,7 @@ def build_api_quota_discord_embed(detail: str, timestamp: str) -> dict[str, obje
     )
 
     embed: dict[str, object] = {
-        "title": "KlickAnalytics monthly limit reached",
+        "title": "Alpaca market data limit reached",
         "description": "\n".join(description_lines),
         "color": 0xE67E22,
         "fields": fields,
@@ -570,16 +570,16 @@ def build_api_usage_warning_embed(
     pct = min(100, round(100 * total_calls / monthly_limit)) if monthly_limit else 0
 
     description_lines = [
-        "**Heads up** — you're approaching the KlickAnalytics monthly CLI limit.",
+        "**Heads up** — you're approaching the local Alpaca API soft budget.",
         "",
         "This count is tracked by the bot from runs on this machine "
         "(scheduled jobs, manual runs, health checks). "
-        "Other API use may not be included.",
+        "Other Alpaca API use may not be included.",
     ]
 
     fields: list[dict[str, object]] = [
         {
-            "name": "CLI usage this month",
+            "name": "API usage this month",
             "value": _usage_meter(total_calls, monthly_limit),
             "inline": False,
         },
@@ -603,14 +603,14 @@ def build_api_usage_warning_embed(
             "value": (
                 "\u2022 Avoid extra manual runs and health checks until reset\n"
                 "\u2022 Skip `publish_technical_dashboard.py` if you use it\n"
-                "\u2022 Upgrade your KlickAnalytics plan if you need more headroom"
+                "\u2022 Review your Alpaca data plan if you need more headroom"
             ),
             "inline": False,
         },
     ]
 
     embed: dict[str, object] = {
-        "title": "KlickAnalytics usage warning",
+        "title": "Alpaca usage warning",
         "description": "\n".join(description_lines),
         "color": 0xF1C40F,
         "fields": fields,

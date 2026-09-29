@@ -5,17 +5,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from alerts import format_alert_message, send_discord
-from api_quota_notify import maybe_notify_klickanalytics_quota_reached
+from api_quota_notify import maybe_notify_quota_reached
+from api_usage import track_and_maybe_warn_api_usage
 from backtest import export_backtest_trades_csv, format_backtest_report, run_backtest
 from backtest_sweep import export_sweep_csv, format_sweep_report, run_parameter_sweep, sweep_grid_from_settings
 from cli_args import build_parser
 from config import ConfigError, Settings, load_settings, strategy_params_from_settings
-from data import DataError, KlickAnalyticsQuotaError, cli_calls_attempted, format_cli_usage_line, load_candles
+from data import DataError, MarketDataQuotaError, cli_calls_attempted, format_cli_usage_line, load_candles
 from event_calendar import load_merged_blackout_dates
 from health_check import run_health_check
 from indicators import build_snapshot
 from journal import append_journal
-from klickanalytics_usage import track_and_maybe_warn_cli_usage
 from market_hours import market_closed_reason
 from runtime_logging import format_utc_z, log_event, setup_logger
 from walk_forward import (
@@ -69,17 +69,17 @@ def _log_cli_usage(
     quota_error_detail: str | None = None,
 ) -> None:
     calls = cli_calls_attempted()
-    snapshot = track_and_maybe_warn_cli_usage(
+    snapshot = track_and_maybe_warn_api_usage(
         calls=calls,
         webhook_url=settings.discord_webhook_url,
         dry_run=settings.dry_run,
-        monthly_limit=settings.klickanalytics_monthly_limit,
-        warn_pct=settings.klickanalytics_usage_warn_pct,
+        monthly_limit=settings.alpaca_monthly_limit,
+        warn_pct=settings.alpaca_usage_warn_pct,
         logger=logger,
         quota_error_detail=quota_error_detail,
     )
     month_total = snapshot.total_calls if snapshot else None
-    month_limit = settings.klickanalytics_monthly_limit if snapshot else None
+    month_limit = settings.alpaca_monthly_limit if snapshot else None
     print(
         format_cli_usage_line(
             reason=reason,
@@ -248,14 +248,16 @@ def run() -> int:
         if closed_reason is not None:
             print(f"Skipped: US equity market is closed ({closed_reason}).")
             print(format_cli_usage_line(reason="market closed"))
-            log_event(logger, logging.INFO, "Market hours skip", reason=closed_reason, klickanalytics_cli_calls=0)
+            log_event(logger, logging.INFO, "Market hours skip", reason=closed_reason, alpaca_api_calls=0)
             return 0
 
     try:
         candles = load_candles(
             ticker=settings.qqq_ticker,
-            api_key=settings.klickanalytics_api_key,
-            cli_command=settings.klickanalytics_cli_command,
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
         )
         last_daily = candles.daily.index[-1]
         last_h4 = candles.four_hour.index[-1]
@@ -268,10 +270,10 @@ def run() -> int:
             qqq_ticker=settings.qqq_ticker,
             latest_daily_candle=daily_fetch_label,
             latest_h4_candle=h4_fetch_label,
-            klickanalytics_cli_calls=cli_calls_attempted(),
+            alpaca_api_calls=cli_calls_attempted(),
         )
         _log_cli_usage(settings, logger)
-    except KlickAnalyticsQuotaError as exc:
+    except MarketDataQuotaError as exc:
         print(f"Data error: {exc}")
         _log_cli_usage(settings, logger, quota_error_detail=str(exc))
         log_event(
@@ -280,10 +282,10 @@ def run() -> int:
             "Data fetch failed",
             error=str(exc),
             quota_exhausted=True,
-            klickanalytics_cli_calls=cli_calls_attempted(),
+            alpaca_api_calls=cli_calls_attempted(),
         )
         try:
-            maybe_notify_klickanalytics_quota_reached(
+            maybe_notify_quota_reached(
                 webhook_url=settings.discord_webhook_url,
                 dry_run=settings.dry_run,
                 state_path=Path("logs/api_quota_notified.json"),
@@ -302,7 +304,7 @@ def run() -> int:
             logging.ERROR,
             "Data fetch failed",
             error=str(exc),
-            klickanalytics_cli_calls=cli_calls_attempted(),
+            alpaca_api_calls=cli_calls_attempted(),
         )
         return 1
     except Exception as exc:  # noqa: BLE001

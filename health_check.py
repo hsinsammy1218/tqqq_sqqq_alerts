@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from api_quota_notify import maybe_notify_klickanalytics_quota_reached
+from api_quota_notify import maybe_notify_quota_reached
+from api_usage import track_and_maybe_warn_api_usage
 from config import ConfigError
-from data import KlickAnalyticsQuotaError, cli_calls_attempted, format_cli_usage_line, load_candles
-from klickanalytics_usage import track_and_maybe_warn_cli_usage
+from data import MarketDataQuotaError, cli_calls_attempted, format_cli_usage_line, load_candles
 from position_store import PositionStoreError, position_store_from_settings
 from runtime_logging import format_utc_z, log_event
 from strategy import PositionState
@@ -21,24 +20,15 @@ def _position_to_dict(state: PositionState) -> dict[str, Any]:
     return position_state_to_dict(state)
 
 
-def _check_cli_available(cli_command: str) -> tuple[bool, str]:
-    try:
-        proc = subprocess.run(
-            [cli_command, "--help"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=20,
-            stdin=subprocess.DEVNULL,
-        )
-    except FileNotFoundError:
-        return False, f"CLI '{cli_command}' not found."
-    except subprocess.TimeoutExpired:
-        return False, f"CLI '{cli_command}' timed out on --help."
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip()
-        return False, f"CLI '{cli_command}' returned {proc.returncode}: {detail or 'unknown error'}"
-    return True, f"CLI '{cli_command}' is available."
+def _check_alpaca_credentials(api_key: str, api_secret: str) -> tuple[bool, str]:
+    if api_key and api_secret:
+        return True, "Alpaca API key and secret are configured."
+    missing = []
+    if not api_key:
+        missing.append("ALPACA_API_KEY")
+    if not api_secret:
+        missing.append("ALPACA_API_SECRET")
+    return False, "Missing " + " and ".join(missing) + "."
 
 
 def run_health_check(settings: Any, dry_run: bool, logger: logging.Logger) -> int:
@@ -46,17 +36,19 @@ def run_health_check(settings: Any, dry_run: bool, logger: logging.Logger) -> in
     run_ts = format_utc_z(datetime.now(timezone.utc))
     log_event(logger, logging.INFO, "Health check started", run_timestamp=run_ts, dry_run=dry_run)
 
-    ok, msg = _check_cli_available(settings.klickanalytics_cli_command)
+    ok, msg = _check_alpaca_credentials(settings.alpaca_api_key, settings.alpaca_api_secret)
     print(f"[health] {'PASS' if ok else 'FAIL'} - {msg}")
-    log_event(logger, logging.INFO if ok else logging.ERROR, "KlickAnalytics CLI check", ok=ok, detail=msg)
+    log_event(logger, logging.INFO if ok else logging.ERROR, "Alpaca credentials check", ok=ok, detail=msg)
     if not ok:
         failures.append(msg)
 
     try:
         candles = load_candles(
             ticker=settings.qqq_ticker,
-            api_key=settings.klickanalytics_api_key,
-            cli_command=settings.klickanalytics_cli_command,
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
         )
         last_daily = candles.daily.index[-1]
         last_h4 = candles.four_hour.index[-1]
@@ -72,38 +64,38 @@ def run_health_check(settings: Any, dry_run: bool, logger: logging.Logger) -> in
             qqq_ticker=settings.qqq_ticker,
             latest_daily_candle=d_label,
             latest_h4_candle=h4_label,
-            klickanalytics_cli_calls=cli_calls_attempted(),
+            alpaca_api_calls=cli_calls_attempted(),
         )
-        snapshot = track_and_maybe_warn_cli_usage(
+        snapshot = track_and_maybe_warn_api_usage(
             calls=cli_calls_attempted(),
             webhook_url=settings.discord_webhook_url,
             dry_run=dry_run,
-            monthly_limit=settings.klickanalytics_monthly_limit,
-            warn_pct=settings.klickanalytics_usage_warn_pct,
+            monthly_limit=settings.alpaca_monthly_limit,
+            warn_pct=settings.alpaca_usage_warn_pct,
             logger=logger,
         )
         print(
             format_cli_usage_line(
                 month_total=snapshot.total_calls if snapshot else None,
-                month_limit=settings.klickanalytics_monthly_limit if snapshot else None,
+                month_limit=settings.alpaca_monthly_limit if snapshot else None,
             )
         )
-    except KlickAnalyticsQuotaError as exc:
+    except MarketDataQuotaError as exc:
         msg = f"Data fetch failed: {exc}"
         print(f"[health] FAIL - {msg}")
-        snapshot = track_and_maybe_warn_cli_usage(
+        snapshot = track_and_maybe_warn_api_usage(
             calls=cli_calls_attempted(),
             webhook_url=settings.discord_webhook_url,
             dry_run=dry_run,
-            monthly_limit=settings.klickanalytics_monthly_limit,
-            warn_pct=settings.klickanalytics_usage_warn_pct,
+            monthly_limit=settings.alpaca_monthly_limit,
+            warn_pct=settings.alpaca_usage_warn_pct,
             logger=logger,
             quota_error_detail=str(exc),
         )
         print(
             format_cli_usage_line(
                 month_total=snapshot.total_calls if snapshot else None,
-                month_limit=settings.klickanalytics_monthly_limit if snapshot else None,
+                month_limit=settings.alpaca_monthly_limit if snapshot else None,
             )
         )
         log_event(
@@ -113,11 +105,11 @@ def run_health_check(settings: Any, dry_run: bool, logger: logging.Logger) -> in
             ok=False,
             error=str(exc),
             quota_exhausted=True,
-            klickanalytics_cli_calls=cli_calls_attempted(),
+            alpaca_api_calls=cli_calls_attempted(),
         )
         failures.append(msg)
         try:
-            maybe_notify_klickanalytics_quota_reached(
+            maybe_notify_quota_reached(
                 webhook_url=settings.discord_webhook_url,
                 dry_run=dry_run,
                 state_path=Path("logs/api_quota_notified.json"),
@@ -130,21 +122,21 @@ def run_health_check(settings: Any, dry_run: bool, logger: logging.Logger) -> in
     except Exception as exc:  # noqa: BLE001
         msg = f"Data fetch failed: {exc}"
         print(f"[health] FAIL - {msg}")
-        snapshot = track_and_maybe_warn_cli_usage(
+        snapshot = track_and_maybe_warn_api_usage(
             calls=cli_calls_attempted(),
             webhook_url=settings.discord_webhook_url,
             dry_run=dry_run,
-            monthly_limit=settings.klickanalytics_monthly_limit,
-            warn_pct=settings.klickanalytics_usage_warn_pct,
+            monthly_limit=settings.alpaca_monthly_limit,
+            warn_pct=settings.alpaca_usage_warn_pct,
             logger=logger,
         )
         print(
             format_cli_usage_line(
                 month_total=snapshot.total_calls if snapshot else None,
-                month_limit=settings.klickanalytics_monthly_limit if snapshot else None,
+                month_limit=settings.alpaca_monthly_limit if snapshot else None,
             )
         )
-        log_event(logger, logging.ERROR, "Data fetch health check", ok=False, error=str(exc), klickanalytics_cli_calls=cli_calls_attempted())
+        log_event(logger, logging.ERROR, "Data fetch health check", ok=False, error=str(exc), alpaca_api_calls=cli_calls_attempted())
         failures.append(msg)
 
     try:

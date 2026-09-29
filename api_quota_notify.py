@@ -30,7 +30,7 @@ def _save_notified_month(path: Path, month: str, detail: str) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def maybe_notify_klickanalytics_quota_reached(
+def maybe_notify_quota_reached(
     *,
     webhook_url: str,
     dry_run: bool,
@@ -44,7 +44,7 @@ def maybe_notify_klickanalytics_quota_reached(
         log_event(
             logger,
             logging.INFO,
-            "KlickAnalytics quota Discord notice skipped (already sent this month)",
+            "Alpaca quota Discord notice skipped (already sent this month)",
             notified_month=month_key,
             state_path=str(state_path),
         )
@@ -63,10 +63,14 @@ def maybe_notify_klickanalytics_quota_reached(
     log_event(
         logger,
         logging.INFO,
-        "KlickAnalytics quota Discord notice sent",
+        "Alpaca quota Discord notice sent",
         notified_month=month_key,
         dry_run=dry_run,
         webhook_configured=bool(webhook_url),
         state_path=str(state_path),
     )
     return True
+
+
+# Compatibility alias for older imports.
+maybe_notify_klickanalytics_quota_reached = maybe_notify_quota_reached

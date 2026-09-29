@@ -16,8 +16,10 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Settings:
     qqq_ticker: str
-    klickanalytics_api_key: str
-    klickanalytics_cli_command: str
+    alpaca_api_key: str
+    alpaca_api_secret: str
+    alpaca_data_base_url: str
+    alpaca_data_feed: str
     discord_webhook_url: str
     dry_run: bool
     bull_entry_threshold: int
@@ -46,8 +48,8 @@ class Settings:
     entry_dominance_gap_weight: float
     flip_in_range_regime: bool
     min_confidence_to_trade: int
-    klickanalytics_monthly_limit: int
-    klickanalytics_usage_warn_pct: int
+    alpaca_monthly_limit: int
+    alpaca_usage_warn_pct: int
 
 
 def _to_bool(value: str, default: bool = False) -> bool:
@@ -102,13 +104,18 @@ def load_settings() -> Settings:
     load_dotenv()
 
     qqq_ticker = os.getenv("QQQ_TICKER", "QQQ").strip().upper()
-    klickanalytics_api_key = os.getenv("KLICKANALYTICS_CLI_API_KEY", "").strip()
-    klickanalytics_cli_command = os.getenv("KLICKANALYTICS_CLI_COMMAND", "ka").strip()
+    alpaca_api_key = os.getenv("ALPACA_API_KEY", "").strip()
+    alpaca_api_secret = os.getenv("ALPACA_API_SECRET", "").strip()
+    alpaca_data_base_url = (
+        os.getenv("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets").strip()
+        or "https://data.alpaca.markets"
+    )
+    alpaca_data_feed = (os.getenv("ALPACA_DATA_FEED", "iex").strip() or "iex").lower()
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     dry_run = _to_bool(os.getenv("DRY_RUN", "true"), default=True)
 
-    if not klickanalytics_api_key:
-        raise ConfigError("KLICKANALYTICS_CLI_API_KEY is required.")
+    if not alpaca_api_key or not alpaca_api_secret:
+        raise ConfigError("ALPACA_API_KEY and ALPACA_API_SECRET are required.")
 
     position_state_backend = os.getenv("POSITION_STATE_BACKEND", "file").strip().lower() or "file"
     if position_state_backend not in {"file", "supabase"}:
@@ -125,8 +132,10 @@ def load_settings() -> Settings:
 
     return Settings(
         qqq_ticker=qqq_ticker,
-        klickanalytics_api_key=klickanalytics_api_key,
-        klickanalytics_cli_command=klickanalytics_cli_command,
+        alpaca_api_key=alpaca_api_key,
+        alpaca_api_secret=alpaca_api_secret,
+        alpaca_data_base_url=alpaca_data_base_url.rstrip("/"),
+        alpaca_data_feed=alpaca_data_feed,
         discord_webhook_url=webhook,
         dry_run=dry_run,
         bull_entry_threshold=int(os.getenv("BULL_ENTRY_THRESHOLD", "5")),
@@ -156,6 +165,6 @@ def load_settings() -> Settings:
         flip_in_range_regime=_to_bool(os.getenv("FLIP_ALLOW_IN_RANGE", "false"), default=False),
         # Locked from walk-forward rank 1 (reports/walk_forward_results.csv): avg_score best row → 62.
         min_confidence_to_trade=int(os.getenv("MIN_CONFIDENCE_TO_TRADE", "62")),
-        klickanalytics_monthly_limit=int(os.getenv("KLICKANALYTICS_MONTHLY_LIMIT", "500")),
-        klickanalytics_usage_warn_pct=int(os.getenv("KLICKANALYTICS_USAGE_WARN_PCT", "80")),
+        alpaca_monthly_limit=int(os.getenv("ALPACA_MONTHLY_LIMIT", "0")),
+        alpaca_usage_warn_pct=int(os.getenv("ALPACA_USAGE_WARN_PCT", "80")),
     )

@@ -1,5 +1,4 @@
 pandas
-klickanalytics-cli
 python-dotenv
 requests
 supabase>=2.0.0

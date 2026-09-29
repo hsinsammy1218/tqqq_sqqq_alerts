@@ -1,7 +1,7 @@
 """
 Batch-publish technical snapshots to Supabase for the Next.js dashboard.
 
-Uses the same data path as the alert bot (KlickAnalytics CLI via data.load_candles)
+Uses the same data path as the alert bot (Alpaca Market Data via data.load_candles)
 and the same scoring stack (build_snapshot, regime, weighted checklist, dominance confidence).
 
 Does not run trading logic or alerts. Configure SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
@@ -201,7 +201,13 @@ def run_publish(*, dry_run: bool) -> int:
 
     for sym in symbols:
         try:
-            candles = load_candles(sym, settings.klickanalytics_api_key, settings.klickanalytics_cli_command)
+            candles = load_candles(
+                sym,
+                api_key=settings.alpaca_api_key,
+                api_secret=settings.alpaca_api_secret,
+                data_base_url=settings.alpaca_data_base_url,
+                feed=settings.alpaca_data_feed,
+            )
             snap = build_snapshot(candles.daily, candles.four_hour, anchor)
             regime = detect_market_regime(snap, params)
             bd = weighted_signal_breakdown(snap, params.score_weights)

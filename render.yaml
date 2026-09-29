@@ -44,7 +44,9 @@ envVarGroups:
         value: default
       - key: DRY_RUN
         value: "false"
-      - key: KLICKANALYTICS_CLI_API_KEY
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_API_SECRET
         sync: false
       - key: DISCORD_WEBHOOK_URL
         sync: false

@@ -55,7 +55,7 @@ python publish_technical_dashboard.py --dry-run   # list TECHNICAL_UNIVERSE symb
 python publish_technical_dashboard.py            # fetch via ka, score, insert dashboard_runs + stock_snapshots
 ```
 
-Requires `KLICKANALYTICS_CLI_API_KEY`, `SUPABASE_URL` (or `NEXT_PUBLIC_SUPABASE_URL`), `SUPABASE_SERVICE_ROLE_KEY`, and optionally `TECHNICAL_UNIVERSE` (comma-separated tickers).
+Requires `ALPACA_API_KEY`, `ALPACA_API_SECRET`, `SUPABASE_URL` (or `NEXT_PUBLIC_SUPABASE_URL`), `SUPABASE_SERVICE_ROLE_KEY`, and optionally `TECHNICAL_UNIVERSE` (comma-separated tickers).
 
 Optional: `DASHBOARD_BASE_URL` + `CRON_SECRET` so the publisher POSTs `/api/technical/revalidate` and clears the Next.js cache tag `technical`.
 

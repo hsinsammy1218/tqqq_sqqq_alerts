@@ -1,23 +1,22 @@
-"""One-shot: detect KlickAnalytics monthly limit and post Discord notice (live)."""
+"""One-shot: detect Alpaca market-data rate/quota failures and post Discord notice (live)."""
 from __future__ import annotations
 
 import argparse
 import logging
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from alerts import send_discord_api_quota_alert
-from api_quota_notify import maybe_notify_klickanalytics_quota_reached
+from api_quota_notify import maybe_notify_quota_reached
 from config import ConfigError, load_settings
-from data import KlickAnalyticsQuotaError, load_candles
+from data import MarketDataQuotaError, load_candles
 from runtime_logging import format_utc_z
 
 logging.basicConfig(level=logging.INFO)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Send Discord notice when KlickAnalytics monthly limit is hit.")
+    parser = argparse.ArgumentParser(description="Send Discord notice when Alpaca market-data quota/rate limit is hit.")
     parser.add_argument(
         "--force",
         action="store_true",
@@ -32,10 +31,16 @@ def main() -> int:
         return 1
 
     try:
-        load_candles(settings.qqq_ticker, settings.klickanalytics_api_key, settings.klickanalytics_cli_command)
-        print("KlickAnalytics fetch succeeded — monthly limit is not currently hit.")
+        load_candles(
+            settings.qqq_ticker,
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
+        )
+        print("Alpaca fetch succeeded — rate/quota limit is not currently blocking.")
         return 0
-    except KlickAnalyticsQuotaError as exc:
+    except MarketDataQuotaError as exc:
         detail = str(exc)
         print(detail)
         if not settings.discord_webhook_url:
@@ -52,7 +57,7 @@ def main() -> int:
             print("Discord API quota notice sent (forced).")
             return 0
 
-        sent = maybe_notify_klickanalytics_quota_reached(
+        sent = maybe_notify_quota_reached(
             webhook_url=settings.discord_webhook_url,
             dry_run=False,
             state_path=Path("logs/api_quota_notified.json"),

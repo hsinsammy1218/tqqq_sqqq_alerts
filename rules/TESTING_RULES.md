@@ -29,7 +29,7 @@
 
 ## Mocking Guidelines
 
-- Mock external providers (KlickAnalytics/Finnhub) at boundaries.
+- Mock external providers (Alpaca/Finnhub) at boundaries.
 - Prefer contract-based mocks over ad hoc object shapes.
 - Avoid over-mocking internal domain logic under test.
 

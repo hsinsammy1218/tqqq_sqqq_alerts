@@ -4,28 +4,28 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from klickanalytics_usage import (
-    maybe_notify_klickanalytics_usage_warning,
-    record_monthly_cli_usage,
-    track_and_maybe_warn_cli_usage,
+from api_usage import (
+    MonthlyUsageSnapshot,
+    maybe_notify_api_usage_warning,
+    record_monthly_api_usage,
+    track_and_maybe_warn_api_usage,
 )
-from klickanalytics_usage import MonthlyUsageSnapshot
 
 
-def test_record_monthly_cli_usage_accumulates(tmp_path: Path):
+def test_record_monthly_api_usage_accumulates(tmp_path: Path):
     usage_path = tmp_path / "usage.json"
-    first = record_monthly_cli_usage(2, monthly_limit=500, warn_pct=80, usage_path=usage_path)
+    first = record_monthly_api_usage(2, monthly_limit=500, warn_pct=80, usage_path=usage_path)
     assert first is not None
     assert first.total_calls == 2
-    second = record_monthly_cli_usage(2, monthly_limit=500, warn_pct=80, usage_path=usage_path)
+    second = record_monthly_api_usage(2, monthly_limit=500, warn_pct=80, usage_path=usage_path)
     assert second is not None
     assert second.total_calls == 4
 
 
 def test_record_syncs_server_total(tmp_path: Path):
     usage_path = tmp_path / "usage.json"
-    record_monthly_cli_usage(2, monthly_limit=500, warn_pct=80, usage_path=usage_path)
-    synced = record_monthly_cli_usage(
+    record_monthly_api_usage(2, monthly_limit=500, warn_pct=80, usage_path=usage_path)
+    synced = record_monthly_api_usage(
         1,
         monthly_limit=500,
         warn_pct=80,
@@ -37,7 +37,6 @@ def test_record_syncs_server_total(tmp_path: Path):
 
 
 def test_usage_warning_sent_once_per_month(tmp_path: Path):
-    usage_path = tmp_path / "usage.json"
     warn_path = tmp_path / "warn.json"
     logger = __import__("logging").getLogger("test")
     snapshot = MonthlyUsageSnapshot(
@@ -48,8 +47,8 @@ def test_usage_warning_sent_once_per_month(tmp_path: Path):
         remaining=90,
     )
 
-    with patch("klickanalytics_usage.send_discord_api_usage_warning") as send_mock:
-        assert maybe_notify_klickanalytics_usage_warning(
+    with patch("api_usage.send_discord_api_usage_warning") as send_mock:
+        assert maybe_notify_api_usage_warning(
             snapshot,
             webhook_url="https://discord.test/webhook",
             dry_run=False,
@@ -58,7 +57,7 @@ def test_usage_warning_sent_once_per_month(tmp_path: Path):
             warn_notified_path=warn_path,
         )
         assert send_mock.call_count == 1
-        assert not maybe_notify_klickanalytics_usage_warning(
+        assert not maybe_notify_api_usage_warning(
             snapshot,
             webhook_url="https://discord.test/webhook",
             dry_run=False,
@@ -76,11 +75,11 @@ def test_track_and_warn_skips_at_limit(tmp_path: Path, monkeypatch):
     usage_path = tmp_path / "usage.json"
     warn_path = tmp_path / "warn.json"
     logger = __import__("logging").getLogger("test")
-    monkeypatch.setattr("klickanalytics_usage.USAGE_PATH", usage_path)
-    monkeypatch.setattr("klickanalytics_usage.WARN_NOTIFIED_PATH", warn_path)
+    monkeypatch.setattr("api_usage.USAGE_PATH", usage_path)
+    monkeypatch.setattr("api_usage.WARN_NOTIFIED_PATH", warn_path)
 
-    with patch("klickanalytics_usage.send_discord_api_usage_warning") as send_mock:
-        snapshot = track_and_maybe_warn_cli_usage(
+    with patch("api_usage.send_discord_api_usage_warning") as send_mock:
+        snapshot = track_and_maybe_warn_api_usage(
             calls=2,
             webhook_url="https://discord.test/webhook",
             dry_run=False,
@@ -94,3 +93,16 @@ def test_track_and_warn_skips_at_limit(tmp_path: Path, monkeypatch):
         assert snapshot is not None
         assert snapshot.total_calls >= 500
         assert send_mock.call_count == 0
+
+
+def test_track_disabled_when_limit_zero():
+    logger = __import__("logging").getLogger("test")
+    snapshot = track_and_maybe_warn_api_usage(
+        calls=2,
+        webhook_url="https://discord.test/webhook",
+        dry_run=True,
+        monthly_limit=0,
+        warn_pct=80,
+        logger=logger,
+    )
+    assert snapshot is None

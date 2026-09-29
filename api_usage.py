@@ -9,7 +9,7 @@ from pathlib import Path
 from alerts import parse_api_quota_detail, send_discord_api_usage_warning
 from runtime_logging import format_utc_z, log_event
 
-USAGE_PATH = Path("logs/klickanalytics_monthly_usage.json")
+USAGE_PATH = Path("logs/alpaca_monthly_usage.json")
 WARN_NOTIFIED_PATH = Path("logs/api_usage_warn_notified.json")
 
 
@@ -62,7 +62,7 @@ def _save_warn_notified_month(path: Path, month: str) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def record_monthly_cli_usage(
+def record_monthly_api_usage(
     calls: int,
     *,
     monthly_limit: int,
@@ -110,7 +110,11 @@ def record_monthly_cli_usage(
     )
 
 
-def maybe_notify_klickanalytics_usage_warning(
+# Compatibility alias used by older tests during rename.
+record_monthly_cli_usage = record_monthly_api_usage
+
+
+def maybe_notify_api_usage_warning(
     snapshot: MonthlyUsageSnapshot,
     *,
     webhook_url: str,
@@ -132,7 +136,7 @@ def maybe_notify_klickanalytics_usage_warning(
         log_event(
             logger,
             logging.INFO,
-            "KlickAnalytics usage warning skipped (already sent this month)",
+            "Alpaca usage warning skipped (already sent this month)",
             notified_month=snapshot.month,
         )
         return False
@@ -152,7 +156,7 @@ def maybe_notify_klickanalytics_usage_warning(
     log_event(
         logger,
         logging.INFO,
-        "KlickAnalytics usage warning sent",
+        "Alpaca usage warning sent",
         notified_month=snapshot.month,
         total_calls=snapshot.total_calls,
         monthly_limit=snapshot.monthly_limit,
@@ -163,7 +167,10 @@ def maybe_notify_klickanalytics_usage_warning(
     return True
 
 
-def track_and_maybe_warn_cli_usage(
+maybe_notify_klickanalytics_usage_warning = maybe_notify_api_usage_warning
+
+
+def track_and_maybe_warn_api_usage(
     *,
     calls: int,
     webhook_url: str,
@@ -180,7 +187,7 @@ def track_and_maybe_warn_cli_usage(
         if isinstance(hits, int):
             server_total = hits
 
-    snapshot = record_monthly_cli_usage(
+    snapshot = record_monthly_api_usage(
         calls,
         monthly_limit=monthly_limit,
         warn_pct=warn_pct,
@@ -189,7 +196,7 @@ def track_and_maybe_warn_cli_usage(
     if snapshot is None:
         return None
 
-    maybe_notify_klickanalytics_usage_warning(
+    maybe_notify_api_usage_warning(
         snapshot,
         webhook_url=webhook_url,
         dry_run=dry_run,
@@ -197,6 +204,9 @@ def track_and_maybe_warn_cli_usage(
         logger=logger,
     )
     return snapshot
+
+
+track_and_maybe_warn_cli_usage = track_and_maybe_warn_api_usage
 
 
 def server_total_from_quota_detail(detail: str) -> int | None:

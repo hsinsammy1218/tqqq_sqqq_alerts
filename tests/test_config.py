@@ -9,19 +9,28 @@ from main import _missing_live_webhook_message
 
 
 def test_load_settings_rejects_unknown_position_backend(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("KLICKANALYTICS_CLI_API_KEY", "test-key")
+    monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "test-secret")
     monkeypatch.setenv("POSITION_STATE_BACKEND", "s3")
     with pytest.raises(ConfigError, match="POSITION_STATE_BACKEND must be"):
         load_settings()
 
 
 def test_load_settings_supabase_requires_credentials(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("KLICKANALYTICS_CLI_API_KEY", "test-key")
+    monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "test-secret")
     monkeypatch.setenv("POSITION_STATE_BACKEND", "supabase")
     monkeypatch.setenv("SUPABASE_URL", "")
     monkeypatch.setenv("NEXT_PUBLIC_SUPABASE_URL", "")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "")
     with pytest.raises(ConfigError, match="requires SUPABASE_URL"):
+        load_settings()
+
+
+def test_load_settings_requires_alpaca_credentials(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_API_SECRET", raising=False)
+    with pytest.raises(ConfigError, match="ALPACA_API_KEY and ALPACA_API_SECRET"):
         load_settings()
 
 

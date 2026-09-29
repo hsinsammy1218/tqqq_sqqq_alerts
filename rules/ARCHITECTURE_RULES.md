@@ -17,7 +17,7 @@
 
 - Separate news ingest, technical scoring, and persistence concerns.
 - Each service module must expose a narrow interface and typed contracts.
-- External providers (KlickAnalytics, Finnhub) must be wrapped behind adapter interfaces.
+- External providers (Alpaca, Finnhub) must be wrapped behind adapter interfaces.
 - Ingest write paths must use conflict-aware persistence and idempotent behavior by default.
 
 ## State Management Standards
