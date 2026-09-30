@@ -101,6 +101,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path for --small-grid JSON (default: reports/grid_neighbors.json).",
     )
     parser.add_argument(
+        "--checklist-compare",
+        action="store_true",
+        help=(
+            "Compare checklist redesign variants vs baseline on the strategy-eval window. "
+            "Writes reports/checklist_compare.json. Does not submit orders or change live defaults."
+        ),
+    )
+    parser.add_argument(
+        "--checklist-compare-json",
+        default="reports/checklist_compare.json",
+        metavar="PATH",
+        help="Path for --checklist-compare JSON (default: reports/checklist_compare.json).",
+    )
+    parser.add_argument(
         "--debug-strategy",
         action="store_true",
         help="With --backtest, --backtest-sweep, or --walk-forward: print score/regime/threshold diagnostics.",

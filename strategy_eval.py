@@ -660,6 +660,169 @@ def format_strategy_eval_report(payload: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+# Trend-following checklist tilt: boost daily/4h EMA stack, cut RSI + volume noise.
+TREND_EMA_WEIGHTS: tuple[float, ...] = (1.5, 1.5, 0.5, 1.0, 1.5, 1.5, 1.0, 0.5)
+
+
+def checklist_variant_specs(
+    base: StrategyParams,
+) -> list[tuple[str, str, StrategyParams]]:
+    """Named research variants. Defaults on ``base`` are the live checklist."""
+    return [
+        ("baseline", "Current live decide() rules", base),
+        (
+            "aligned_entry",
+            "Flat BUY only TQQQ in trend_up / SQQQ in trend_down; exits unchanged",
+            replace(base, entry_require_regime_align=True),
+        ),
+        (
+            "block_range_entry",
+            "Skip flat BUY while regime is range; counter-trend still possible",
+            replace(base, block_range_entries=True),
+        ),
+        (
+            "no_flip",
+            "Disable FLIP; exit only via weaken / stop / take-profit / max hold",
+            replace(base, allow_flips=False),
+        ),
+        (
+            "aligned_entry_flip_exit",
+            "Aligned entries + flatten instead of flipping into adverse regime",
+            replace(base, entry_require_regime_align=True, flip_adverse_becomes_exit=True),
+        ),
+        (
+            "aligned_entry_no_flip",
+            "Aligned entries + no flips",
+            replace(base, entry_require_regime_align=True, allow_flips=False),
+        ),
+        (
+            "adverse_weak_exit",
+            "Raise weak threshold by 1.0 while holding off-regime (sooner weaken)",
+            replace(base, adverse_hold_weak_add=1.0),
+        ),
+        (
+            "trend_ema_weights",
+            "Reweight checklist toward EMA stack; cut RSI/volume",
+            replace(base, score_weights=TREND_EMA_WEIGHTS),
+        ),
+        (
+            "aligned_entry_trend_weights",
+            "Aligned entries + trend EMA weights",
+            replace(base, entry_require_regime_align=True, score_weights=TREND_EMA_WEIGHTS),
+        ),
+        (
+            "blunt_adverse_exit",
+            "Prior failed blunt filter: aligned entry + force exit when regime turns adverse",
+            replace(base, entry_require_regime_align=True, exit_on_adverse_regime=True),
+        ),
+    ]
+
+
+def compare_checklist_variants(
+    candles: CandleData,
+    *,
+    anchor_date: str | None,
+    blocked_dates: set[str],
+    strategy_params: StrategyParams,
+    bars: int,
+    decide_options: DecideOptions | None = None,
+    entry_slippage_bps: float = 10.0,
+    exit_slippage_bps: float = 10.0,
+    wfe_segments: int = 3,
+    data_window: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Run fixed-exit strategy-eval metrics for each checklist redesign candidate."""
+    rows: list[dict[str, object]] = []
+    baseline_net: float | None = None
+    for name, description, params in checklist_variant_specs(strategy_params):
+        payload = run_strategy_evaluation(
+            candles,
+            anchor_date=anchor_date,
+            blocked_dates=blocked_dates,
+            strategy_params=params,
+            bars=bars,
+            decide_options=decide_options,
+            plateau_rows=None,
+            data_window=data_window,
+            entry_slippage_bps=entry_slippage_bps,
+            exit_slippage_bps=exit_slippage_bps,
+            wfe_segments=wfe_segments,
+        )
+        metrics = payload["baseline"]["metrics"]  # type: ignore[index]
+        assert isinstance(metrics, dict)
+        wfe = payload["walk_forward_efficiency"]
+        assert isinstance(wfe, dict)
+        net = float(metrics["net_profit_pct"])
+        if name == "baseline":
+            baseline_net = net
+        delta = None if baseline_net is None else net - baseline_net
+        rows.append(
+            {
+                "name": name,
+                "description": description,
+                "trade_count": metrics["trade_count"],
+                "net_profit_pct": net,
+                "net_profit_delta_vs_baseline": delta,
+                "max_drawdown_pct": metrics["max_drawdown_pct"],
+                "profit_factor": metrics["profit_factor"],
+                "reward_risk": metrics["reward_risk"],
+                "walk_forward_efficiency": wfe.get("walk_forward_efficiency"),
+                "beats_baseline": bool(delta is not None and delta > 0),
+                "paper_gate_passes": payload["paper_gate"]["passes"],  # type: ignore[index]
+            }
+        )
+
+    adoptable = [
+        r
+        for r in rows
+        if r["name"] != "baseline" and r["beats_baseline"]
+    ]
+    adoptable.sort(key=lambda r: float(r["net_profit_pct"]), reverse=True)
+    best = adoptable[0] if adoptable else None
+    return {
+        "generated_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "bars": bars,
+        "slippage_bps": {"entry": entry_slippage_bps, "exit": exit_slippage_bps},
+        "data_window": data_window or {},
+        "adoption_rule": (
+            "Adopt into live decide() defaults only when a variant beats baseline "
+            "net_profit_pct on this window. Paper gate still independent."
+        ),
+        "variants": rows,
+        "best_beating_baseline": best,
+        "adopt_into_decide": best is not None,
+        "adopted_variant": best["name"] if best else None,
+    }
+
+
+def format_checklist_compare_report(payload: dict[str, object]) -> str:
+    lines = [
+        "Checklist redesign compare (QQQ proxy, fixed exit, same window as --strategy-eval)",
+        f"Bars: {payload.get('bars')}",
+        "",
+        f"{'variant':28s} {'trades':>6s} {'net%':>8s} {'Δbase':>8s} {'maxDD%':>8s} {'WFE':>8s} {'beat?':>5s}",
+    ]
+    for row in payload.get("variants", []):  # type: ignore[union-attr]
+        assert isinstance(row, dict)
+        delta = row.get("net_profit_delta_vs_baseline")
+        delta_s = "—" if delta is None else f"{float(delta):+.2f}"
+        wfe = row.get("walk_forward_efficiency")
+        wfe_s = "n/a" if wfe is None else f"{float(wfe):.2f}"
+        beat = "yes" if row.get("beats_baseline") else ("—" if row["name"] == "baseline" else "no")
+        lines.append(
+            f"{str(row['name']):28s} {int(row['trade_count']):6d} "
+            f"{float(row['net_profit_pct']):8.2f} {delta_s:>8s} "
+            f"{float(row['max_drawdown_pct']):8.2f} {wfe_s:>8s} {beat:>5s}"
+        )
+    lines.append("")
+    adopted = payload.get("adopted_variant")
+    if adopted:
+        lines.append(f"Best beating baseline: {adopted} (candidate for decide() adoption).")
+    else:
+        lines.append("No variant beat baseline net P&L — leave live decide() rules unchanged.")
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class ResearchWindow:
     """Documented fetch window for strategy-eval / small-grid.

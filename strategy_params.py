@@ -39,6 +39,19 @@ class StrategyParams:
     # Stretch take-profit is never an automatic exit in either mode.
     exit_mode: str = "fixed"
     atr_trail_mult: float = 2.0
+    # Checklist redesign knobs (defaults preserve legacy decide() behavior).
+    # Flat BUY only when symbol matches regime (TQQQ↔trend_up, SQQQ↔trend_down).
+    entry_require_regime_align: bool = False
+    # Flat BUY skipped entirely while regime is range/chop.
+    block_range_entries: bool = False
+    # When False, never FLIP; reverse signal is ignored (exit via weaken/SL/TP/max hold).
+    allow_flips: bool = True
+    # When reverse would FLIP into the adverse regime, SELL to flat instead of flipping.
+    flip_adverse_becomes_exit: bool = False
+    # Force SELL when hold is not regime-aligned (prior blunt filter; research only).
+    exit_on_adverse_regime: bool = False
+    # Extra weak-threshold weight while holding against the regime (exit sooner without blunt force).
+    adverse_hold_weak_add: float = 0.0
 
     def __post_init__(self) -> None:
         if len(self.score_weights) != 8:
@@ -53,6 +66,8 @@ class StrategyParams:
             raise ValueError("exit_mode must be 'fixed' or 'atr_trail'.")
         if self.atr_trail_mult <= 0:
             raise ValueError("atr_trail_mult must be positive.")
+        if self.adverse_hold_weak_add < 0:
+            raise ValueError("adverse_hold_weak_add must be non-negative.")
 
     @property
     def weight_scale(self) -> float:

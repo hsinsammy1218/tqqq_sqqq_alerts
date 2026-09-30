@@ -5,12 +5,27 @@ from datetime import datetime, timedelta
 from indicators import IndicatorSnapshot
 from strategy_params import DEFAULT_SCORE_WEIGHTS, StrategyParams
 from strategy_scoring import (
+    MarketRegime,
     detect_market_regime,
     effective_thresholds,
     normalized_confidence_score,
     trading_days_between_inclusive,
     weighted_signal_breakdown,
 )
+
+
+def regime_aligned_symbol(regime: MarketRegime | str) -> str | None:
+    """ETF that matches the regime, or None in range/chop."""
+    if regime == "trend_up":
+        return "TQQQ"
+    if regime == "trend_down":
+        return "SQQQ"
+    return None
+
+
+def hold_is_regime_aligned(symbol: str, regime: MarketRegime | str) -> bool:
+    aligned = regime_aligned_symbol(regime)
+    return aligned is not None and symbol == aligned
 from strategy_types import (
     HIGH_SIGNAL_QUALITY_THRESHOLD,
     AlertDecision,
@@ -197,6 +212,34 @@ def decide(
         position.active_symbol is None
         and not blocked
         and alert_type == "BUY"
+        and params.block_range_entries
+        and regime == "range"
+    ):
+        alert_type = "CASH"
+        symbol = "CASH"
+        notes_kind = "entry_skipped_regime"
+        notes = "Entry skipped: range/chop regime (block_range_entries)."
+
+    if (
+        position.active_symbol is None
+        and not blocked
+        and alert_type == "BUY"
+        and params.entry_require_regime_align
+    ):
+        aligned = regime_aligned_symbol(regime)
+        if aligned is None or symbol != aligned:
+            alert_type = "CASH"
+            symbol = "CASH"
+            notes_kind = "entry_skipped_regime"
+            notes = (
+                f"Entry skipped: require regime-aligned buy "
+                f"(wanted {aligned or 'none'} in {regime})."
+            )
+
+    if (
+        position.active_symbol is None
+        and not blocked
+        and alert_type == "BUY"
         and params.min_confidence_to_trade > 0
         and confidence < params.min_confidence_to_trade
     ):
@@ -270,11 +313,15 @@ def decide(
         max_hold_date = _trading_days_after(resolved_entry_ts, params.max_hold_days)
         reached_max_hold = now_utc.date().isoformat() > max_hold_date
 
+        hold_weak_eff = weak_eff
+        if params.adverse_hold_weak_add > 0 and not hold_is_regime_aligned(symbol, regime):
+            hold_weak_eff = weak_eff + params.adverse_hold_weak_add
+
         if symbol == "TQQQ":
             stop_loss = entry_price * (1 - params.stop_loss_pct)
             take_profit = entry_price * (1 + params.take_profit_pct)
             stretch_tp = entry_price * (1 + params.stretch_take_profit_pct)
-            weaken = wb < weak_eff
+            weaken = wb < hold_weak_eff
             raw_reverse = wbear >= bear_eff
             stop_hit = price <= stop_loss
             tp_hit = price >= take_profit
@@ -282,7 +329,7 @@ def decide(
             stop_loss = entry_price * (1 + params.stop_loss_pct)
             take_profit = entry_price * (1 - params.take_profit_pct)
             stretch_tp = entry_price * (1 - params.stretch_take_profit_pct)
-            weaken = wbear < weak_eff
+            weaken = wbear < hold_weak_eff
             raw_reverse = wb >= bull_eff
             stop_hit = price >= stop_loss
             tp_hit = price <= take_profit
@@ -296,6 +343,12 @@ def decide(
             tp_hit = False
             trail_hit = atr_trail_hit(symbol, price, prior_extreme, atr, params.atr_trail_mult)
 
+        adverse_regime_exit = bool(
+            params.exit_on_adverse_regime and not hold_is_regime_aligned(symbol, regime)
+        )
+
+        if not params.allow_flips:
+            raw_reverse = False
         if regime == "range" and not params.flip_in_range_regime:
             raw_reverse = False
 
@@ -314,8 +367,29 @@ def decide(
         flip_suppressed = raw_reverse and not flip_ok
         reverse = raw_reverse and flip_ok
 
-        if reverse:
-            flip_to = "SQQQ" if symbol == "TQQQ" else "TQQQ"
+        flip_to = "SQQQ" if symbol == "TQQQ" else "TQQQ"
+        adverse_flip = (
+            reverse
+            and params.flip_adverse_becomes_exit
+            and not hold_is_regime_aligned(flip_to, regime)
+        )
+
+        if reverse and adverse_flip:
+            # Do not open the wrong-way side; flatten instead (research redesign).
+            alert_type = "SELL"
+            notes_kind = "exit"
+            notes = (
+                f"Exit: reverse signal would flip into adverse regime ({regime}); "
+                f"flatten instead of buying {flip_to}."
+            )
+            new_position = PositionState(
+                active_symbol=None,
+                entry_price=None,
+                entry_timestamp=None,
+                last_signal="SELL",
+                updated_at=ts,
+            )
+        elif reverse:
             alert_type = "FLIP"
             notes_kind = "flip"
             symbol = flip_to
@@ -337,7 +411,7 @@ def decide(
                 updated_at=ts,
                 favorable_extreme=price if use_atr_trail else None,
             )
-        elif weaken or stop_hit or tp_hit or trail_hit or reached_max_hold:
+        elif weaken or stop_hit or tp_hit or trail_hit or reached_max_hold or adverse_regime_exit:
             alert_type = "SELL"
             notes_kind = "exit"
             exit_reasons: list[str] = []
@@ -351,6 +425,8 @@ def decide(
                 exit_reasons.append(f"max hold date passed ({max_hold_date})")
             if weaken:
                 exit_reasons.append("signal weakened vs threshold")
+            if adverse_regime_exit:
+                exit_reasons.append(f"adverse regime exit ({regime})")
             notes = "Exit: " + "; ".join(exit_reasons) + "."
             new_position = PositionState(
                 active_symbol=None,

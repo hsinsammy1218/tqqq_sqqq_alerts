@@ -18,6 +18,8 @@ from backtest_sweep import (
 )
 from strategy_eval import (
     ResearchWindow,
+    compare_checklist_variants,
+    format_checklist_compare_report,
     format_strategy_eval_report,
     grid_neighbors_payload,
     resolve_research_bars,
@@ -113,15 +115,23 @@ def run() -> int:
         args.walk_forward,
         args.strategy_eval,
         args.small_grid,
+        args.checklist_compare,
     )
-    if args.walk_forward and (args.backtest or args.backtest_sweep or args.strategy_eval or args.small_grid):
+    if args.walk_forward and (
+        args.backtest or args.backtest_sweep or args.strategy_eval or args.small_grid or args.checklist_compare
+    ):
         print(
             "Config error: --walk-forward cannot be combined with --backtest, "
-            "--backtest-sweep, --strategy-eval, or --small-grid."
+            "--backtest-sweep, --strategy-eval, --small-grid, or --checklist-compare."
         )
         return 1
-    if sum(1 for flag in (args.backtest, args.backtest_sweep) if flag) and (args.strategy_eval or args.small_grid):
-        print("Config error: --strategy-eval / --small-grid cannot be combined with --backtest or --backtest-sweep.")
+    if sum(1 for flag in (args.backtest, args.backtest_sweep) if flag) and (
+        args.strategy_eval or args.small_grid or args.checklist_compare
+    ):
+        print(
+            "Config error: --strategy-eval / --small-grid / --checklist-compare "
+            "cannot be combined with --backtest or --backtest-sweep."
+        )
         return 1
     if args.debug_strategy_sanity and not args.debug_strategy:
         print("Config error: --debug-strategy-sanity requires --debug-strategy.")
@@ -143,6 +153,7 @@ def run() -> int:
         walk_forward_csv=args.walk_forward_csv,
         strategy_eval=args.strategy_eval,
         small_grid=args.small_grid,
+        checklist_compare=args.checklist_compare,
         debug_strategy=args.debug_strategy,
         debug_strategy_sanity=args.debug_strategy_sanity,
         high_confidence_only=args.high_confidence_only,
@@ -283,7 +294,7 @@ def run() -> int:
             log_event(logger, logging.INFO, "Market hours skip", reason=closed_reason, alpaca_api_calls=0)
             return 0
 
-    long_research = bool(args.strategy_eval or args.small_grid)
+    long_research = bool(args.strategy_eval or args.small_grid or args.checklist_compare)
     research_window = ResearchWindow() if long_research else None
     try:
         candle_kwargs: dict[str, int] = {}
@@ -374,7 +385,7 @@ def run() -> int:
     if args.debug_strategy and not is_research:
         print(
             "[debug-strategy] Ignored unless combined with --backtest, --backtest-sweep, "
-            "--walk-forward, --strategy-eval, or --small-grid."
+            "--walk-forward, --strategy-eval, --small-grid, or --checklist-compare."
         )
 
     research_decide_options = DecideOptions(
@@ -427,7 +438,7 @@ def run() -> int:
             return 1
         return 0
 
-    if args.strategy_eval or args.small_grid:
+    if args.strategy_eval or args.small_grid or args.checklist_compare:
         eval_bars = resolve_research_bars(
             args.backtest_bars,
             len(candles.daily),
@@ -447,6 +458,31 @@ def run() -> int:
                 "Stretch take-profit is not an exit."
             ),
         }
+        if args.checklist_compare:
+            try:
+                compare_payload = compare_checklist_variants(
+                    candles,
+                    anchor_date=settings.anchor_date or None,
+                    blocked_dates=blocked_dates,
+                    strategy_params=strategy_params,
+                    bars=eval_bars,
+                    decide_options=research_decide_options,
+                    data_window=data_window,
+                    entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                    exit_slippage_bps=settings.backtest_exit_slippage_bps,
+                )
+            except ValueError as exc:
+                print(f"Checklist compare error: {exc}")
+                return 1
+            print(format_checklist_compare_report(compare_payload))
+            try:
+                write_json(args.checklist_compare_json, compare_payload)
+                print(f"Checklist compare JSON written: {args.checklist_compare_json}")
+            except OSError as exc:
+                print(f"Checklist compare export error: {exc}")
+                return 1
+            if not args.strategy_eval and not args.small_grid:
+                return 0
         plateau_rows = None
         if args.small_grid:
             try:
