@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from alerts import format_alert_message, send_discord
+from alpaca_paper import execute_paper_orders
 from api_quota_notify import maybe_notify_quota_reached
 from api_usage import track_and_maybe_warn_api_usage
 from backtest import export_backtest_trades_csv, format_backtest_report, run_backtest
@@ -139,6 +140,8 @@ def run() -> int:
             position_state_bot_id=settings.position_state_bot_id,
             events_json=str(settings.events_json),
             dry_run=settings.dry_run,
+            alpaca_paper_trading=settings.alpaca_paper_trading,
+            alpaca_trading_base_url=settings.alpaca_trading_base_url,
             log_level=args.log_level,
         )
     except ConfigError as exc:
@@ -559,6 +562,41 @@ def run() -> int:
         print(f"Output error: {exc}")
         log_event(logger, logging.ERROR, "Discord send failed", error=str(exc))
         return 1
+
+    paper_results = execute_paper_orders(
+        alert,
+        position,
+        paper_trading=settings.alpaca_paper_trading,
+        dry_run=settings.dry_run,
+        api_key=settings.alpaca_api_key,
+        api_secret=settings.alpaca_api_secret,
+        trading_base_url=settings.alpaca_trading_base_url,
+        data_base_url=settings.alpaca_data_base_url,
+        feed=settings.alpaca_data_feed,
+        fixed_notional=settings.alpaca_paper_notional,
+        equity_pct=settings.alpaca_paper_equity_pct,
+        limit_offset_bps=settings.alpaca_paper_limit_offset_bps,
+        logger=logger,
+    )
+    if paper_results:
+        log_event(
+            logger,
+            logging.INFO,
+            "Alpaca paper trading finished",
+            results=[
+                {
+                    "symbol": r.intent.symbol,
+                    "side": r.intent.side,
+                    "purpose": r.intent.purpose,
+                    "ok": r.ok,
+                    "status": r.status,
+                    "order_id": r.order_id,
+                    "detail": r.detail,
+                }
+                for r in paper_results
+            ],
+        )
+
     try:
         position_store.save(new_position)
         log_event(

@@ -28,8 +28,9 @@ def test_load_settings_supabase_requires_credentials(monkeypatch: pytest.MonkeyP
 
 
 def test_load_settings_requires_alpaca_credentials(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
-    monkeypatch.delenv("ALPACA_API_SECRET", raising=False)
+    # Empty strings (not delenv): load_dotenv() would otherwise refill from a local .env.
+    monkeypatch.setenv("ALPACA_API_KEY", "")
+    monkeypatch.setenv("ALPACA_API_SECRET", "")
     with pytest.raises(ConfigError, match="ALPACA_API_KEY and ALPACA_API_SECRET"):
         load_settings()
 

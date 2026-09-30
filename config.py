@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from alpaca_paper import PAPER_TRADING_BASE_URL, is_live_trading_host
 from strategy_params import DEFAULT_SCORE_WEIGHTS, StrategyParams
 
 
@@ -20,6 +21,11 @@ class Settings:
     alpaca_api_secret: str
     alpaca_data_base_url: str
     alpaca_data_feed: str
+    alpaca_paper_trading: bool
+    alpaca_trading_base_url: str
+    alpaca_paper_notional: float
+    alpaca_paper_equity_pct: float
+    alpaca_paper_limit_offset_bps: int
     discord_webhook_url: str
     dry_run: bool
     bull_entry_threshold: int
@@ -111,6 +117,24 @@ def load_settings() -> Settings:
         or "https://data.alpaca.markets"
     )
     alpaca_data_feed = (os.getenv("ALPACA_DATA_FEED", "iex").strip() or "iex").lower()
+    alpaca_paper_trading = _to_bool(os.getenv("ALPACA_PAPER_TRADING", "false"), default=False)
+    alpaca_trading_base_url = (
+        os.getenv("ALPACA_TRADING_BASE_URL", PAPER_TRADING_BASE_URL).strip() or PAPER_TRADING_BASE_URL
+    ).rstrip("/")
+    if is_live_trading_host(alpaca_trading_base_url):
+        raise ConfigError(
+            "Live Alpaca trading host is not enabled. "
+            f"Use {PAPER_TRADING_BASE_URL} only (ALPACA_TRADING_BASE_URL)."
+        )
+    alpaca_paper_notional = float(os.getenv("ALPACA_PAPER_NOTIONAL", "500"))
+    alpaca_paper_equity_pct = float(os.getenv("ALPACA_PAPER_EQUITY_PCT", "0"))
+    alpaca_paper_limit_offset_bps = int(os.getenv("ALPACA_PAPER_LIMIT_OFFSET_BPS", "10"))
+    if alpaca_paper_notional < 0:
+        raise ConfigError("ALPACA_PAPER_NOTIONAL must be >= 0.")
+    if alpaca_paper_equity_pct < 0:
+        raise ConfigError("ALPACA_PAPER_EQUITY_PCT must be >= 0.")
+    if alpaca_paper_limit_offset_bps < 0:
+        raise ConfigError("ALPACA_PAPER_LIMIT_OFFSET_BPS must be >= 0.")
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     dry_run = _to_bool(os.getenv("DRY_RUN", "true"), default=True)
 
@@ -136,6 +160,11 @@ def load_settings() -> Settings:
         alpaca_api_secret=alpaca_api_secret,
         alpaca_data_base_url=alpaca_data_base_url.rstrip("/"),
         alpaca_data_feed=alpaca_data_feed,
+        alpaca_paper_trading=alpaca_paper_trading,
+        alpaca_trading_base_url=alpaca_trading_base_url,
+        alpaca_paper_notional=alpaca_paper_notional,
+        alpaca_paper_equity_pct=alpaca_paper_equity_pct,
+        alpaca_paper_limit_offset_bps=alpaca_paper_limit_offset_bps,
         discord_webhook_url=webhook,
         dry_run=dry_run,
         bull_entry_threshold=int(os.getenv("BULL_ENTRY_THRESHOLD", "5")),

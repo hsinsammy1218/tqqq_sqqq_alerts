@@ -142,6 +142,11 @@ def _auth_headers(api_key: str, api_secret: str) -> dict[str, str]:
     }
 
 
+def alpaca_auth_headers(api_key: str, api_secret: str) -> dict[str, str]:
+    """Public auth headers for Alpaca Market Data and Trading APIs."""
+    return _auth_headers(api_key, api_secret)
+
+
 def _raise_for_alpaca_response(response: requests.Response, *, context: str) -> None:
     if response.status_code < 400:
         return

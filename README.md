@@ -79,6 +79,13 @@ Copy `.env.example` to `.env` and fill values:
 - `ALPACA_DATA_BASE_URL=https://data.alpaca.markets` (optional override)
 - `ALPACA_DATA_FEED=iex` (optional; use `sip` only with a paid Alpaca data plan)
 - `DISCORD_WEBHOOK_URL` only required when `DRY_RUN=false`
+- Optional **Alpaca paper trading** (off by default; never hits the live trading host):
+  - `ALPACA_PAPER_TRADING=false` — set `true` **and** `DRY_RUN=false` to submit day **limit** orders on `https://paper-api.alpaca.markets` for BUY / SELL / FLIP alerts
+  - `ALPACA_PAPER_NOTIONAL=500` — USD size per buy leg when equity % is unset
+  - `ALPACA_PAPER_EQUITY_PCT=0` — if `> 0`, buy size = paper equity × pct instead of fixed notional
+  - `ALPACA_PAPER_LIMIT_OFFSET_BPS=10` — limit offset vs latest trade
+  - `ALPACA_TRADING_BASE_URL` defaults to the paper API; `https://api.alpaca.markets` is rejected at config load
+  - Separate from any Robinhood setup; see paper-trading notes below
 
 Discord webhook quick setup:
 
@@ -119,6 +126,22 @@ Dry-run:
 ```bash
 python main.py --dry-run
 ```
+
+Dry-run never submits Alpaca paper orders (`ALPACA_PAPER_TRADING` is ignored while `DRY_RUN=true` / `--dry-run`).
+
+### Optional Alpaca paper orders
+
+Default is alerts-only. To rehearse execution on Alpaca **paper** (not live, not Robinhood):
+
+1. Use a paper key pair in `.env` (same keys as market data).
+2. Set `ALPACA_PAPER_TRADING=true` and `DRY_RUN=false` (webhook still required by `main` when not dry-run).
+3. Optionally lower size: `ALPACA_PAPER_NOTIONAL=200` or `ALPACA_PAPER_EQUITY_PCT=0.02`.
+4. Run `python main.py --no-technical` and check `[alpaca-paper]` log lines + the Alpaca paper Orders UI.
+5. Turn off with `ALPACA_PAPER_TRADING=false`.
+
+Order mapping: BUY → buy limit; SELL → sell full paper position (skip if flat at broker); FLIP → sell held then buy target. Failures are logged and do not block Discord / journal / bot memory.
+
+Mocked unit tests: `pytest -q tests/test_alpaca_paper.py`.
 
 Optional **stricter flat entries**: require normalized confidence ≥75% (still after `MIN_CONFIDENCE_TO_TRADE`):
 
