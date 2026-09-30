@@ -711,7 +711,100 @@ def checklist_variant_specs(
             "Prior failed blunt filter: aligned entry + force exit when regime turns adverse",
             replace(base, entry_require_regime_align=True, exit_on_adverse_regime=True),
         ),
+        # Soft confidence / score-margin gates (PaperDigest experiment A). Defaults stay off in live.
+        (
+            "soft_conf_range_8",
+            "Raise min confidence by +8 while regime is range (no hard block)",
+            replace(base, soft_gate_range_confidence_add=8),
+        ),
+        (
+            "soft_conf_range_13",
+            "Raise min confidence by +13 while regime is range (toward HIGH bar)",
+            replace(base, soft_gate_range_confidence_add=13),
+        ),
+        (
+            "soft_conf_disagree_8",
+            "Raise min confidence by +8 when both stacks ≥ 2.0 (component disagreement)",
+            replace(base, soft_gate_disagree_min_side=2.0, soft_gate_disagree_confidence_add=8),
+        ),
+        (
+            "soft_conf_disagree_13",
+            "Raise min confidence by +13 when both stacks ≥ 2.0",
+            replace(base, soft_gate_disagree_min_side=2.0, soft_gate_disagree_confidence_add=13),
+        ),
+        (
+            "soft_conf_range_or_disagree",
+            "Range +8 confidence and/or disagree +8 when both stacks ≥ 2.0",
+            replace(
+                base,
+                soft_gate_range_confidence_add=8,
+                soft_gate_disagree_min_side=2.0,
+                soft_gate_disagree_confidence_add=8,
+            ),
+        ),
+        (
+            "soft_margin_range_6p5",
+            "Require |bull−bear| ≥ 6.5 weighted units for flat BUY in range",
+            replace(base, soft_gate_range_score_margin=6.5),
+        ),
+        (
+            "soft_margin_range_7p5",
+            "Require |bull−bear| ≥ 7.5 weighted units for flat BUY in range",
+            replace(base, soft_gate_range_score_margin=7.5),
+        ),
+        (
+            "soft_conf_range_8_margin_6p5",
+            "Range +8 confidence and |bull−bear| ≥ 6.5 margin in range",
+            replace(base, soft_gate_range_confidence_add=8, soft_gate_range_score_margin=6.5),
+        ),
     ]
+
+
+def _metrics_paper_gate_label(
+    *,
+    trade_count: int,
+    reward_risk: float,
+    max_drawdown_pct: float,
+    average_drawdown_pct: float | None,
+    wfe_value: float | None,
+) -> str:
+    """Compact paper-gate label from metrics available in checklist-compare (no plateau)."""
+    flags: list[str] = []
+    if trade_count < MIN_TRADES:
+        flags.append("trades")
+    if reward_risk < REWARD_RISK_BAR:
+        flags.append("rrr")
+    if average_drawdown_pct is not None and average_drawdown_pct > 0:
+        if max_drawdown_pct >= DRAWDOWN_RATIO_BAR * average_drawdown_pct:
+            flags.append("dd_shape")
+    if wfe_value is None or wfe_value < WFE_ROBUST_LOW:
+        flags.append("wfe")
+    if flags:
+        return "FAIL(" + ",".join(flags) + ")"
+    return "PASS*"
+
+
+def _beats_baseline_soft_gate(
+    *,
+    net: float,
+    max_dd: float,
+    wfe_value: float | None,
+    baseline_net: float | None,
+    baseline_dd: float | None,
+    baseline_wfe: float | None,
+) -> bool:
+    """Require better net %, lower max DD, and better WFE vs baseline (all three)."""
+    if baseline_net is None or baseline_dd is None:
+        return False
+    if net <= baseline_net:
+        return False
+    if max_dd >= baseline_dd:
+        return False
+    if wfe_value is None:
+        return False
+    if baseline_wfe is None:
+        return wfe_value > float("-inf")
+    return wfe_value > baseline_wfe
 
 
 def compare_checklist_variants(
@@ -738,6 +831,8 @@ def compare_checklist_variants(
     )
     rows: list[dict[str, object]] = []
     baseline_net: float | None = None
+    baseline_dd: float | None = None
+    baseline_wfe: float | None = None
     split = is_oos_split(len(candles.daily), bars, n_segments=wfe_segments)
 
     for name, description, params in checklist_variant_specs(strategy_params):
@@ -770,26 +865,60 @@ def compare_checklist_variants(
             raw = wfe_block.get("walk_forward_efficiency")
             wfe_value = None if raw is None else float(raw)
         net = float(metrics["net_profit_pct"])
+        max_dd = float(metrics["max_drawdown_pct"])
+        reward_risk = float(metrics["reward_risk"])
+        avg_dd_raw = metrics.get("average_drawdown_pct")
+        avg_dd = None if avg_dd_raw is None else float(avg_dd_raw)
+        trade_count = int(metrics["trade_count"])
         if name == "baseline":
             baseline_net = net
+            baseline_dd = max_dd
+            baseline_wfe = wfe_value
         delta = None if baseline_net is None else net - baseline_net
+        beats = _beats_baseline_soft_gate(
+            net=net,
+            max_dd=max_dd,
+            wfe_value=wfe_value,
+            baseline_net=baseline_net,
+            baseline_dd=baseline_dd,
+            baseline_wfe=baseline_wfe,
+        )
+        # Baseline row is the reference, not a self-beat.
+        if name == "baseline":
+            beats = False
+        paper_gate = _metrics_paper_gate_label(
+            trade_count=trade_count,
+            reward_risk=reward_risk,
+            max_drawdown_pct=max_dd,
+            average_drawdown_pct=avg_dd,
+            wfe_value=wfe_value,
+        )
         rows.append(
             {
                 "name": name,
                 "description": description,
-                "trade_count": metrics["trade_count"],
+                "trade_count": trade_count,
                 "net_profit_pct": net,
                 "net_profit_delta_vs_baseline": delta,
-                "max_drawdown_pct": metrics["max_drawdown_pct"],
+                "max_drawdown_pct": max_dd,
                 "profit_factor": metrics["profit_factor"],
-                "reward_risk": metrics["reward_risk"],
+                "reward_risk": reward_risk,
                 "walk_forward_efficiency": wfe_value,
-                "beats_baseline": bool(delta is not None and delta > 0),
+                "paper_gate": paper_gate,
+                "beats_baseline": beats,
+                "beats_baseline_net_only": bool(delta is not None and delta > 0 and name != "baseline"),
             }
         )
 
     adoptable = [r for r in rows if r["name"] != "baseline" and r["beats_baseline"]]
-    adoptable.sort(key=lambda r: float(r["net_profit_pct"]), reverse=True)
+    adoptable.sort(
+        key=lambda r: (
+            float(r["walk_forward_efficiency"] or float("-inf")),
+            float(r["net_profit_pct"]),
+            -float(r["max_drawdown_pct"]),
+        ),
+        reverse=True,
+    )
     best = adoptable[0] if adoptable else None
     return {
         "generated_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -797,8 +926,10 @@ def compare_checklist_variants(
         "slippage_bps": {"entry": entry_slippage_bps, "exit": exit_slippage_bps},
         "data_window": data_window or {},
         "adoption_rule": (
-            "Adopt into live decide() defaults only when a variant beats baseline "
-            "net_profit_pct on this window. Paper gate still independent."
+            "Adopt into live decide() defaults only when a variant beats baseline on "
+            "net_profit_pct, max_drawdown_pct (lower), and walk_forward_efficiency — all three. "
+            "Hard regime-align filters stay rejected. Paper gate still independent; "
+            "paper_gate column is metrics-only (no plateau)."
         ),
         "variants": rows,
         "best_beating_baseline": best,
@@ -811,8 +942,10 @@ def format_checklist_compare_report(payload: dict[str, object]) -> str:
     lines = [
         "Checklist redesign compare (QQQ proxy, fixed exit, same window as --strategy-eval)",
         f"Bars: {payload.get('bars')}",
+        "Adoption bar: beat baseline on net %, max DD (lower), and WFE (all three).",
         "",
-        f"{'variant':28s} {'trades':>6s} {'net%':>8s} {'Δbase':>8s} {'maxDD%':>8s} {'WFE':>8s} {'beat?':>5s}",
+        f"{'variant':30s} {'trades':>6s} {'net%':>8s} {'Δbase':>8s} {'maxDD%':>8s} "
+        f"{'WFE':>8s} {'gate':>16s} {'adopt?':>6s}",
     ]
     for row in payload.get("variants", []):  # type: ignore[union-attr]
         assert isinstance(row, dict)
@@ -820,18 +953,24 @@ def format_checklist_compare_report(payload: dict[str, object]) -> str:
         delta_s = "—" if delta is None else f"{float(delta):+.2f}"
         wfe = row.get("walk_forward_efficiency")
         wfe_s = "n/a" if wfe is None else f"{float(wfe):.2f}"
-        beat = "yes" if row.get("beats_baseline") else ("—" if row["name"] == "baseline" else "no")
+        gate = str(row.get("paper_gate") or "n/a")
+        adopt = "yes" if row.get("beats_baseline") else ("—" if row["name"] == "baseline" else "no")
         lines.append(
-            f"{str(row['name']):28s} {int(row['trade_count']):6d} "
+            f"{str(row['name']):30s} {int(row['trade_count']):6d} "
             f"{float(row['net_profit_pct']):8.2f} {delta_s:>8s} "
-            f"{float(row['max_drawdown_pct']):8.2f} {wfe_s:>8s} {beat:>5s}"
+            f"{float(row['max_drawdown_pct']):8.2f} {wfe_s:>8s} {gate:>16s} {adopt:>6s}"
         )
     lines.append("")
+    lines.append("paper_gate: metrics-only (trades/rrr/dd_shape/wfe); plateau not evaluated (* = pass metrics).")
     adopted = payload.get("adopted_variant")
     if adopted:
-        lines.append(f"Best beating baseline: {adopted} (candidate for decide() adoption).")
+        lines.append(
+            f"Best beating baseline on net%/DD/WFE: {adopted} (candidate for decide() adoption)."
+        )
     else:
-        lines.append("No variant beat baseline net P&L — leave live decide() rules unchanged.")
+        lines.append(
+            "No variant beat baseline on net %, max DD, and WFE — leave live decide() rules unchanged."
+        )
     return "\n".join(lines)
 
 

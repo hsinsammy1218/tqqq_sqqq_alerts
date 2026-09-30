@@ -142,6 +142,57 @@ def normalized_confidence_score(wb: float, wbear: float, max_scale: float) -> in
     return int(round(min(100.0, max(0.0, raw * 100.0))))
 
 
+def checklist_components_disagree(
+    weighted_bull: float,
+    weighted_bear: float,
+    *,
+    disagree_min_side: float,
+) -> bool:
+    """True when both stacks are meaningfully active (entropy / disagreement)."""
+    if disagree_min_side <= 0:
+        return False
+    return min(weighted_bull, weighted_bear) >= disagree_min_side
+
+
+def effective_min_confidence_to_trade(
+    regime: MarketRegime | str,
+    weighted_bull: float,
+    weighted_bear: float,
+    params: StrategyParams,
+) -> int:
+    """Raise the flat-BUY confidence floor in range and/or when stacks disagree.
+
+    Defaults leave ``min_confidence_to_trade`` unchanged (all soft-gate adds are 0).
+    When the base floor is 0, soft-gate adds alone act as the temporary floor.
+    """
+    add = 0
+    if params.soft_gate_range_confidence_add > 0 and regime == "range":
+        add += int(params.soft_gate_range_confidence_add)
+    if checklist_components_disagree(
+        weighted_bull,
+        weighted_bear,
+        disagree_min_side=params.soft_gate_disagree_min_side,
+    ):
+        add += int(params.soft_gate_disagree_confidence_add)
+    floor = int(params.min_confidence_to_trade)
+    if floor <= 0:
+        return min(100, add)
+    return min(100, floor + add)
+
+
+def soft_gate_range_margin_blocks(
+    regime: MarketRegime | str,
+    weighted_bull: float,
+    weighted_bear: float,
+    params: StrategyParams,
+) -> bool:
+    """True when range entries need a larger bull/bear margin than currently present."""
+    margin = float(params.soft_gate_range_score_margin)
+    if margin <= 0 or regime != "range":
+        return False
+    return abs(weighted_bull - weighted_bear) < margin
+
+
 def trading_days_between_inclusive(start_day: object, end_day: object) -> int:
     """Count weekdays strictly after start_day through end_day."""
     from datetime import timedelta

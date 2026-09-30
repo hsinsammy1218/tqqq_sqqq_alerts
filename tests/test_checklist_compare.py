@@ -32,14 +32,21 @@ def test_checklist_variant_specs_include_baseline_and_blunt() -> None:
     assert "blunt_adverse_exit" in names
     assert "equal_weights_legacy" in names
     assert "aligned_entry" in names
+    assert "soft_conf_range_8" in names
+    assert "soft_conf_disagree_8" in names
+    assert "soft_margin_range_6p5" in names
+    assert "soft_conf_range_or_disagree" in names
     blunt = next(p for n, _, p in specs if n == "blunt_adverse_exit")
     assert blunt.entry_require_regime_align is True
     assert blunt.exit_on_adverse_regime is True
     legacy = next(p for n, _, p in specs if n == "equal_weights_legacy")
     assert legacy.score_weights == EQUAL_SCORE_WEIGHTS
+    soft = next(p for n, _, p in specs if n == "soft_conf_range_8")
+    assert soft.soft_gate_range_confidence_add == 8
     assert specs[0][2].score_weights == TREND_EMA_WEIGHTS
     assert specs[0][2].entry_require_regime_align is False
     assert specs[0][2].allow_flips is True
+    assert specs[0][2].soft_gate_range_confidence_add == 0
 
 
 def test_replace_preserves_new_knobs() -> None:
@@ -49,3 +56,34 @@ def test_replace_preserves_new_knobs() -> None:
     assert p.entry_require_regime_align is True
     assert p.allow_flips is False
     assert p.block_range_entries is False
+
+
+def test_beats_baseline_soft_gate_requires_all_three() -> None:
+    from strategy_eval import _beats_baseline_soft_gate
+
+    assert _beats_baseline_soft_gate(
+        net=5.0,
+        max_dd=15.0,
+        wfe_value=-0.5,
+        baseline_net=4.0,
+        baseline_dd=19.0,
+        baseline_wfe=-1.13,
+    )
+    # Better net+DD but worse WFE → no adopt
+    assert not _beats_baseline_soft_gate(
+        net=5.0,
+        max_dd=15.0,
+        wfe_value=-2.0,
+        baseline_net=4.0,
+        baseline_dd=19.0,
+        baseline_wfe=-1.13,
+    )
+    # Better net+WFE but worse DD → no adopt
+    assert not _beats_baseline_soft_gate(
+        net=5.0,
+        max_dd=20.0,
+        wfe_value=0.1,
+        baseline_net=4.0,
+        baseline_dd=19.0,
+        baseline_wfe=-1.13,
+    )

@@ -57,6 +57,15 @@ class StrategyParams:
     exit_on_adverse_regime: bool = False
     # Extra weak-threshold weight while holding against the regime (exit sooner without blunt force).
     adverse_hold_weak_add: float = 0.0
+    # Soft confidence / score-margin gate (research; all defaults keep live decide() unchanged).
+    # Extra min_confidence_to_trade while regime is range/chop (0 disables).
+    soft_gate_range_confidence_add: int = 0
+    # When both bull and bear stacks are at least this weight, treat as component disagreement (0 disables).
+    soft_gate_disagree_min_side: float = 0.0
+    # Extra min_confidence_to_trade when components disagree (0 disables).
+    soft_gate_disagree_confidence_add: int = 0
+    # Minimum |bull − bear| weighted margin required for a flat BUY in range (0 disables).
+    soft_gate_range_score_margin: float = 0.0
 
     def __post_init__(self) -> None:
         if len(self.score_weights) != 8:
@@ -73,6 +82,14 @@ class StrategyParams:
             raise ValueError("atr_trail_mult must be positive.")
         if self.adverse_hold_weak_add < 0:
             raise ValueError("adverse_hold_weak_add must be non-negative.")
+        if self.soft_gate_range_confidence_add < 0:
+            raise ValueError("soft_gate_range_confidence_add must be non-negative.")
+        if self.soft_gate_disagree_min_side < 0:
+            raise ValueError("soft_gate_disagree_min_side must be non-negative.")
+        if self.soft_gate_disagree_confidence_add < 0:
+            raise ValueError("soft_gate_disagree_confidence_add must be non-negative.")
+        if self.soft_gate_range_score_margin < 0:
+            raise ValueError("soft_gate_range_score_margin must be non-negative.")
 
     @property
     def weight_scale(self) -> float:

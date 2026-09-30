@@ -7,8 +7,10 @@ from strategy_params import DEFAULT_SCORE_WEIGHTS, StrategyParams
 from strategy_scoring import (
     MarketRegime,
     detect_market_regime,
+    effective_min_confidence_to_trade,
     effective_thresholds,
     normalized_confidence_score,
+    soft_gate_range_margin_blocks,
     trading_days_between_inclusive,
     weighted_signal_breakdown,
 )
@@ -240,15 +242,33 @@ def decide(
         position.active_symbol is None
         and not blocked
         and alert_type == "BUY"
-        and params.min_confidence_to_trade > 0
-        and confidence < params.min_confidence_to_trade
+        and soft_gate_range_margin_blocks(regime, wb, wbear, params)
+    ):
+        alert_type = "CASH"
+        symbol = "CASH"
+        notes_kind = "entry_skipped_soft_gate"
+        notes = (
+            f"Entry skipped: range score margin {abs(wb - wbear):.2f} "
+            f"is below soft_gate_range_score_margin {params.soft_gate_range_score_margin:g}."
+        )
+
+    conf_floor = effective_min_confidence_to_trade(regime, wb, wbear, params)
+    if (
+        position.active_symbol is None
+        and not blocked
+        and alert_type == "BUY"
+        and conf_floor > 0
+        and confidence < conf_floor
     ):
         alert_type = "CASH"
         symbol = "CASH"
         notes_kind = "entry_skipped_confidence"
+        soft_note = ""
+        if conf_floor > params.min_confidence_to_trade:
+            soft_note = f" (soft gate raised floor from {params.min_confidence_to_trade}%)"
         notes = (
             f"Entry skipped: stack dominance {confidence}% is below minimum "
-            f"{params.min_confidence_to_trade}%."
+            f"{conf_floor}%{soft_note}."
         )
 
     if (
