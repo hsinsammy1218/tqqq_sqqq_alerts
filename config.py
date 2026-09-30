@@ -37,6 +37,7 @@ class Settings:
     max_hold_trading_days: int
     entry_atr_multiplier: float
     journal_csv: Path
+    trade_log_jsonl: Path
     position_state_json: Path
     position_state_backend: str
     position_state_bot_id: str
@@ -176,6 +177,7 @@ def load_settings() -> Settings:
         max_hold_trading_days=int(os.getenv("MAX_HOLD_TRADING_DAYS", "10")),
         entry_atr_multiplier=float(os.getenv("ENTRY_ATR_MULTIPLIER", "0.5")),
         journal_csv=Path(os.getenv("JOURNAL_CSV", "alerts_journal.csv")),
+        trade_log_jsonl=Path(os.getenv("TRADE_LOG_JSONL", "logs/trades.jsonl")),
         position_state_json=Path(os.getenv("POSITION_STATE_JSON", "position_state.json")),
         position_state_backend=position_state_backend,
         position_state_bot_id=position_state_bot_id,

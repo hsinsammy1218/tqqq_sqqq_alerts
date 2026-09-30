@@ -141,7 +141,9 @@ Default is alerts-only. To rehearse execution on Alpaca **paper** (not live, not
 
 Order mapping: BUY → buy limit; SELL → sell full paper position (skip if flat at broker); FLIP → sell held then buy target. Failures are logged and do not block Discord / journal / bot memory.
 
-Mocked unit tests: `pytest -q tests/test_alpaca_paper.py`.
+Paper order outcomes also append to **`logs/trades.jsonl`** (gitignored; override with `TRADE_LOG_JSONL`) for self-learning — see `trade_log.py`.
+
+Mocked unit tests: `pytest -q tests/test_alpaca_paper.py tests/test_trade_log.py`.
 
 Optional **stricter flat entries**: require normalized confidence ≥75% (still after `MIN_CONFIDENCE_TO_TRADE`):
 

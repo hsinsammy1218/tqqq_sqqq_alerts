@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
@@ -17,6 +18,12 @@ import requests
 from data import alpaca_auth_headers
 from runtime_logging import log_event
 from strategy_types import AlertDecision, PositionState
+from trade_log import (
+    DEFAULT_TRADE_LOG_PATH,
+    append_trade_record,
+    build_trade_record,
+    extract_regime,
+)
 
 PAPER_TRADING_BASE_URL = "https://paper-api.alpaca.markets"
 LIVE_TRADING_HOST_MARKER = "api.alpaca.markets"
@@ -339,6 +346,19 @@ def resolve_order_qty(
     return qty_for_notional(notional, price), price
 
 
+def _safe_append_trade_log(
+    path: Path,
+    record: dict[str, Any],
+    *,
+    logger: logging.Logger,
+) -> None:
+    try:
+        append_trade_record(path, record)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[alpaca-paper] Trade log append failed: {exc}")
+        log_event(logger, logging.WARNING, "Trade log append failed", error=str(exc), path=str(path))
+
+
 def execute_paper_orders(
     alert: AlertDecision,
     position_before: PositionState | None,
@@ -355,10 +375,31 @@ def execute_paper_orders(
     limit_offset_bps: int,
     logger: logging.Logger | None = None,
     session: requests.Session | None = None,
+    trade_log_path: Path | str | None = DEFAULT_TRADE_LOG_PATH,
+    source: str = "strategy",
 ) -> list[OrderResult]:
     """Gate, build intents, and submit paper limit orders. Never raises for API failures."""
     log = logger or logging.getLogger("tqqq_sqqq_alerts")
     alert_type = (alert.alert_type or "").upper()
+    log_path = Path(trade_log_path) if trade_log_path is not None else None
+    regime = extract_regime(alert.qqq_trend_reason)
+    confidence = int(alert.confidence_score) if alert.confidence_score is not None else None
+    signal_quality = alert.signal_quality
+
+    def _log_trade(**kwargs: Any) -> None:
+        if log_path is None:
+            return
+        record = build_trade_record(
+            alert_type=alert_type,
+            confidence=confidence,
+            regime=regime,
+            signal_quality=signal_quality,
+            paper_trading=paper_trading,
+            dry_run=dry_run,
+            source=source,
+            **kwargs,
+        )
+        _safe_append_trade_log(log_path, record, logger=log)
 
     if alert_type not in ACTIONABLE_ALERTS:
         return []
@@ -380,6 +421,14 @@ def execute_paper_orders(
         msg = f"Refusing live trading host: {trading_base_url}"
         print(f"[alpaca-paper] ERROR: {msg}")
         log_event(log, logging.ERROR, "Alpaca paper trading refused live host", trading_base_url=trading_base_url)
+        _log_trade(
+            symbol=alert.symbol,
+            side="buy",
+            status="refused",
+            purpose="blocked",
+            error=msg,
+            detail=msg,
+        )
         return [
             OrderResult(
                 intent=OrderIntent(symbol=alert.symbol, side="buy", purpose="blocked"),
@@ -428,6 +477,14 @@ def execute_paper_orders(
                         purpose=intent.purpose,
                         reason="no_position",
                     )
+                    _log_trade(
+                        symbol=intent.symbol,
+                        side=intent.side,
+                        status="skipped",
+                        purpose=intent.purpose,
+                        detail=detail,
+                        error="no_position",
+                    )
                     results.append(
                         OrderResult(intent=intent, ok=True, status="skipped", detail=detail)
                     )
@@ -473,6 +530,8 @@ def execute_paper_orders(
             )
             order_id = str(order.get("id") or "") or None
             status = str(order.get("status") or "submitted")
+            fill_price = order.get("filled_avg_price")
+            filled_qty = order.get("filled_qty")
             detail = f"order_id={order_id or 'n/a'} status={status}"
             print(f"[alpaca-paper] OK {intent.side} {intent.symbol}: {detail}")
             log_event(
@@ -485,6 +544,18 @@ def execute_paper_orders(
                 purpose=intent.purpose,
                 order_id=order_id,
                 status=status,
+            )
+            _log_trade(
+                symbol=intent.symbol,
+                side=intent.side,
+                qty=qty,
+                limit_price=limit_price,
+                fill_price=fill_price,
+                filled_qty=filled_qty,
+                order_id=order_id,
+                status=status,
+                purpose=intent.purpose,
+                detail=detail,
             )
             results.append(
                 OrderResult(
@@ -507,6 +578,14 @@ def execute_paper_orders(
                 purpose=intent.purpose,
                 error=str(exc),
             )
+            _log_trade(
+                symbol=intent.symbol,
+                side=intent.side,
+                status="error",
+                purpose=intent.purpose,
+                error=str(exc),
+                detail=str(exc),
+            )
             results.append(
                 OrderResult(intent=intent, ok=False, status="error", detail=str(exc))
             )
@@ -520,6 +599,14 @@ def execute_paper_orders(
                 side=intent.side,
                 purpose=intent.purpose,
                 error=str(exc),
+            )
+            _log_trade(
+                symbol=intent.symbol,
+                side=intent.side,
+                status="error",
+                purpose=intent.purpose,
+                error=str(exc),
+                detail=str(exc),
             )
             results.append(
                 OrderResult(intent=intent, ok=False, status="error", detail=str(exc))

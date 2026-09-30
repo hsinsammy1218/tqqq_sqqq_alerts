@@ -12,6 +12,7 @@ _init_git_result.txt
 git-gh-setup.log
 alerts_journal.csv
 position_state.json
+# Runtime logs including append-only paper trade journal (logs/trades.jsonl).
 logs/
 
 # Local Cursor config (MCP, agent rules) — not part of this repo

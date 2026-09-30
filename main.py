@@ -577,6 +577,8 @@ def run() -> int:
         equity_pct=settings.alpaca_paper_equity_pct,
         limit_offset_bps=settings.alpaca_paper_limit_offset_bps,
         logger=logger,
+        trade_log_path=settings.trade_log_jsonl,
+        source="strategy",
     )
     if paper_results:
         log_event(

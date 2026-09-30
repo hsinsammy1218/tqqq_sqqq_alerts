@@ -109,11 +109,16 @@ def test_load_settings_paper_defaults(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ALPACA_API_SECRET", "test-secret")
     monkeypatch.delenv("ALPACA_PAPER_TRADING", raising=False)
     monkeypatch.delenv("ALPACA_TRADING_BASE_URL", raising=False)
+    monkeypatch.delenv("TRADE_LOG_JSONL", raising=False)
+    # Explicit values: load_dotenv() would otherwise refill from a local .env.
+    monkeypatch.setenv("ALPACA_PAPER_NOTIONAL", "500")
+    monkeypatch.setenv("ALPACA_PAPER_EQUITY_PCT", "0")
     settings = load_settings()
     assert settings.alpaca_paper_trading is False
     assert settings.alpaca_trading_base_url == PAPER_TRADING_BASE_URL
     assert settings.alpaca_paper_notional == 500
     assert settings.alpaca_paper_equity_pct == 0
+    assert settings.trade_log_jsonl.name == "trades.jsonl"
 
 
 def test_execute_paper_orders_skipped_when_dry_run(capfd):
@@ -157,7 +162,7 @@ def test_execute_paper_orders_skipped_when_flag_off(capfd):
     assert "ALPACA_PAPER_TRADING=false" in capfd.readouterr().out
 
 
-def test_execute_paper_orders_buy_path_mocked():
+def test_execute_paper_orders_buy_path_mocked(tmp_path):
     session = MagicMock()
 
     def fake_request(method, url, headers=None, json=None, timeout=None):
@@ -206,6 +211,7 @@ def test_execute_paper_orders_buy_path_mocked():
         limit_offset_bps=10,
         logger=MagicMock(),
         session=session,
+        trade_log_path=tmp_path / "trades.jsonl",
     )
     assert len(results) == 1
     assert results[0].ok is True
@@ -214,7 +220,7 @@ def test_execute_paper_orders_buy_path_mocked():
     assert results[0].payload["side"] == "buy"
 
 
-def test_execute_paper_orders_flip_mocked():
+def test_execute_paper_orders_flip_mocked(tmp_path):
     session = MagicMock()
     calls: list[tuple[str, str]] = []
 
@@ -268,6 +274,7 @@ def test_execute_paper_orders_flip_mocked():
         limit_offset_bps=10,
         logger=MagicMock(),
         session=session,
+        trade_log_path=tmp_path / "trades.jsonl",
     )
     assert len(results) == 2
     assert results[0].intent.side == "sell" and results[0].intent.symbol == "TQQQ"
@@ -275,7 +282,7 @@ def test_execute_paper_orders_flip_mocked():
     assert all(r.ok for r in results)
 
 
-def test_execute_paper_orders_sell_skips_without_position(capfd):
+def test_execute_paper_orders_sell_skips_without_position(capfd, tmp_path):
     session = MagicMock()
 
     def fake_request(method, url, headers=None, json=None, timeout=None):
@@ -311,6 +318,7 @@ def test_execute_paper_orders_sell_skips_without_position(capfd):
         limit_offset_bps=10,
         logger=MagicMock(),
         session=session,
+        trade_log_path=tmp_path / "trades.jsonl",
     )
     assert len(results) == 1
     assert results[0].status == "skipped"
