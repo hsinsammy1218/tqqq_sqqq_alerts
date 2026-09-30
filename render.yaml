@@ -1,16 +1,24 @@
-# Render Blueprint: weekday alert crons (US Eastern / EDT = UTC-4).
+# Render Blueprint: weekday paper-learning alert crons (US Eastern / EDT = UTC-4).
 # After apply: fill secret values for the tqqq-sqqq-alerts env group in the Dashboard.
 # Requires POSITION_STATE_BACKEND=supabase so position survives ephemeral disks.
+#
+# Paper learning: ALPACA_PAPER_TRADING=true + DRY_RUN=false submits to paper-api only.
+# Live Alpaca trading host is blocked in config.py (never set ALPACA_TRADING_BASE_URL
+# to https://api.alpaca.markets). Robinhood is not wired here.
+#
+# Trade log (logs/trades.jsonl) on Render is ephemeral — for durable learning toward
+# ≥10 strategy round-trips, also run scripts/run_weekday_paper.py locally (or crontab).
 #
 # Winter (EST = UTC-5): shift each schedule one hour later, or rely on
 # --market-hours-only and accept occasional skip near the edges.
 #
-# Docs: README.md → "Deploy on Render"
+# Docs: README.md → "Deploy on Render"; store docs/trade-learning-log.md
 
 services:
   - type: cron
     name: tqqq-sqqq-alerts-1000
     runtime: python
+    plan: starter
     schedule: "0 14 * * 1-5"
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py --no-technical --market-hours-only
@@ -20,6 +28,7 @@ services:
   - type: cron
     name: tqqq-sqqq-alerts-1230
     runtime: python
+    plan: starter
     schedule: "30 16 * * 1-5"
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py --no-technical --market-hours-only
@@ -29,6 +38,7 @@ services:
   - type: cron
     name: tqqq-sqqq-alerts-1530
     runtime: python
+    plan: starter
     schedule: "30 19 * * 1-5"
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py --no-technical --market-hours-only
@@ -42,8 +52,16 @@ envVarGroups:
         value: supabase
       - key: POSITION_STATE_BOT_ID
         value: default
+      # Paper learning latch (live host rejected in app config).
       - key: DRY_RUN
         value: "false"
+      - key: ALPACA_PAPER_TRADING
+        value: "true"
+      - key: ALPACA_TRADING_BASE_URL
+        value: https://paper-api.alpaca.markets
+      - key: TRADE_LOG_JSONL
+        value: logs/trades.jsonl
+      # Secrets — set once in Dashboard env group (never commit).
       - key: ALPACA_API_KEY
         sync: false
       - key: ALPACA_API_SECRET

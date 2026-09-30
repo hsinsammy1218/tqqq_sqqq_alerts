@@ -42,7 +42,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - Optional `--backtest` mode for historical rule replay (QQQ directional proxy; see below)
 - Discord **rich embeds** match the console breakdown: bot memory (flat vs symbol), bar timestamps + blackout, full QQQ daily/4h indicator lines, every bull/bear checklist item, rule thresholds, hold exit flags when applicable, then notes
 - Alpaca Market Data API backend (daily + 1h → synthetic 4h)
-- Cloud scheduling via Render (worker/cron) — local Windows Task Scheduler is not used
+- Cloud scheduling via Render weekday crons; local durable learning via `scripts/run_weekday_paper.py`
 
 ## File layout
 
@@ -189,16 +189,19 @@ Render Cron containers are **ephemeral** — local `position_state.json` does no
 
    | Key | Value |
    |-----|--------|
-   | `ALPACA_API_KEY` | Alpaca key id |
-   | `ALPACA_API_SECRET` | Alpaca secret key |
+   | `ALPACA_API_KEY` | Alpaca **paper** key id |
+   | `ALPACA_API_SECRET` | Alpaca **paper** secret |
    | `DISCORD_WEBHOOK_URL` | webhook URL |
    | `DRY_RUN` | `false` |
+   | `ALPACA_PAPER_TRADING` | `true` (paper latch; live trading host remains blocked in app config) |
+   | `ALPACA_TRADING_BASE_URL` | `https://paper-api.alpaca.markets` (do **not** use the live host) |
+   | `TRADE_LOG_JSONL` | `logs/trades.jsonl` (ephemeral on Render — see local scheduler below) |
    | `POSITION_STATE_BACKEND` | `supabase` |
    | `POSITION_STATE_BOT_ID` | `default` (or another id if you run multiple bots) |
    | `SUPABASE_URL` | project URL |
    | `SUPABASE_SERVICE_ROLE_KEY` | service role key |
 
-   Copy any other strategy knobs from your local `.env` as needed.
+   Copy any other strategy knobs from your local `.env` as needed. Secrets stay in the Dashboard — never commit `.env`.
 
 3. **Deploy the Blueprint**: Dashboard → New → Blueprint → this repo (`render.yaml`). That creates three weekday crons (EDT / UTC−4):
 
@@ -222,7 +225,18 @@ Render Cron containers are **ephemeral** — local `position_state.json` does no
 
 **DST note:** Render cron expressions are UTC. The schedules above assume Eastern Daylight (UTC−4). In Eastern Standard (UTC−5), shift each hour +1, or leave as-is and rely on `--market-hours-only` (jobs may skip or run near the edge of the session).
 
-**Journal / usage JSON** on Render are best-effort only (ephemeral disk). Discord is sent **before** position is persisted so a webhook failure can retry on the next cron. Discord remains the durable alert channel.
+**Journal / trade log / usage JSON** on Render are best-effort only (ephemeral disk). Discord is sent **before** position is persisted so a webhook failure can retry on the next cron. Discord remains the durable alert channel. For a durable `logs/trades.jsonl` toward the ≥10 strategy round-trip learning gate, run the local helper (same slots):
+
+```bash
+# leave running (tmux/systemd); uses .env paper flags; appends logs/trades.jsonl
+python scripts/run_weekday_paper.py --loop
+
+# smoke one slot now
+python scripts/run_weekday_paper.py --once
+
+# print example crontab lines
+python scripts/run_weekday_paper.py --print-cron
+```
 
 ### Backtest (optional)
 
