@@ -311,6 +311,8 @@ def run_parameter_sweep(
             stop_loss_pct=stop,
             take_profit_pct=take,
         )
+        if combo_idx == 0 or (combo_idx + 1) % 8 == 0:
+            print(f"  sweep progress {combo_idx + 1}/{grid.combination_count}", flush=True)
         bt = run_backtest(
             candles,
             anchor_date=anchor_date,
