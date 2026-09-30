@@ -78,6 +78,48 @@ def _trade_return_pct(symbol: str, entry_price: float, exit_price: float) -> flo
     return _side_multiplier(symbol) * move * 100.0
 
 
+def apply_fill_slippage(
+    symbol: str,
+    entry_price: float,
+    exit_price: float,
+    *,
+    entry_slippage_bps: float = 0.0,
+    exit_slippage_bps: float = 0.0,
+) -> tuple[float, float]:
+    """Worsen entry and exit fills the way open/close prints understate.
+
+    TQQQ ~ long QQQ: buy higher, sell lower.
+    SQQQ ~ short QQQ: short lower / cover higher on the QQQ proxy.
+    """
+    entry_bps = max(0.0, float(entry_slippage_bps))
+    exit_bps = max(0.0, float(exit_slippage_bps))
+    if symbol == "TQQQ":
+        slipped_entry = entry_price * (1.0 + entry_bps / 10_000.0)
+        slipped_exit = exit_price * (1.0 - exit_bps / 10_000.0)
+    else:
+        slipped_entry = entry_price * (1.0 - entry_bps / 10_000.0)
+        slipped_exit = exit_price * (1.0 + exit_bps / 10_000.0)
+    return slipped_entry, slipped_exit
+
+
+def _trade_return_pct_with_slippage(
+    symbol: str,
+    entry_price: float,
+    exit_price: float,
+    *,
+    entry_slippage_bps: float = 0.0,
+    exit_slippage_bps: float = 0.0,
+) -> float:
+    slipped_entry, slipped_exit = apply_fill_slippage(
+        symbol,
+        entry_price,
+        exit_price,
+        entry_slippage_bps=entry_slippage_bps,
+        exit_slippage_bps=exit_slippage_bps,
+    )
+    return _trade_return_pct(symbol, slipped_entry, slipped_exit)
+
+
 def _utc_calendar_date(ts: object) -> object:
     """Normalize to UTC calendar date for aligning daily vs intraday indices."""
     t = pd.Timestamp(ts)
@@ -296,6 +338,8 @@ def run_backtest(
     decide_options: DecideOptions | None = None,
     loop_start_idx: int | None = None,
     loop_end_idx_exclusive: int | None = None,
+    entry_slippage_bps: float = 0.0,
+    exit_slippage_bps: float = 0.0,
 ) -> BacktestResult:
     daily = candles.daily
     four_hour = candles.four_hour
@@ -433,7 +477,13 @@ def run_backtest(
         elif alert.alert_type == "SELL":
             sells += 1
             if open_trade is not None:
-                ret_pct = _trade_return_pct(open_trade.symbol, open_trade.entry_price, close_px)
+                ret_pct = _trade_return_pct_with_slippage(
+                    open_trade.symbol,
+                    open_trade.entry_price,
+                    close_px,
+                    entry_slippage_bps=entry_slippage_bps,
+                    exit_slippage_bps=exit_slippage_bps,
+                )
                 equity *= 1.0 + (ret_pct / 100.0)
                 closed += 1
                 trade_returns.append(ret_pct)
@@ -467,7 +517,13 @@ def run_backtest(
         elif alert.alert_type == "FLIP":
             flips += 1
             if open_trade is not None:
-                ret_pct = _trade_return_pct(open_trade.symbol, open_trade.entry_price, close_px)
+                ret_pct = _trade_return_pct_with_slippage(
+                    open_trade.symbol,
+                    open_trade.entry_price,
+                    close_px,
+                    entry_slippage_bps=entry_slippage_bps,
+                    exit_slippage_bps=exit_slippage_bps,
+                )
                 equity *= 1.0 + (ret_pct / 100.0)
                 closed += 1
                 trade_returns.append(ret_pct)
@@ -512,7 +568,13 @@ def run_backtest(
     if open_trade is not None:
         last_bar_ix = iter_hi - 1
         last_close = float(daily.iloc[last_bar_ix]["close"])
-        open_unrealized = _trade_return_pct(open_trade.symbol, open_trade.entry_price, last_close)
+        open_unrealized = _trade_return_pct_with_slippage(
+            open_trade.symbol,
+            open_trade.entry_price,
+            last_close,
+            entry_slippage_bps=entry_slippage_bps,
+            exit_slippage_bps=exit_slippage_bps,
+        )
 
     total_trades = closed
     win_rate = (wins / closed * 100.0) if closed else 0.0

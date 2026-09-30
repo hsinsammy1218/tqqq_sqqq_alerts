@@ -260,9 +260,10 @@ def load_candles(
     # Hourly history must cover the daily window used for indicators/backtests.
     span_days = max(7, (daily.index[-1] - daily.index[0]).days + 14)
     hourly_cap_days = 730 if hourly_lookback_days is None else max(7, int(hourly_lookback_days))
-    hourly_bars = min(12000, max(800, span_days * 24))
+    hard_cap = 20000 if max_hourly_bars is not None else 12000
+    hourly_bars = min(hard_cap, max(800, span_days * 24))
     if max_hourly_bars is not None:
-        hourly_bars = min(hourly_bars, max(800, int(max_hourly_bars)))
+        hourly_bars = min(hard_cap, max(800, int(max_hourly_bars)))
     hourly_start = now - timedelta(days=min(span_days + 14, hourly_cap_days))
     hourly = _fetch_bars(
         ticker,

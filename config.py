@@ -61,6 +61,8 @@ class Settings:
     min_confidence_to_trade: int
     exit_mode: str
     atr_trail_mult: float
+    backtest_entry_slippage_bps: float
+    backtest_exit_slippage_bps: float
     alpaca_monthly_limit: int
     alpaca_usage_warn_pct: int
 
@@ -160,6 +162,10 @@ def load_settings() -> Settings:
     atr_trail_mult = float(os.getenv("ATR_TRAIL_MULT", "2"))
     if atr_trail_mult <= 0:
         raise ConfigError("ATR_TRAIL_MULT must be positive.")
+    backtest_entry_slippage_bps = float(os.getenv("BACKTEST_ENTRY_SLIPPAGE_BPS", "10"))
+    backtest_exit_slippage_bps = float(os.getenv("BACKTEST_EXIT_SLIPPAGE_BPS", "10"))
+    if backtest_entry_slippage_bps < 0 or backtest_exit_slippage_bps < 0:
+        raise ConfigError("BACKTEST_*_SLIPPAGE_BPS must be >= 0.")
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     dry_run = _to_bool(os.getenv("DRY_RUN", "true"), default=True)
 
@@ -226,6 +232,8 @@ def load_settings() -> Settings:
         min_confidence_to_trade=int(os.getenv("MIN_CONFIDENCE_TO_TRADE", "62")),
         exit_mode=exit_mode,
         atr_trail_mult=atr_trail_mult,
+        backtest_entry_slippage_bps=backtest_entry_slippage_bps,
+        backtest_exit_slippage_bps=backtest_exit_slippage_bps,
         alpaca_monthly_limit=int(os.getenv("ALPACA_MONTHLY_LIMIT", "0")),
         alpaca_usage_warn_pct=int(os.getenv("ALPACA_USAGE_WARN_PCT", "80")),
     )

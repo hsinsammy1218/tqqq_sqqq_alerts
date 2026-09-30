@@ -305,7 +305,7 @@ python main.py --small-grid
 python main.py --strategy-eval --small-grid
 ```
 
-`--strategy-eval` scores closed QQQ-proxy trades (not broker fills): trade count (flag under 30), profit factor, compounded net profit, max and average drawdown (flag when max is about 3× average or more), reward/risk = net profit / max drawdown (bar about 3), a PROM-style pessimistic return, and walk-forward efficiency on a chronological two-thirds in-sample / one-third out-of-sample split (robust bar about 50–60%). It also compares the current fixed take-profit, a wider fixed target (default 30%, not the 25% stretch), and `EXIT_MODE=atr_trail`. JSON goes to `reports/strategy_eval.json` (gitignored).
+`--strategy-eval` scores closed QQQ-proxy trades (not broker fills): trade count (flag under 30), profit factor, compounded net profit, max and average drawdown (flag when max is about 3× average or more), reward/risk = net profit / max drawdown (bar about 3), a PROM-style pessimistic return, and walk-forward efficiency on **equal chronological segments** (default 3; first two IS, last OOS; robust bar about 50–60%). It also compares the current fixed take-profit, a wider fixed target (default 30%, not the 25% stretch), and `EXIT_MODE=atr_trail`. Research P&L applies `BACKTEST_ENTRY_SLIPPAGE_BPS` / `BACKTEST_EXIT_SLIPPAGE_BPS`. JSON goes to `reports/strategy_eval.json` (gitignored) and includes a `paper_gate` block (pass/fail + required capital).
 
 When `--backtest-bars` is left at 180, these two commands expand to about 756 sessions (~3 years) if that much daily history loaded. The loader requests up to ~4 years of daily bars for this path only; the live alert path stays on the shorter default window.
 

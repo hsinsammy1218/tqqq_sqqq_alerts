@@ -191,6 +191,8 @@ def run_walk_forward(
     n_folds: int,
     debug_strategy: bool = False,
     decide_options: DecideOptions | None = None,
+    entry_slippage_bps: float = 0.0,
+    exit_slippage_bps: float = 0.0,
 ) -> list[WalkForwardResultRow]:
     daily = candles.daily
     n = len(daily)
@@ -231,6 +233,8 @@ def run_walk_forward(
                 decide_options=decide_options,
                 loop_start_idx=lo,
                 loop_end_idx_exclusive=hi,
+                entry_slippage_bps=entry_slippage_bps,
+                exit_slippage_bps=exit_slippage_bps,
             )
             fold_results.append(bt)
             fold_scores.append(

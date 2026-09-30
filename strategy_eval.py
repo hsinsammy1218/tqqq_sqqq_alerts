@@ -180,21 +180,63 @@ def metrics_from_backtest(result: BacktestResult) -> dict[str, object]:
     return payload
 
 
-def is_oos_split(n_daily: int, bars: int, *, min_bars: int = 20) -> tuple[tuple[int, int], tuple[int, int]] | None:
-    """Chronological 2/3 in-sample, 1/3 out-of-sample over the backtest region."""
+def is_oos_split(
+    n_daily: int,
+    bars: int,
+    *,
+    n_segments: int = 3,
+    min_bars: int = 20,
+) -> tuple[tuple[int, int], tuple[int, int], list[tuple[int, int]]] | None:
+    """Equal chronological segments: earlier segments = IS, last segment = OOS.
+
+    The guide asks for equal windows so P&L is not all from one short stretch.
+    Default 3 equal thirds: in-sample = first two, out-of-sample = last.
+    """
+    if n_segments < 2:
+        raise ValueError("n_segments must be >= 2")
     region_lo = max(60, n_daily - bars)
     region_hi = n_daily
     span = region_hi - region_lo
-    is_len = (span * 2) // 3
-    oos_len = span - is_len
-    if is_len < min_bars or oos_len < min_bars:
+    if span < n_segments * min_bars:
         return None
-    return (region_lo, region_lo + is_len), (region_lo + is_len, region_hi)
+    segments: list[tuple[int, int]] = []
+    for k in range(n_segments):
+        lo = region_lo + (span * k) // n_segments
+        hi = region_lo + (span * (k + 1)) // n_segments
+        if hi - lo < min_bars:
+            return None
+        segments.append((lo, hi))
+    is_lo = segments[0][0]
+    is_hi = segments[-2][1]
+    oos_lo, oos_hi = segments[-1]
+    return (is_lo, is_hi), (oos_lo, oos_hi), segments
+
+
+def required_paper_capital(
+    max_drawdown_pct: float,
+    *,
+    safety_factor: float = 2.0,
+    reference_equity: float = 100_000.0,
+) -> dict[str, float]:
+    """Guide capital check: max drawdown × safety factor (1.5–3), not the whole account."""
+    dd = max(0.0, float(max_drawdown_pct)) / 100.0
+    factor = max(1.0, float(safety_factor))
+    fraction = dd * factor
+    return {
+        "max_drawdown_pct": float(max_drawdown_pct),
+        "safety_factor": factor,
+        "required_capital_fraction_of_equity": fraction,
+        "required_capital_usd_at_reference": float(reference_equity) * fraction,
+        "reference_equity_usd": float(reference_equity),
+    }
 
 
 def walk_forward_efficiency_from_results(
     in_sample: BacktestResult,
     out_of_sample: BacktestResult,
+    *,
+    method: str = "equal_segments_last_is_oos",
+    segment_returns: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     ann_is = annualized_pnl_pct(in_sample.total_return_pct, in_sample.bars_tested)
     ann_oos = annualized_pnl_pct(out_of_sample.total_return_pct, out_of_sample.bars_tested)
@@ -202,7 +244,7 @@ def walk_forward_efficiency_from_results(
     passes = wfe is not None and wfe >= WFE_ROBUST_LOW
     return {
         "available": True,
-        "method": "same_params_chronological_split_two_thirds_in_sample",
+        "method": method,
         "in_sample_bars": in_sample.bars_tested,
         "out_of_sample_bars": out_of_sample.bars_tested,
         "in_sample_net_profit_pct": in_sample.total_return_pct,
@@ -212,9 +254,11 @@ def walk_forward_efficiency_from_results(
         "walk_forward_efficiency": wfe,
         "robust_bar": [WFE_ROBUST_LOW, WFE_ROBUST_HIGH],
         "passes_robust_bar": passes,
+        "equal_segments": segment_returns or [],
         "note": (
-            "Efficiency is annualized OOS P&L divided by annualized IS P&L on the QQQ proxy. "
-            "About 50–60% is the robustness bar; below 50% does not clear it. "
+            "Efficiency is annualized OOS P&L divided by annualized IS P&L on the QQQ proxy "
+            "(with research slippage when configured). Equal segments keep profit from being "
+            "judged on a single stretch. About 50–60% is the robustness bar; below 50% fails. "
             "Undefined when in-sample annualized P&L is not positive."
         ),
     }
@@ -263,6 +307,10 @@ def run_strategy_evaluation(
     decide_options: DecideOptions | None = None,
     plateau_rows: list[SweepResultRow] | None = None,
     data_window: dict[str, object] | None = None,
+    entry_slippage_bps: float = 10.0,
+    exit_slippage_bps: float = 10.0,
+    wfe_segments: int = 3,
+    capital_safety_factor: float = 2.0,
 ) -> dict[str, object]:
     """Baseline metrics, exit comparison, and walk-forward efficiency on one history."""
     common = dict(
@@ -270,6 +318,8 @@ def run_strategy_evaluation(
         blocked_dates=blocked_dates,
         bars=bars,
         decide_options=decide_options,
+        entry_slippage_bps=entry_slippage_bps,
+        exit_slippage_bps=exit_slippage_bps,
     )
     baseline_params = replace(strategy_params, exit_mode="fixed")
     baseline = run_backtest(candles, strategy_params=baseline_params, **common)
@@ -283,17 +333,20 @@ def run_strategy_evaluation(
     atr = run_backtest(candles, strategy_params=atr_params, **common)
 
     wfe_block: dict[str, object]
-    split = is_oos_split(len(candles.daily), bars)
+    split = is_oos_split(len(candles.daily), bars, n_segments=wfe_segments)
     if split is None:
         wfe_block = {
             "available": False,
             "walk_forward_efficiency": None,
             "passes_robust_bar": False,
             "robust_bar": [WFE_ROBUST_LOW, WFE_ROBUST_HIGH],
-            "note": "Window is too short to split into in-sample and out-of-sample segments of 20 bars.",
+            "note": (
+                f"Window is too short to split into {wfe_segments} equal segments "
+                "of at least 20 bars for in-sample / out-of-sample."
+            ),
         }
     else:
-        (is_lo, is_hi), (oos_lo, oos_hi) = split
+        (is_lo, is_hi), (oos_lo, oos_hi), segments = split
         in_sample = run_backtest(
             candles,
             strategy_params=baseline_params,
@@ -308,7 +361,32 @@ def run_strategy_evaluation(
             loop_end_idx_exclusive=oos_hi,
             **common,
         )
-        wfe_block = walk_forward_efficiency_from_results(in_sample, out_of_sample)
+        segment_returns: list[dict[str, object]] = []
+        for idx, (lo, hi) in enumerate(segments):
+            seg = run_backtest(
+                candles,
+                strategy_params=baseline_params,
+                loop_start_idx=lo,
+                loop_end_idx_exclusive=hi,
+                **common,
+            )
+            segment_returns.append(
+                {
+                    "segment": idx + 1,
+                    "bars": seg.bars_tested,
+                    "start": seg.start_utc,
+                    "end": seg.end_utc,
+                    "total_return_pct": seg.total_return_pct,
+                    "total_trades": seg.total_trades,
+                    "role": "oos" if idx == len(segments) - 1 else "is",
+                }
+            )
+        wfe_block = walk_forward_efficiency_from_results(
+            in_sample,
+            out_of_sample,
+            method=f"equal_{wfe_segments}_segments_last_oos",
+            segment_returns=segment_returns,
+        )
 
     if plateau_rows:
         plateau: dict[str, object] | None = neighbor_share_payload(profitable_neighbor_share(plateau_rows))
@@ -327,11 +405,39 @@ def run_strategy_evaluation(
     elif plateau is None:
         flags.append("plateau_not_run")
 
+    capital = required_paper_capital(
+        float(baseline_metrics["max_drawdown_pct"]),
+        safety_factor=capital_safety_factor,
+    )
+    gate_pass = (
+        int(baseline_metrics["trade_count"]) >= MIN_TRADES
+        and "reward_risk_below_3" not in flags
+        and "max_drawdown_ge_3x_average" not in flags
+        and "walk_forward_efficiency_below_50" not in flags
+        and "plateau_share_below_50" not in flags
+        and "plateau_not_run" not in flags
+        and bool(wfe_block.get("passes_robust_bar"))
+    )
+    if not gate_pass:
+        flags.append("paper_gate_failed")
+
     return {
         "generated_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "pnl_source": "qqq_close_to_close_proxy_closed_trades",
+        "slippage": {
+            "entry_slippage_bps": entry_slippage_bps,
+            "exit_slippage_bps": exit_slippage_bps,
+            "note": "Guide: open/close fills are worse than the printed price. Applied to research P&L only.",
+        },
         "stretch_take_profit_is_exit": False,
         "data_window": data_window or {},
+        "paper_gate": {
+            "passes": gate_pass,
+            "action_if_fail": "Set ALPACA_PAPER_TRADING=false until walk-forward and plateau clear the bar.",
+            "required_paper_capital": capital,
+            "half_kelly_allowed": False,
+            "half_kelly_note": "Half-Kelly only after the walk-forward sample is large enough and the gate passes. Full Kelly is never used.",
+        },
         "baseline": _variant_record(
             baseline,
             label="fixed_current",
@@ -457,6 +563,12 @@ def format_strategy_eval_report(payload: dict[str, object]) -> str:
     flags = payload.get("flags") or []
     window = payload.get("data_window") or {}
     assert isinstance(window, dict)
+    slip = payload.get("slippage") or {}
+    assert isinstance(slip, dict)
+    gate = payload.get("paper_gate") or {}
+    assert isinstance(gate, dict)
+    capital = gate.get("required_paper_capital") or {}
+    assert isinstance(capital, dict)
 
     lines = [
         "--- Strategy evaluation (QQQ proxy; not broker P&L) ---",
@@ -466,6 +578,10 @@ def format_strategy_eval_report(payload: dict[str, object]) -> str:
             f"Tested: {metrics.get('bars_tested', 'n/a')}"
         ),
         f"Window: {window.get('daily_start', 'n/a')} -> {window.get('daily_end', 'n/a')}",
+        (
+            f"Slippage: entry {slip.get('entry_slippage_bps', 0)} bps / "
+            f"exit {slip.get('exit_slippage_bps', 0)} bps"
+        ),
         "",
         "Baseline (fixed take-profit, current TAKE_PROFIT_PCT):",
         f"  Trades: {metrics['trade_count']} (flag if under {MIN_TRADES})",
@@ -479,7 +595,7 @@ def format_strategy_eval_report(payload: dict[str, object]) -> str:
         (
             "  PROM: "
             f"{_fmt_pct(prom['prom_return_pct'])}% "
-            f"(adjusted wins { _fmt_num(prom['adjusted_wins']) } x avg win {_fmt_pct(prom['average_win_pct'])}%, "
+            f"(adjusted wins {_fmt_num(prom['adjusted_wins'])} x avg win {_fmt_pct(prom['average_win_pct'])}%, "
             f"adjusted losses {_fmt_num(prom['adjusted_losses'])} x avg loss {_fmt_pct(prom['average_loss_pct'])}%)"
         ),
     ]
@@ -489,11 +605,19 @@ def format_strategy_eval_report(payload: dict[str, object]) -> str:
             f"{_fmt_num(wfe.get('walk_forward_efficiency'), 3)} "
             f"(ann. OOS {_fmt_pct(wfe.get('annualized_oos_pnl_pct'))}% / "
             f"ann. IS {_fmt_pct(wfe.get('annualized_is_pnl_pct'))}%; "
+            f"method={wfe.get('method')}; "
             f"robust bar ~{WFE_ROBUST_LOW:.0%}–{WFE_ROBUST_HIGH:.0%}; "
             f"pass={wfe.get('passes_robust_bar')})"
         )
+        for seg in wfe.get("equal_segments") or []:
+            if isinstance(seg, dict):
+                lines.append(
+                    f"    segment {seg.get('segment')}/{seg.get('role')}: "
+                    f"net={_fmt_pct(seg.get('total_return_pct'))}% "
+                    f"trades={seg.get('total_trades')} bars={seg.get('bars')}"
+                )
     else:
-        lines.append("  Walk-forward efficiency: n/a (no in-sample / out-of-sample split).")
+        lines.append("  Walk-forward efficiency: n/a (no equal-segment in-sample / out-of-sample split).")
     if isinstance(plateau, dict) and plateau.get("profitable_neighbor_share") is not None:
         lines.append(
             "  Plateau (profitable neighbor share): "
@@ -503,6 +627,19 @@ def format_strategy_eval_report(payload: dict[str, object]) -> str:
     else:
         lines.append("  Plateau: n/a (run with --small-grid).")
     lines.append(f"  Flags: {', '.join(flags) if flags else 'none'}")
+    lines.append("")
+    lines.append(
+        f"Paper gate: {'PASS' if gate.get('passes') else 'FAIL'} — "
+        f"{'treat paper as validated only after PASS' if gate.get('passes') else 'keep ALPACA_PAPER_TRADING=false'}"
+    )
+    lines.append(
+        "  Required capital (max DD × "
+        f"{_fmt_num(capital.get('safety_factor'), 1)}): "
+        f"{_fmt_pct(100.0 * float(capital.get('required_capital_fraction_of_equity') or 0), 1)}% of equity "
+        f"(~${_fmt_num(capital.get('required_capital_usd_at_reference'), 0)} at "
+        f"${_fmt_num(capital.get('reference_equity_usd'), 0)} reference). Not the whole paper account."
+    )
+    lines.append("  Half-Kelly: off until the gate passes and the walk-forward sample is large enough.")
     lines.append("")
     lines.append("Exit comparison (stretch % is not an exit):")
     comparison = payload["exit_comparison"]
@@ -525,9 +662,13 @@ def format_strategy_eval_report(payload: dict[str, object]) -> str:
 
 @dataclass(frozen=True)
 class ResearchWindow:
-    """Documented fetch window for strategy-eval / small-grid."""
+    """Documented fetch window for strategy-eval / small-grid.
+
+    Requests ~4 years of daily and as much hourly as the feed allows so the
+    4h series covers the swing window. Older gaps still fall back to daily-derived 4h.
+    """
 
     daily_lookback_days: int = 1460
     max_daily_bars: int = 1100
-    hourly_lookback_days: int = 730
-    max_hourly_bars: int = 10000
+    hourly_lookback_days: int = 1460
+    max_hourly_bars: int = 20000

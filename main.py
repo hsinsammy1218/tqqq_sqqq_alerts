@@ -401,6 +401,8 @@ def run() -> int:
                 n_folds=wf_folds,
                 debug_strategy=args.debug_strategy,
                 decide_options=research_decide_options,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
             )
         except ConfigError as exc:
             print(f"Walk-forward config error: {exc}")
@@ -463,6 +465,8 @@ def run() -> int:
                     grid=grid,
                     debug_strategy=args.debug_strategy,
                     decide_options=research_decide_options,
+                    entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                    exit_slippage_bps=settings.backtest_exit_slippage_bps,
                 )
             except ValueError as exc:
                 print(f"Small grid error: {exc}")
@@ -497,6 +501,8 @@ def run() -> int:
                 decide_options=research_decide_options,
                 plateau_rows=plateau_rows,
                 data_window=data_window,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
             )
         except ValueError as exc:
             print(f"Strategy eval error: {exc}")
@@ -527,6 +533,8 @@ def run() -> int:
                 grid=grid,
                 debug_strategy=args.debug_strategy,
                 decide_options=research_decide_options,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
             )
         except ConfigError as exc:
             print(f"Sweep config error: {exc}")
@@ -561,6 +569,8 @@ def run() -> int:
                 bars=args.backtest_bars,
                 debug_strategy=args.debug_strategy,
                 decide_options=research_decide_options,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
             )
         except ValueError as exc:
             print(f"Backtest error: {exc}")

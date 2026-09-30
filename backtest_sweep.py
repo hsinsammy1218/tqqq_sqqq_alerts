@@ -282,6 +282,8 @@ def run_parameter_sweep(
     grid: SweepGrid,
     debug_strategy: bool = False,
     decide_options: DecideOptions | None = None,
+    entry_slippage_bps: float = 0.0,
+    exit_slippage_bps: float = 0.0,
 ) -> list[SweepResultRow]:
     rows: list[SweepResultRow] = []
     for combo_idx, (bull, bear, weak, rng_add, f_hold, f_margin, dom_gap, min_cf, stop, take) in enumerate(
@@ -321,6 +323,8 @@ def run_parameter_sweep(
             bars=bars,
             debug_strategy=bool(debug_strategy and combo_idx == 0),
             decide_options=decide_options,
+            entry_slippage_bps=entry_slippage_bps,
+            exit_slippage_bps=exit_slippage_bps,
         )
         bal = compute_balanced_score(
             bt.total_return_pct,
