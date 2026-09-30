@@ -35,6 +35,11 @@ from indicators import build_snapshot
 from journal import append_journal
 from market_hours import market_closed_reason
 from runtime_logging import format_utc_z, log_event, setup_logger
+from trade_log_report import (
+    format_trade_log_report_summary,
+    load_research_max_dd_pct,
+    run_trade_log_report,
+)
 from walk_forward import (
     export_walk_forward_csv,
     format_walk_forward_report,
@@ -116,21 +121,36 @@ def run() -> int:
         args.strategy_eval,
         args.small_grid,
         args.checklist_compare,
+        args.trade_log_report,
     )
     if args.walk_forward and (
-        args.backtest or args.backtest_sweep or args.strategy_eval or args.small_grid or args.checklist_compare
+        args.backtest
+        or args.backtest_sweep
+        or args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.trade_log_report
     ):
         print(
             "Config error: --walk-forward cannot be combined with --backtest, "
-            "--backtest-sweep, --strategy-eval, --small-grid, or --checklist-compare."
+            "--backtest-sweep, --strategy-eval, --small-grid, --checklist-compare, "
+            "or --trade-log-report."
         )
         return 1
     if sum(1 for flag in (args.backtest, args.backtest_sweep) if flag) and (
-        args.strategy_eval or args.small_grid or args.checklist_compare
+        args.strategy_eval or args.small_grid or args.checklist_compare or args.trade_log_report
     ):
         print(
-            "Config error: --strategy-eval / --small-grid / --checklist-compare "
-            "cannot be combined with --backtest or --backtest-sweep."
+            "Config error: --strategy-eval / --small-grid / --checklist-compare / "
+            "--trade-log-report cannot be combined with --backtest or --backtest-sweep."
+        )
+        return 1
+    if args.trade_log_report and (
+        args.strategy_eval or args.small_grid or args.checklist_compare or args.health_check
+    ):
+        print(
+            "Config error: --trade-log-report cannot be combined with "
+            "--strategy-eval, --small-grid, --checklist-compare, or --health-check."
         )
         return 1
     if args.debug_strategy_sanity and not args.debug_strategy:
@@ -154,6 +174,7 @@ def run() -> int:
         strategy_eval=args.strategy_eval,
         small_grid=args.small_grid,
         checklist_compare=args.checklist_compare,
+        trade_log_report=args.trade_log_report,
         debug_strategy=args.debug_strategy,
         debug_strategy_sanity=args.debug_strategy_sanity,
         high_confidence_only=args.high_confidence_only,
@@ -279,6 +300,30 @@ def run() -> int:
 
     if args.health_check:
         return run_health_check(settings, settings.dry_run, logger)
+
+    if args.trade_log_report:
+        research_dd = load_research_max_dd_pct()
+        try:
+            payload = run_trade_log_report(
+                trade_log_path=settings.trade_log_jsonl,
+                report_path=args.trade_log_report_json,
+                research_max_dd_pct=research_dd,
+            )
+        except OSError as exc:
+            print(f"Trade log report error: {exc}")
+            log_event(logger, logging.ERROR, "Trade log report failed", error=str(exc))
+            return 1
+        print(format_trade_log_report_summary(payload))
+        print(f"Trade log report JSON written: {args.trade_log_report_json}")
+        log_event(
+            logger,
+            logging.INFO,
+            "Trade log report written",
+            report_path=args.trade_log_report_json,
+            row_count=payload.get("row_count"),
+            enough_data_for_rule_changes=payload.get("enough_data_for_rule_changes"),
+        )
+        return 0
 
     is_research = any(research_flags)
     webhook_err = _missing_live_webhook_message(settings)

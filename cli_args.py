@@ -115,6 +115,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path for --checklist-compare JSON (default: reports/checklist_compare.json).",
     )
     parser.add_argument(
+        "--trade-log-report",
+        action="store_true",
+        help=(
+            "Summarize logs/trades.jsonl (status/source/alert/regime/confidence buckets, "
+            "inferred fill P&L, paper DD vs research ~19%). Writes reports/trade_log_report.json. "
+            "No network, no orders."
+        ),
+    )
+    parser.add_argument(
+        "--trade-log-report-json",
+        default="reports/trade_log_report.json",
+        metavar="PATH",
+        help="Path for --trade-log-report JSON (default: reports/trade_log_report.json).",
+    )
+    parser.add_argument(
         "--debug-strategy",
         action="store_true",
         help="With --backtest, --backtest-sweep, or --walk-forward: print score/regime/threshold diagnostics.",

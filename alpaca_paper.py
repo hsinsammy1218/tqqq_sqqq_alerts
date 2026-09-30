@@ -528,6 +528,16 @@ def execute_paper_orders(
         _safe_append_trade_log(log_path, record, logger=log)
 
     if alert_type not in ACTIONABLE_ALERTS:
+        # Learning breadcrumb: record non-actionable alerts when paper mode is armed.
+        if should_submit_paper_orders(paper_trading=paper_trading, dry_run=dry_run):
+            _log_trade(
+                symbol=alert.symbol or "CASH",
+                side="none",
+                status="skipped",
+                purpose="non_actionable",
+                error="non_actionable",
+                detail=f"alert_type={alert_type}",
+            )
         return []
 
     if not should_submit_paper_orders(paper_trading=paper_trading, dry_run=dry_run):

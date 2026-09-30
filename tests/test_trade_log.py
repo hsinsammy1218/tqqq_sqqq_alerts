@@ -201,3 +201,34 @@ def test_execute_paper_orders_logs_error_and_skipped(tmp_path: Path):
     assert rows[0]["status"] == "skipped"
     assert rows[0]["source"] == "manual_test"
     assert rows[0]["error"] == "no_position"
+
+
+def test_execute_paper_orders_logs_non_actionable_cash(tmp_path: Path):
+    log_path = tmp_path / "trades.jsonl"
+    results = execute_paper_orders(
+        _alert(alert_type="CASH", symbol="CASH", confidence_score=22, qqq_trend_reason="regime=trend_down"),
+        None,
+        paper_trading=True,
+        dry_run=False,
+        api_key="k",
+        api_secret="s",
+        trading_base_url=PAPER_TRADING_BASE_URL,
+        data_base_url="https://data.alpaca.markets",
+        feed="iex",
+        fixed_notional=500,
+        equity_pct=0,
+        limit_offset_bps=10,
+        logger=MagicMock(),
+        session=MagicMock(),
+        trade_log_path=log_path,
+        source="strategy",
+    )
+    assert results == []
+    rows = read_trade_records(log_path)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "skipped"
+    assert rows[0]["alert_type"] == "CASH"
+    assert rows[0]["error"] == "non_actionable"
+    assert rows[0]["regime"] == "trend_down"
+    assert rows[0]["confidence"] == 22
+    assert rows[0]["source"] == "strategy"
