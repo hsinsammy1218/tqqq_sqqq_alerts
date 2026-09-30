@@ -42,6 +42,8 @@ class Settings:
     entry_atr_multiplier: float
     journal_csv: Path
     trade_log_jsonl: Path
+    trade_log_backend: str
+    trade_log_bot_id: str
     position_state_json: Path
     position_state_backend: str
     position_state_bot_id: str
@@ -176,12 +178,29 @@ def load_settings() -> Settings:
     if position_state_backend not in {"file", "supabase"}:
         raise ConfigError("POSITION_STATE_BACKEND must be 'file' or 'supabase'.")
     position_state_bot_id = os.getenv("POSITION_STATE_BOT_ID", "default").strip() or "default"
-    if position_state_backend == "supabase":
+    # Dedicated trade-log backend; default file locally. Render Blueprint sets supabase.
+    # When unset, mirror POSITION_STATE_BACKEND so one supabase latch covers both.
+    trade_log_backend_raw = os.getenv("TRADE_LOG_BACKEND")
+    if trade_log_backend_raw is None or not str(trade_log_backend_raw).strip():
+        trade_log_backend = position_state_backend
+    else:
+        trade_log_backend = str(trade_log_backend_raw).strip().lower()
+    if trade_log_backend not in {"file", "supabase"}:
+        raise ConfigError("TRADE_LOG_BACKEND must be 'file' or 'supabase'.")
+    trade_log_bot_id = (
+        os.getenv("TRADE_LOG_BOT_ID") or position_state_bot_id or "default"
+    ).strip() or "default"
+    if position_state_backend == "supabase" or trade_log_backend == "supabase":
         supabase_url = (os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL") or "").strip()
         supabase_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
         if not supabase_url or not supabase_key:
+            which = (
+                "POSITION_STATE_BACKEND=supabase"
+                if position_state_backend == "supabase"
+                else "TRADE_LOG_BACKEND=supabase"
+            )
             raise ConfigError(
-                "POSITION_STATE_BACKEND=supabase requires SUPABASE_URL "
+                f"{which} requires SUPABASE_URL "
                 "(or NEXT_PUBLIC_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY."
             )
 
@@ -212,6 +231,8 @@ def load_settings() -> Settings:
         entry_atr_multiplier=float(os.getenv("ENTRY_ATR_MULTIPLIER", "0.5")),
         journal_csv=Path(os.getenv("JOURNAL_CSV", "alerts_journal.csv")),
         trade_log_jsonl=Path(os.getenv("TRADE_LOG_JSONL", "logs/trades.jsonl")),
+        trade_log_backend=trade_log_backend,
+        trade_log_bot_id=trade_log_bot_id,
         position_state_json=Path(os.getenv("POSITION_STATE_JSON", "position_state.json")),
         position_state_backend=position_state_backend,
         position_state_bot_id=position_state_bot_id,

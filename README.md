@@ -146,9 +146,9 @@ Default is alerts-only. To rehearse execution on Alpaca **paper** (not live, not
 
 Order mapping: BUY → buy limit; SELL → sell full paper position (skip if flat at broker); FLIP → sell held then buy target. Failures are logged and do not block Discord / journal / bot memory.
 
-Paper order outcomes also append to **`logs/trades.jsonl`** (gitignored; override with `TRADE_LOG_JSONL`) for self-learning — see `trade_log.py`.
+Paper order outcomes append to **`logs/trades.jsonl`** (gitignored; override with `TRADE_LOG_JSONL`) and, when `TRADE_LOG_BACKEND=supabase`, also insert into Supabase `public.bot_trade_log` for durable learning on Render — see `trade_log.py` / `trade_log_store.py`.
 
-Mocked unit tests: `pytest -q tests/test_alpaca_paper.py tests/test_trade_log.py`.
+Mocked unit tests: `pytest -q tests/test_alpaca_paper.py tests/test_trade_log.py tests/test_trade_log_store.py`.
 
 Optional **stricter flat entries**: require normalized confidence ≥75% (still after `MIN_CONFIDENCE_TO_TRADE`):
 
@@ -179,11 +179,12 @@ Health check verifies:
 
 ## Deploy on Render
 
-Render Cron containers are **ephemeral** — local `position_state.json` does not survive between runs. Use **Supabase** for position memory.
+Render Cron containers are **ephemeral** — local `position_state.json` and `logs/trades.jsonl` do not survive between runs. Use **Supabase** for position memory **and** the trade learning journal.
 
-1. **Run the migration** in your Supabase SQL editor (same project as the dashboard):
+1. **Run the migrations** in your Supabase SQL editor (same project as the dashboard), in order:
 
-   [`dashboard/supabase/migrations/20260714180000_bot_position_state.sql`](./dashboard/supabase/migrations/20260714180000_bot_position_state.sql)
+   - [`dashboard/supabase/migrations/20260714180000_bot_position_state.sql`](./dashboard/supabase/migrations/20260714180000_bot_position_state.sql)
+   - [`dashboard/supabase/migrations/20260930190000_bot_trade_log.sql`](./dashboard/supabase/migrations/20260930190000_bot_trade_log.sql)
 
 2. **Create an Environment Group** in Render named `tqqq-sqqq-alerts` (matches [`render.yaml`](./render.yaml)) with at least:
 
@@ -195,13 +196,15 @@ Render Cron containers are **ephemeral** — local `position_state.json` does no
    | `DRY_RUN` | `false` |
    | `ALPACA_PAPER_TRADING` | `true` (paper latch; live trading host remains blocked in app config) |
    | `ALPACA_TRADING_BASE_URL` | `https://paper-api.alpaca.markets` (do **not** use the live host) |
-   | `TRADE_LOG_JSONL` | `logs/trades.jsonl` (ephemeral on Render — see local scheduler below) |
+   | `TRADE_LOG_JSONL` | `logs/trades.jsonl` (also written locally each run; ephemeral on Render) |
+   | `TRADE_LOG_BACKEND` | `supabase` (durable `bot_trade_log` inserts) |
+   | `TRADE_LOG_BOT_ID` | `default` (optional; defaults to `POSITION_STATE_BOT_ID`) |
    | `POSITION_STATE_BACKEND` | `supabase` |
    | `POSITION_STATE_BOT_ID` | `default` (or another id if you run multiple bots) |
    | `SUPABASE_URL` | project URL |
    | `SUPABASE_SERVICE_ROLE_KEY` | service role key |
 
-   Copy any other strategy knobs from your local `.env` as needed. Secrets stay in the Dashboard — never commit `.env`.
+   Copy any other strategy knobs from your local `.env` as needed. Secrets stay in the Dashboard — never commit `.env`. Live Alpaca host stays blocked; **do not wire Robinhood**.
 
 3. **Deploy the Blueprint**: Dashboard → New → Blueprint → this repo (`render.yaml`). That creates three weekday crons (EDT / UTC−4):
 
@@ -223,12 +226,20 @@ Render Cron containers are **ephemeral** — local `position_state.json` does no
 
    Do not add `--set-position` / `--flat` to the Render cron start command (that would skip the alert run). After seeding, weekday crons pick up the row on their own.
 
+5. **Review learning progress** (reads Supabase when `TRADE_LOG_BACKEND=supabase`):
+
+   ```bash
+   python main.py --trade-log-report
+   ```
+
 **DST note:** Render cron expressions are UTC. The schedules above assume Eastern Daylight (UTC−4). In Eastern Standard (UTC−5), shift each hour +1, or leave as-is and rely on `--market-hours-only` (jobs may skip or run near the edge of the session).
 
-**Journal / trade log / usage JSON** on Render are best-effort only (ephemeral disk). Discord is sent **before** position is persisted so a webhook failure can retry on the next cron. Discord remains the durable alert channel. For a durable `logs/trades.jsonl` toward the ≥10 strategy round-trip learning gate, run the local helper (same slots):
+**Journal CSV / usage JSON** on Render are best-effort only (ephemeral disk). Discord is sent **before** position is persisted so a webhook failure can retry on the next cron. Discord remains the durable alert channel. Trade outcomes accumulate in **`public.bot_trade_log`** toward the ≥10 strategy round-trip learning gate — no local `--loop` required for durability.
+
+Optional local backup (same slots; also appends JSONL on disk):
 
 ```bash
-# leave running (tmux/systemd); uses .env paper flags; appends logs/trades.jsonl
+# leave running (tmux/systemd); uses .env paper flags
 python scripts/run_weekday_paper.py --loop
 
 # smoke one slot now

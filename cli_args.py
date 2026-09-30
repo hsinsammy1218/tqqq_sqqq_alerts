@@ -118,9 +118,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--trade-log-report",
         action="store_true",
         help=(
-            "Summarize logs/trades.jsonl (status/source/alert/regime/confidence buckets, "
+            "Summarize the paper trade journal (status/source/alert/regime/confidence buckets, "
             "inferred fill P&L, paper DD vs research ~19%). Writes reports/trade_log_report.json. "
-            "No network, no orders."
+            "Prefers Supabase bot_trade_log when TRADE_LOG_BACKEND=supabase; else logs/trades.jsonl. "
+            "No live orders."
         ),
     )
     parser.add_argument(

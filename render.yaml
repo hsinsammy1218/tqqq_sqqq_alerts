@@ -1,13 +1,15 @@
 # Render Blueprint: weekday paper-learning alert crons (US Eastern / EDT = UTC-4).
 # After apply: fill secret values for the tqqq-sqqq-alerts env group in the Dashboard.
-# Requires POSITION_STATE_BACKEND=supabase so position survives ephemeral disks.
+# Requires POSITION_STATE_BACKEND=supabase and TRADE_LOG_BACKEND=supabase so position
+# and the learning journal survive ephemeral disks.
 #
 # Paper learning: ALPACA_PAPER_TRADING=true + DRY_RUN=false submits to paper-api only.
 # Live Alpaca trading host is blocked in config.py (never set ALPACA_TRADING_BASE_URL
 # to https://api.alpaca.markets). Robinhood is not wired here.
 #
-# Trade log (logs/trades.jsonl) on Render is ephemeral — for durable learning toward
-# ≥10 strategy round-trips, also run scripts/run_weekday_paper.py locally (or crontab).
+# Apply SQL migrations in Supabase before first cron:
+#   dashboard/supabase/migrations/20260714180000_bot_position_state.sql
+#   dashboard/supabase/migrations/20260930190000_bot_trade_log.sql
 #
 # Winter (EST = UTC-5): shift each schedule one hour later, or rely on
 # --market-hours-only and accept occasional skip near the edges.
@@ -51,6 +53,10 @@ envVarGroups:
       - key: POSITION_STATE_BACKEND
         value: supabase
       - key: POSITION_STATE_BOT_ID
+        value: default
+      - key: TRADE_LOG_BACKEND
+        value: supabase
+      - key: TRADE_LOG_BOT_ID
         value: default
       # Paper learning latch (live host rejected in app config).
       - key: DRY_RUN

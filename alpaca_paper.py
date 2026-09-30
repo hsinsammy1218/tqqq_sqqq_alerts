@@ -466,16 +466,23 @@ def resolve_order_qty(
 
 
 def _safe_append_trade_log(
-    path: Path,
+    path: Path | None,
     record: dict[str, Any],
     *,
     logger: logging.Logger,
+    store: Any | None = None,
 ) -> None:
     try:
-        append_trade_record(path, record)
+        if store is not None:
+            store.append(record)
+        elif path is not None:
+            append_trade_record(path, record)
+        else:
+            return
     except Exception as exc:  # noqa: BLE001
+        target = store.describe() if store is not None and hasattr(store, "describe") else str(path)
         print(f"[alpaca-paper] Trade log append failed: {exc}")
-        log_event(logger, logging.WARNING, "Trade log append failed", error=str(exc), path=str(path))
+        log_event(logger, logging.WARNING, "Trade log append failed", error=str(exc), path=target)
 
 
 def execute_paper_orders(
@@ -502,6 +509,7 @@ def execute_paper_orders(
     atr_stop_mult: float = 2.0,
     session: requests.Session | None = None,
     trade_log_path: Path | str | None = DEFAULT_TRADE_LOG_PATH,
+    trade_log_store: Any | None = None,
     source: str = "strategy",
 ) -> list[OrderResult]:
     """Gate, build intents, and submit paper limit orders. Never raises for API failures."""
@@ -513,7 +521,7 @@ def execute_paper_orders(
     signal_quality = alert.signal_quality
 
     def _log_trade(**kwargs: Any) -> None:
-        if log_path is None:
+        if trade_log_store is None and log_path is None:
             return
         record = build_trade_record(
             alert_type=alert_type,
@@ -525,7 +533,7 @@ def execute_paper_orders(
             source=source,
             **kwargs,
         )
-        _safe_append_trade_log(log_path, record, logger=log)
+        _safe_append_trade_log(log_path, record, logger=log, store=trade_log_store)
 
     if alert_type not in ACTIONABLE_ALERTS:
         # Learning breadcrumb: record non-actionable alerts when paper mode is armed.

@@ -1,7 +1,7 @@
-"""Summarize ``logs/trades.jsonl`` for paper-trading self-learning.
+"""Summarize paper trade journal for self-learning.
 
-Writes ``reports/trade_log_report.json`` (gitignored under ``reports/*.json``).
-No network calls — pure file/JSON analysis.
+Reads from Supabase ``bot_trade_log`` when ``TRADE_LOG_BACKEND=supabase``,
+else from ``logs/trades.jsonl``. Writes ``reports/trade_log_report.json``.
 """
 
 from __future__ import annotations
@@ -247,6 +247,7 @@ def format_trade_log_report_summary(payload: dict[str, Any]) -> str:
     dd = payload.get("drawdown_comparison") or {}
     lines = [
         "Trade log report",
+        f"  Source: {payload.get('source_path')}",
         f"  Rows: {payload.get('row_count', 0)}",
         f"  By status: {counts.get('by_status') or {}}",
         f"  By source: {counts.get('by_source') or {}}",
@@ -283,13 +284,19 @@ def run_trade_log_report(
     trade_log_path: str | Path = DEFAULT_TRADE_LOG_PATH,
     report_path: str | Path = DEFAULT_REPORT_PATH,
     research_max_dd_pct: float = DEFAULT_RESEARCH_MAX_DD_PCT,
+    trade_log_store: Any | None = None,
 ) -> dict[str, Any]:
-    path = Path(trade_log_path)
-    records = read_trade_records(path)
+    if trade_log_store is not None:
+        records = trade_log_store.read_all()
+        source_path = trade_log_store.describe()
+    else:
+        path = Path(trade_log_path)
+        records = read_trade_records(path)
+        source_path = str(path)
     payload = build_trade_log_report(
         records,
         research_max_dd_pct=research_max_dd_pct,
-        source_path=str(path),
+        source_path=source_path,
     )
     write_trade_log_report(report_path, payload)
     return payload

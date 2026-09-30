@@ -48,6 +48,7 @@ from walk_forward import (
     walk_forward_grid_from_settings,
 )
 from position_store import PositionStoreError, position_store_from_settings
+from trade_log_store import TradeLogStoreError, trade_log_store_from_settings
 from strategy import (
     DecideOptions,
     PositionState,
@@ -304,22 +305,26 @@ def run() -> int:
     if args.trade_log_report:
         research_dd = load_research_max_dd_pct()
         try:
+            trade_log_store = trade_log_store_from_settings(settings)
             payload = run_trade_log_report(
                 trade_log_path=settings.trade_log_jsonl,
                 report_path=args.trade_log_report_json,
                 research_max_dd_pct=research_dd,
+                trade_log_store=trade_log_store,
             )
-        except OSError as exc:
+        except (OSError, TradeLogStoreError, ConfigError) as exc:
             print(f"Trade log report error: {exc}")
             log_event(logger, logging.ERROR, "Trade log report failed", error=str(exc))
             return 1
         print(format_trade_log_report_summary(payload))
         print(f"Trade log report JSON written: {args.trade_log_report_json}")
+        print(f"Trade log source: {payload.get('source_path')}")
         log_event(
             logger,
             logging.INFO,
             "Trade log report written",
             report_path=args.trade_log_report_json,
+            source_path=payload.get("source_path"),
             row_count=payload.get("row_count"),
             enough_data_for_rule_changes=payload.get("enough_data_for_rule_changes"),
         )
@@ -804,6 +809,7 @@ def run() -> int:
         atr_stop_mult=settings.alpaca_paper_atr_stop_mult,
         logger=logger,
         trade_log_path=settings.trade_log_jsonl,
+        trade_log_store=trade_log_store_from_settings(settings),
         source="strategy",
     )
     if paper_results:

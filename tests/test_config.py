@@ -16,14 +16,46 @@ def test_load_settings_rejects_unknown_position_backend(monkeypatch: pytest.Monk
         load_settings()
 
 
+def test_load_settings_rejects_unknown_trade_log_backend(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "test-secret")
+    monkeypatch.setenv("POSITION_STATE_BACKEND", "file")
+    monkeypatch.setenv("TRADE_LOG_BACKEND", "s3")
+    with pytest.raises(ConfigError, match="TRADE_LOG_BACKEND must be"):
+        load_settings()
+
+
+def test_load_settings_trade_log_backend_mirrors_position_when_unset(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "test-secret")
+    monkeypatch.setenv("POSITION_STATE_BACKEND", "file")
+    # Empty string (not delenv): load_dotenv() would otherwise refill from a local .env.
+    monkeypatch.setenv("TRADE_LOG_BACKEND", "")
+    settings = load_settings()
+    assert settings.trade_log_backend == "file"
+
+
 def test_load_settings_supabase_requires_credentials(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ALPACA_API_KEY", "test-key")
     monkeypatch.setenv("ALPACA_API_SECRET", "test-secret")
     monkeypatch.setenv("POSITION_STATE_BACKEND", "supabase")
+    monkeypatch.setenv("TRADE_LOG_BACKEND", "file")
     monkeypatch.setenv("SUPABASE_URL", "")
     monkeypatch.setenv("NEXT_PUBLIC_SUPABASE_URL", "")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "")
     with pytest.raises(ConfigError, match="requires SUPABASE_URL"):
+        load_settings()
+
+
+def test_load_settings_trade_log_supabase_requires_credentials(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "test-secret")
+    monkeypatch.setenv("POSITION_STATE_BACKEND", "file")
+    monkeypatch.setenv("TRADE_LOG_BACKEND", "supabase")
+    monkeypatch.setenv("SUPABASE_URL", "")
+    monkeypatch.setenv("NEXT_PUBLIC_SUPABASE_URL", "")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    with pytest.raises(ConfigError, match="TRADE_LOG_BACKEND=supabase requires SUPABASE_URL"):
         load_settings()
 
 

@@ -1,6 +1,8 @@
 """Append-only paper trade journal for self-learning.
 
-Primary path: ``logs/trades.jsonl`` (one JSON object per line).
+Primary local path: ``logs/trades.jsonl`` (one JSON object per line).
+On Render, also persist to Supabase ``public.bot_trade_log`` via
+``trade_log_store`` when ``TRADE_LOG_BACKEND=supabase``.
 Runtime data under ``logs/`` is gitignored.
 """
 
