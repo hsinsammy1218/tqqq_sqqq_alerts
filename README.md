@@ -57,6 +57,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - `journal.py`
 - `backtest.py`
 - `backtest_sweep.py`
+- `strategy_eval.py`
 - `walk_forward.py`
 - `main.py`
 - `.env.example`
@@ -81,9 +82,13 @@ Copy `.env.example` to `.env` and fill values:
 - `DISCORD_WEBHOOK_URL` only required when `DRY_RUN=false`
 - Optional **Alpaca paper trading** (off by default; never hits the live trading host):
   - `ALPACA_PAPER_TRADING=false` — set `true` **and** `DRY_RUN=false` to submit day **limit** orders on `https://paper-api.alpaca.markets` for BUY / SELL / FLIP alerts
-  - `ALPACA_PAPER_NOTIONAL=500` — USD size per buy leg when equity % is unset
-  - `ALPACA_PAPER_EQUITY_PCT=0` — if `> 0`, buy size = paper equity × pct instead of fixed notional
+  - `ALPACA_PAPER_NOTIONAL=500` — USD size per buy leg when equity % is unset; also the **cap** when volatility sizing is on
+  - `ALPACA_PAPER_EQUITY_PCT=0` — if `> 0` and volatility sizing is off, buy size = paper equity × pct instead of fixed notional
   - `ALPACA_PAPER_LIMIT_OFFSET_BPS=10` — limit offset vs latest trade
+  - `ALPACA_PAPER_VOL_SIZING=false` — when `true`, buy notional = equity × `ALPACA_PAPER_RISK_FRACTION` / stop distance, capped by `ALPACA_PAPER_NOTIONAL`. Off keeps the fixed notional / equity-% path
+  - `ALPACA_PAPER_RISK_FRACTION=0.0075` — fraction of paper equity risked per buy (0.5–1% is the intended band; config allows up to 2%)
+  - `ALPACA_PAPER_VOL_STOP=stop_pct` — `stop_pct` uses `STOP_LOSS_PCT`; `atr` uses `ALPACA_PAPER_ATR_STOP_MULT` × QQQ ATR / QQQ price
+  - `EXIT_MODE=fixed` — `atr_trail` replaces the fixed take-profit exit with an ATR trail (`ATR_TRAIL_MULT`, default 2). `STRETCH_TAKE_PROFIT_PCT` is never an automatic exit
   - `ALPACA_TRADING_BASE_URL` defaults to the paper API; `https://api.alpaca.markets` is rejected at config load
   - Separate from any Robinhood setup; see paper-trading notes below
 
@@ -254,6 +259,8 @@ Define grids via comma-separated env vars (omit a variable to keep only its sing
 | `BACKTEST_SWEEP_FLIP_MARGIN` | `FLIP_MARGIN_WEIGHT` |
 | `BACKTEST_SWEEP_DOM_GAP` | `ENTRY_DOMINANCE_GAP_WEIGHT` |
 | `BACKTEST_SWEEP_MIN_CONFIDENCE` | `MIN_CONFIDENCE_TO_TRADE` |
+| `BACKTEST_SWEEP_STOP` | `STOP_LOSS_PCT` |
+| `BACKTEST_SWEEP_TAKE_PROFIT` | `TAKE_PROFIT_PCT` |
 
 Legacy aliases (`BACKTEST_SWEEP_BULL_ENTRY_THRESHOLD`, `BACKTEST_SWEEP_BEAR_ENTRY_THRESHOLD`, etc.) are still read if the short name is unset (`BACKTEST_SWEEP_MIN_CONFIDENCE_TO_TRADE` for confidence).
 
@@ -289,6 +296,20 @@ python main.py --walk-forward --backtest-bars 250 --walk-forward-csv reports/wal
 ```
 
 `--walk-forward-csv` defaults to `reports/walk_forward_results.csv`. Leaving normal `.env` defaults unchanged is intentional until you adopt a recommendation manually.
+
+### Strategy evaluation and small grid (research only)
+
+```bash
+python main.py --strategy-eval
+python main.py --small-grid
+python main.py --strategy-eval --small-grid
+```
+
+`--strategy-eval` scores closed QQQ-proxy trades (not broker fills): trade count (flag under 30), profit factor, compounded net profit, max and average drawdown (flag when max is about 3× average or more), reward/risk = net profit / max drawdown (bar about 3), a PROM-style pessimistic return, and walk-forward efficiency on a chronological two-thirds in-sample / one-third out-of-sample split (robust bar about 50–60%). It also compares the current fixed take-profit, a wider fixed target (default 30%, not the 25% stretch), and `EXIT_MODE=atr_trail`. JSON goes to `reports/strategy_eval.json` (gitignored).
+
+When `--backtest-bars` is left at 180, these two commands expand to about 756 sessions (~3 years) if that much daily history loaded. The loader requests up to ~4 years of daily bars for this path only; the live alert path stays on the shorter default window.
+
+`--small-grid` runs 64 combinations (two levels each) of `MIN_CONFIDENCE_TO_TRADE`, `ENTRY_DOMINANCE_GAP_WEIGHT`, `REGIME_RANGING_THRESHOLD_WEIGHT_ADD`, `FLIP_MIN_HOLD_TRADING_DAYS`, `STOP_LOSS_PCT`, and `TAKE_PROFIT_PCT`. The console and `reports/grid_neighbors.json` report the share of one-step neighbors around the best row that stay profitable (`total_return_pct > 0`). `--backtest-sweep` prints that same neighbor share for whatever grid you configured.
 
 | Env | Parameter |
 |-----|-----------|

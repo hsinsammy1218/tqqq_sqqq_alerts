@@ -72,6 +72,8 @@ class SweepGrid:
     flip_margin: tuple[float, ...]
     entry_dominance_gap: tuple[float, ...]
     min_confidence: tuple[int, ...]
+    stop_loss: tuple[float, ...] = (0.08,)
+    take_profit: tuple[float, ...] = (0.15,)
 
     @property
     def combination_count(self) -> int:
@@ -84,6 +86,8 @@ class SweepGrid:
             * len(self.flip_margin)
             * len(self.entry_dominance_gap)
             * len(self.min_confidence)
+            * len(self.stop_loss)
+            * len(self.take_profit)
         )
 
 
@@ -111,6 +115,8 @@ class SweepResultRow:
     cash_periods: int
     equity_end: float
     total_return_pct: float
+    stop_loss_pct: float | None = None
+    take_profit_pct: float | None = None
 
 
 def _parse_int_csv(env_name: str, raw: str | None, default: int) -> tuple[int, ...]:
@@ -201,6 +207,68 @@ def sweep_grid_from_settings(settings: Settings) -> SweepGrid:
             ),
             settings.min_confidence_to_trade,
         ),
+        stop_loss=_parse_float_csv(
+            "BACKTEST_SWEEP_STOP",
+            _sweep_env_raw("BACKTEST_SWEEP_STOP", "BACKTEST_SWEEP_STOP_LOSS_PCT"),
+            settings.stop_loss_pct,
+        ),
+        take_profit=_parse_float_csv(
+            "BACKTEST_SWEEP_TAKE_PROFIT",
+            _sweep_env_raw("BACKTEST_SWEEP_TAKE_PROFIT", "BACKTEST_SWEEP_TAKE_PROFIT_PCT"),
+            settings.take_profit_pct,
+        ),
+    )
+
+
+def _pair_levels(current: float, other: float) -> tuple[float, ...]:
+    levels = sorted({round(float(current), 6), round(float(other), 6)})
+    if len(levels) == 1:
+        levels.append(round(float(current) + abs(float(other) - float(current) or 0.01), 6))
+    return tuple(levels)
+
+
+def _pair_int_levels(current: int, other: int, *, low: int = 0, high: int = 100) -> tuple[int, ...]:
+    levels = sorted({max(low, min(high, int(current))), max(low, min(high, int(other)))})
+    if len(levels) == 1:
+        bump = min(high, int(current) + 1)
+        if bump == int(current):
+            bump = max(low, int(current) - 1)
+        levels = sorted({int(current), bump})
+    return tuple(levels)
+
+
+def small_research_grid(settings: Settings) -> SweepGrid:
+    """Two levels on each guide knob. Other sweep axes stay at the live single value.
+
+    2**6 = 64 combinations. This is the small grid, not the legacy full cartesian sweep.
+    """
+    return SweepGrid(
+        bull_entry=(settings.bull_entry_threshold,),
+        bear_entry=(settings.bear_entry_threshold,),
+        weak=(settings.weak_score_threshold,),
+        regime_ranging_add=_pair_levels(
+            settings.regime_ranging_threshold_weight_add,
+            max(0.0, settings.regime_ranging_threshold_weight_add - 0.15),
+        ),
+        flip_min_hold=_pair_int_levels(
+            settings.flip_min_hold_trading_days,
+            max(0, settings.flip_min_hold_trading_days - 1),
+            low=0,
+            high=30,
+        ),
+        flip_margin=(settings.flip_margin_weight,),
+        entry_dominance_gap=_pair_levels(
+            settings.entry_dominance_gap_weight,
+            max(0.0, settings.entry_dominance_gap_weight - 0.25),
+        ),
+        min_confidence=_pair_int_levels(
+            settings.min_confidence_to_trade,
+            max(0, settings.min_confidence_to_trade - 8),
+            low=0,
+            high=100,
+        ),
+        stop_loss=_pair_levels(settings.stop_loss_pct, settings.stop_loss_pct + 0.02),
+        take_profit=_pair_levels(settings.take_profit_pct, min(0.5, settings.take_profit_pct + 0.07)),
     )
 
 
@@ -216,7 +284,7 @@ def run_parameter_sweep(
     decide_options: DecideOptions | None = None,
 ) -> list[SweepResultRow]:
     rows: list[SweepResultRow] = []
-    for combo_idx, (bull, bear, weak, rng_add, f_hold, f_margin, dom_gap, min_cf) in enumerate(
+    for combo_idx, (bull, bear, weak, rng_add, f_hold, f_margin, dom_gap, min_cf, stop, take) in enumerate(
         itertools.product(
             grid.bull_entry,
             grid.bear_entry,
@@ -226,6 +294,8 @@ def run_parameter_sweep(
             grid.flip_margin,
             grid.entry_dominance_gap,
             grid.min_confidence,
+            grid.stop_loss,
+            grid.take_profit,
         )
     ):
         params = replace(
@@ -238,6 +308,8 @@ def run_parameter_sweep(
             flip_margin_weight=f_margin,
             entry_dominance_gap_weight=dom_gap,
             min_confidence_to_trade=min_cf,
+            stop_loss_pct=stop,
+            take_profit_pct=take,
         )
         bt = run_backtest(
             candles,
@@ -281,6 +353,8 @@ def run_parameter_sweep(
                 cash_periods=bt.cash_no_trade_periods,
                 equity_end=bt.equity_end,
                 total_return_pct=bt.total_return_pct,
+                stop_loss_pct=stop,
+                take_profit_pct=take,
             )
         )
 
@@ -311,12 +385,115 @@ def run_parameter_sweep(
                 cash_periods=row.cash_periods,
                 equity_end=row.equity_end,
                 total_return_pct=row.total_return_pct,
+                stop_loss_pct=row.stop_loss_pct,
+                take_profit_pct=row.take_profit_pct,
             )
         )
     return ranked
 
 
 TOP_SWEEP_CONSOLE_ROWS = 10
+
+_INT_SWEEP_FIELDS = frozenset(
+    {
+        "bull_entry_threshold",
+        "bear_entry_threshold",
+        "weak_score_threshold",
+        "flip_min_hold_trading_days",
+        "min_confidence_to_trade",
+    }
+)
+_SWEEP_PARAM_FIELDS = (
+    "bull_entry_threshold",
+    "bear_entry_threshold",
+    "weak_score_threshold",
+    "regime_ranging_threshold_weight_add",
+    "flip_min_hold_trading_days",
+    "flip_margin_weight",
+    "entry_dominance_gap_weight",
+    "min_confidence_to_trade",
+    "stop_loss_pct",
+    "take_profit_pct",
+)
+
+
+def _norm_param(field: str, value: object) -> int | float | None:
+    if value is None:
+        return None
+    if field in _INT_SWEEP_FIELDS:
+        return int(value)  # type: ignore[arg-type]
+    return round(float(value), 6)  # type: ignore[arg-type]
+
+
+def _param_key(row: SweepResultRow) -> tuple[object, ...]:
+    return tuple(_norm_param(field, getattr(row, field)) for field in _SWEEP_PARAM_FIELDS)
+
+
+@dataclass(frozen=True)
+class NeighborShare:
+    neighbor_count: int
+    profitable_neighbors: int
+    share: float | None
+    best_total_return_pct: float | None
+    neighbors: tuple[dict[str, object], ...]
+
+
+def profitable_neighbor_share(rows: list[SweepResultRow]) -> NeighborShare:
+    """Share of one-step neighbors of the best row that stay profitable.
+
+    A neighbor matches the best row on every swept field except one, where the
+    value is the next lower or higher level present in the sweep. Profitable
+    means total_return_pct > 0 (QQQ proxy, not broker P&L).
+    """
+    if not rows:
+        return NeighborShare(0, 0, None, None, ())
+    best = min(rows, key=lambda r: (r.rank if r.rank else 10**9, -r.balanced_score))
+    index = {_param_key(row): row for row in rows}
+    best_key = _param_key(best)
+    neighbors: list[dict[str, object]] = []
+    for axis, field in enumerate(_SWEEP_PARAM_FIELDS):
+        values = sorted(
+            {key[axis] for key in index if key[axis] is not None},
+            key=lambda v: (isinstance(v, float), v),
+        )
+        # ints and floats are both comparable within one axis.
+        try:
+            values = sorted(set(values))
+        except TypeError:
+            continue
+        current = best_key[axis]
+        if current is None or current not in values:
+            continue
+        pos = values.index(current)
+        adjacent_positions = [p for p in (pos - 1, pos + 1) if 0 <= p < len(values)]
+        for adj_pos in adjacent_positions:
+            key = list(best_key)
+            key[axis] = values[adj_pos]
+            neighbor = index.get(tuple(key))
+            if neighbor is None or neighbor is best:
+                continue
+            profitable = neighbor.total_return_pct > 0
+            neighbors.append(
+                {
+                    "field": field,
+                    "value": values[adj_pos],
+                    "total_return_pct": neighbor.total_return_pct,
+                    "total_trades": neighbor.total_trades,
+                    "profitable": profitable,
+                    "balanced_score": neighbor.balanced_score,
+                    "rank": neighbor.rank,
+                }
+            )
+    count = len(neighbors)
+    profitable_n = sum(1 for n in neighbors if n["profitable"])
+    share = (profitable_n / count) if count else None
+    return NeighborShare(
+        neighbor_count=count,
+        profitable_neighbors=profitable_n,
+        share=share,
+        best_total_return_pct=best.total_return_pct,
+        neighbors=tuple(neighbors),
+    )
 
 
 def format_sweep_report(rows: list[SweepResultRow], *, ticker: str, bars: int, combo_count: int) -> str:
@@ -349,8 +526,20 @@ def format_sweep_report(rows: list[SweepResultRow], *, ticker: str, bars: int, c
             f"{r.total_trades:6d} | {r.win_rate_pct:4.0f} | {r.average_return_pct:6.2f} | "
             f"{r.max_drawdown_pct:6.2f} | {r.flip_count:5d} | {r.total_return_pct:7.2f}%"
         )
+    share = profitable_neighbor_share(rows)
+    if share.share is None:
+        neighbor_line = "Profitable neighbors around best row: n/a (no adjacent parameter sets)."
+    else:
+        neighbor_line = (
+            "Profitable neighbors around best row: "
+            f"{share.share * 100:.1f}% ({share.profitable_neighbors}/{share.neighbor_count} "
+            "with total_return_pct > 0)."
+        )
     lines.extend(
         [
+            "",
+            neighbor_line,
+            "Plateau check: a single profitable spike with few profitable neighbors is not a robust hill.",
             "",
             "Disclaimer: Sweep mode is for research only. Results use a QQQ close proxy, not real ETF fills.",
             "Top-ranked settings are not guaranteed future performance.",
@@ -391,6 +580,8 @@ def export_sweep_csv(path: str, rows: list[SweepResultRow]) -> None:
         "cash_periods",
         "equity_end",
         "total_return_pct",
+        "stop_loss_pct",
+        "take_profit_pct",
     ]
     out_path = Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -422,5 +613,7 @@ def export_sweep_csv(path: str, rows: list[SweepResultRow]) -> None:
                     "cash_periods": r.cash_periods,
                     "equity_end": round(r.equity_end, 6),
                     "total_return_pct": round(r.total_return_pct, 6),
+                    "stop_loss_pct": _csv_num_optional(r.stop_loss_pct),
+                    "take_profit_pct": _csv_num_optional(r.take_profit_pct),
                 }
             )

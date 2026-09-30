@@ -9,7 +9,21 @@ from alpaca_paper import execute_paper_orders
 from api_quota_notify import maybe_notify_quota_reached
 from api_usage import track_and_maybe_warn_api_usage
 from backtest import export_backtest_trades_csv, format_backtest_report, run_backtest
-from backtest_sweep import export_sweep_csv, format_sweep_report, run_parameter_sweep, sweep_grid_from_settings
+from backtest_sweep import (
+    export_sweep_csv,
+    format_sweep_report,
+    run_parameter_sweep,
+    small_research_grid,
+    sweep_grid_from_settings,
+)
+from strategy_eval import (
+    ResearchWindow,
+    format_strategy_eval_report,
+    grid_neighbors_payload,
+    resolve_research_bars,
+    run_strategy_evaluation,
+    write_json,
+)
 from cli_args import build_parser
 from config import ConfigError, Settings, load_settings, strategy_params_from_settings
 from data import DataError, MarketDataQuotaError, cli_calls_attempted, format_cli_usage_line, load_candles
@@ -93,8 +107,21 @@ def _log_cli_usage(
 def run() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    if args.walk_forward and (args.backtest or args.backtest_sweep):
-        print("Config error: --walk-forward cannot be combined with --backtest or --backtest-sweep.")
+    research_flags = (
+        args.backtest,
+        args.backtest_sweep,
+        args.walk_forward,
+        args.strategy_eval,
+        args.small_grid,
+    )
+    if args.walk_forward and (args.backtest or args.backtest_sweep or args.strategy_eval or args.small_grid):
+        print(
+            "Config error: --walk-forward cannot be combined with --backtest, "
+            "--backtest-sweep, --strategy-eval, or --small-grid."
+        )
+        return 1
+    if sum(1 for flag in (args.backtest, args.backtest_sweep) if flag) and (args.strategy_eval or args.small_grid):
+        print("Config error: --strategy-eval / --small-grid cannot be combined with --backtest or --backtest-sweep.")
         return 1
     if args.debug_strategy_sanity and not args.debug_strategy:
         print("Config error: --debug-strategy-sanity requires --debug-strategy.")
@@ -114,6 +141,8 @@ def run() -> int:
         backtest_sweep_csv=args.backtest_sweep_csv,
         walk_forward=args.walk_forward,
         walk_forward_csv=args.walk_forward_csv,
+        strategy_eval=args.strategy_eval,
+        small_grid=args.small_grid,
         debug_strategy=args.debug_strategy,
         debug_strategy_sanity=args.debug_strategy_sanity,
         high_confidence_only=args.high_confidence_only,
@@ -240,7 +269,7 @@ def run() -> int:
     if args.health_check:
         return run_health_check(settings, settings.dry_run, logger)
 
-    is_research = args.backtest or args.backtest_sweep or args.walk_forward
+    is_research = any(research_flags)
     webhook_err = _missing_live_webhook_message(settings)
     if webhook_err and not is_research:
         print(f"Config error: {webhook_err}")
@@ -254,13 +283,24 @@ def run() -> int:
             log_event(logger, logging.INFO, "Market hours skip", reason=closed_reason, alpaca_api_calls=0)
             return 0
 
+    long_research = bool(args.strategy_eval or args.small_grid)
+    research_window = ResearchWindow() if long_research else None
     try:
+        candle_kwargs: dict[str, int] = {}
+        if research_window is not None:
+            candle_kwargs = {
+                "daily_lookback_days": research_window.daily_lookback_days,
+                "max_daily_bars": research_window.max_daily_bars,
+                "hourly_lookback_days": research_window.hourly_lookback_days,
+                "max_hourly_bars": research_window.max_hourly_bars,
+            }
         candles = load_candles(
             ticker=settings.qqq_ticker,
             api_key=settings.alpaca_api_key,
             api_secret=settings.alpaca_api_secret,
             data_base_url=settings.alpaca_data_base_url,
             feed=settings.alpaca_data_feed,
+            **candle_kwargs,
         )
         last_daily = candles.daily.index[-1]
         last_h4 = candles.four_hour.index[-1]
@@ -331,8 +371,11 @@ def run() -> int:
         blocked_dates_count=len(blocked_dates),
         risk_notes=risk_notes,
     )
-    if args.debug_strategy and not args.backtest and not args.backtest_sweep and not args.walk_forward:
-        print("[debug-strategy] Ignored unless combined with --backtest, --backtest-sweep, or --walk-forward.")
+    if args.debug_strategy and not is_research:
+        print(
+            "[debug-strategy] Ignored unless combined with --backtest, --backtest-sweep, "
+            "--walk-forward, --strategy-eval, or --small-grid."
+        )
 
     research_decide_options = DecideOptions(
         debug_sanity_dominate=args.debug_strategy_sanity,
@@ -379,6 +422,91 @@ def run() -> int:
             print(f"Walk-forward CSV written: {args.walk_forward_csv}")
         except OSError as exc:
             print(f"Walk-forward export error: {exc}")
+            return 1
+        return 0
+
+    if args.strategy_eval or args.small_grid:
+        eval_bars = resolve_research_bars(
+            args.backtest_bars,
+            len(candles.daily),
+            expand_default=True,
+        )
+        data_window = {
+            "daily_bars_loaded": len(candles.daily),
+            "daily_start": candles.daily.index[0].isoformat() if len(candles.daily) else None,
+            "daily_end": candles.daily.index[-1].isoformat() if len(candles.daily) else None,
+            "four_hour_bars_loaded": len(candles.four_hour),
+            "bars_requested": eval_bars,
+            "cli_backtest_bars": args.backtest_bars,
+            "lookback_days_requested": research_window.daily_lookback_days if research_window else None,
+            "note": (
+                "QQQ directional proxy. Live loads stay on the shorter default window. "
+                "Older dates may use a daily-derived 4h fallback when hourly history is shorter. "
+                "Stretch take-profit is not an exit."
+            ),
+        }
+        plateau_rows = None
+        if args.small_grid:
+            try:
+                grid = small_research_grid(settings)
+                print(
+                    f"Small grid: {grid.combination_count} combinations on {eval_bars} bars "
+                    f"({data_window['daily_start']} -> {data_window['daily_end']}, "
+                    f"{data_window['daily_bars_loaded']} daily bars loaded)."
+                )
+                plateau_rows = run_parameter_sweep(
+                    candles,
+                    anchor_date=settings.anchor_date or None,
+                    blocked_dates=blocked_dates,
+                    base_params=strategy_params,
+                    bars=eval_bars,
+                    grid=grid,
+                    debug_strategy=args.debug_strategy,
+                    decide_options=research_decide_options,
+                )
+            except ValueError as exc:
+                print(f"Small grid error: {exc}")
+                return 1
+            grid_payload = grid_neighbors_payload(
+                plateau_rows,
+                ticker=settings.qqq_ticker,
+                bars=eval_bars,
+                data_window=data_window,
+            )
+            share = grid_payload.get("profitable_neighbor_share")
+            share_txt = "n/a" if share is None else f"{float(share) * 100:.1f}%"
+            print(
+                f"Small grid neighbor share around best row: {share_txt} "
+                f"({grid_payload.get('profitable_neighbors')}/{grid_payload.get('neighbor_count')})."
+            )
+            try:
+                write_json(args.small_grid_json, grid_payload)
+                print(f"Small grid JSON written: {args.small_grid_json}")
+            except OSError as exc:
+                print(f"Small grid export error: {exc}")
+                return 1
+            if not args.strategy_eval:
+                return 0
+        try:
+            eval_payload = run_strategy_evaluation(
+                candles,
+                anchor_date=settings.anchor_date or None,
+                blocked_dates=blocked_dates,
+                strategy_params=strategy_params,
+                bars=eval_bars,
+                decide_options=research_decide_options,
+                plateau_rows=plateau_rows,
+                data_window=data_window,
+            )
+        except ValueError as exc:
+            print(f"Strategy eval error: {exc}")
+            return 1
+        print(format_strategy_eval_report(eval_payload))
+        try:
+            write_json(args.strategy_eval_json, eval_payload)
+            print(f"Strategy eval JSON written: {args.strategy_eval_json}")
+        except OSError as exc:
+            print(f"Strategy eval export error: {exc}")
             return 1
         return 0
 
@@ -576,6 +704,13 @@ def run() -> int:
         fixed_notional=settings.alpaca_paper_notional,
         equity_pct=settings.alpaca_paper_equity_pct,
         limit_offset_bps=settings.alpaca_paper_limit_offset_bps,
+        vol_sizing=settings.alpaca_paper_vol_sizing,
+        risk_fraction=settings.alpaca_paper_risk_fraction,
+        vol_stop_mode=settings.alpaca_paper_vol_stop,
+        stop_loss_pct=settings.stop_loss_pct,
+        atr=float(snapshot.daily_atr14),
+        atr_price=float(snapshot.daily_close),
+        atr_stop_mult=settings.alpaca_paper_atr_stop_mult,
         logger=logger,
         trade_log_path=settings.trade_log_jsonl,
         source="strategy",

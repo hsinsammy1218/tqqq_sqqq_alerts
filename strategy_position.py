@@ -31,13 +31,16 @@ def _normalize_loaded_symbol(raw: object) -> tuple[str | None, bool]:
 
 
 def position_state_to_dict(position: PositionState) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "symbol": position.active_symbol,
         "entry_price": position.entry_price,
         "entry_time": position.entry_timestamp,
         "last_signal": position.last_signal,
         "updated_at": position.updated_at,
     }
+    if position.favorable_extreme is not None:
+        payload["favorable_extreme"] = position.favorable_extreme
+    return payload
 
 
 def position_state_from_dict(data: dict[str, Any]) -> tuple[PositionState, list[str]]:
@@ -80,6 +83,12 @@ def position_state_from_dict(data: dict[str, Any]) -> tuple[PositionState, list[
     elif isinstance(updated_at, str):
         updated_at = updated_at.strip() or None
 
+    extreme_raw = data.get("favorable_extreme")
+    favorable_extreme, extreme_bad = _coerce_entry_price(extreme_raw)
+    if extreme_bad:
+        warnings.append(f"Ignoring invalid favorable_extreme {extreme_raw!r}.")
+        favorable_extreme = None
+
     if sym is None:
         return (
             PositionState(
@@ -99,6 +108,7 @@ def position_state_from_dict(data: dict[str, Any]) -> tuple[PositionState, list[
             entry_timestamp=entry_time,
             last_signal=last_signal,
             updated_at=updated_at,
+            favorable_extreme=favorable_extreme,
         ),
         warnings,
     )

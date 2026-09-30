@@ -71,6 +71,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path for ranked walk-forward CSV (default: reports/walk_forward_results.csv).",
     )
     parser.add_argument(
+        "--strategy-eval",
+        action="store_true",
+        help=(
+            "Score the QQQ-proxy backtest (trade count, profit factor, drawdowns, "
+            "reward/risk, PROM, walk-forward efficiency, exit comparison) and write "
+            "reports/strategy_eval.json. Does not submit orders."
+        ),
+    )
+    parser.add_argument(
+        "--strategy-eval-json",
+        default="reports/strategy_eval.json",
+        metavar="PATH",
+        help="Path for --strategy-eval JSON (default: reports/strategy_eval.json).",
+    )
+    parser.add_argument(
+        "--small-grid",
+        action="store_true",
+        help=(
+            "Run the small 2-level grid over confidence, dominance gap, range add, "
+            "flip hold, stop, and take-profit. Writes neighbor share to "
+            "reports/grid_neighbors.json. Does not submit orders."
+        ),
+    )
+    parser.add_argument(
+        "--small-grid-json",
+        default="reports/grid_neighbors.json",
+        metavar="PATH",
+        help="Path for --small-grid JSON (default: reports/grid_neighbors.json).",
+    )
+    parser.add_argument(
         "--debug-strategy",
         action="store_true",
         help="With --backtest, --backtest-sweep, or --walk-forward: print score/regime/threshold diagnostics.",

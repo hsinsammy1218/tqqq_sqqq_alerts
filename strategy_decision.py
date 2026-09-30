@@ -21,6 +21,44 @@ from strategy_types import (
 )
 
 
+def atr_trail_stop_price(symbol: str, extreme: float, atr_value: float, mult: float) -> float | None:
+    """Trail from the favorable extreme. Stretch take-profit is not involved."""
+    if extreme <= 0 or atr_value <= 0 or mult <= 0:
+        return None
+    if symbol == "TQQQ":
+        return extreme - (mult * atr_value)
+    if symbol == "SQQQ":
+        return extreme + (mult * atr_value)
+    return None
+
+
+def atr_trail_hit(
+    symbol: str,
+    price: float,
+    extreme: float | None,
+    atr_value: float,
+    mult: float,
+) -> bool:
+    if extreme is None:
+        return False
+    trail = atr_trail_stop_price(symbol, extreme, atr_value, mult)
+    if trail is None:
+        return False
+    if symbol == "TQQQ":
+        return price <= trail
+    if symbol == "SQQQ":
+        return price >= trail
+    return False
+
+
+def next_favorable_extreme(symbol: str, price: float, previous: float | None) -> float:
+    if previous is None:
+        return price
+    if symbol == "SQQQ":
+        return min(previous, price)
+    return max(previous, price)
+
+
 def _trading_days_after(date_str: str, days: int) -> str:
     start = datetime.fromisoformat(date_str.replace("Z", "+00:00")).date()
     date = start
@@ -195,7 +233,9 @@ def decide(
         entry_timestamp=position.entry_timestamp,
         last_signal=alert_type,
         updated_at=ts,
+        favorable_extreme=position.favorable_extreme,
     )
+    use_atr_trail = params.exit_mode == "atr_trail"
 
     if alert_type == "BUY":
         entry_price = price
@@ -214,6 +254,7 @@ def decide(
             entry_timestamp=ts,
             last_signal="BUY",
             updated_at=ts,
+            favorable_extreme=entry_price if use_atr_trail else None,
         )
         if confidence >= HIGH_SIGNAL_QUALITY_THRESHOLD and atr > 0:
             hx = snapshot.h4_close
@@ -246,6 +287,15 @@ def decide(
             stop_hit = price >= stop_loss
             tp_hit = price <= take_profit
 
+        # Stretch take-profit is research display only — never an exit.
+        prior_extreme = position.favorable_extreme
+        if prior_extreme is None:
+            prior_extreme = entry_price
+        trail_hit = False
+        if use_atr_trail:
+            tp_hit = False
+            trail_hit = atr_trail_hit(symbol, price, prior_extreme, atr, params.atr_trail_mult)
+
         if regime == "range" and not params.flip_in_range_regime:
             raw_reverse = False
 
@@ -271,13 +321,6 @@ def decide(
             symbol = flip_to
             notes = f"Reverse signal: sell {position.active_symbol} and buy {flip_to}."
             max_hold_date = _trading_days_after(ts, params.max_hold_days)
-            new_position = PositionState(
-                active_symbol=flip_to,
-                entry_price=price,
-                entry_timestamp=ts,
-                last_signal="FLIP",
-                updated_at=ts,
-            )
             if flip_to == "TQQQ":
                 stop_loss = price * (1 - params.stop_loss_pct)
                 take_profit = price * (1 + params.take_profit_pct)
@@ -286,12 +329,22 @@ def decide(
                 stop_loss = price * (1 + params.stop_loss_pct)
                 take_profit = price * (1 - params.take_profit_pct)
                 stretch_tp = price * (1 - params.stretch_take_profit_pct)
-        elif weaken or stop_hit or tp_hit or reached_max_hold:
+            new_position = PositionState(
+                active_symbol=flip_to,
+                entry_price=price,
+                entry_timestamp=ts,
+                last_signal="FLIP",
+                updated_at=ts,
+                favorable_extreme=price if use_atr_trail else None,
+            )
+        elif weaken or stop_hit or tp_hit or trail_hit or reached_max_hold:
             alert_type = "SELL"
             notes_kind = "exit"
             exit_reasons: list[str] = []
             if stop_hit:
                 exit_reasons.append("stop loss hit")
+            if trail_hit:
+                exit_reasons.append("ATR trailing stop hit")
             if tp_hit:
                 exit_reasons.append("take profit hit")
             if reached_max_hold:
@@ -312,12 +365,17 @@ def decide(
             notes = "Holding active position."
             if flip_suppressed:
                 notes += " Flip suppressed (whipsaw guard)."
+            held_extreme = None
+            if use_atr_trail:
+                held_extreme = next_favorable_extreme(symbol, price, prior_extreme)
+                notes += " ATR trail active (fixed take-profit exit off)."
             new_position = PositionState(
                 active_symbol=symbol,
                 entry_price=position.entry_price,
                 entry_timestamp=resolved_entry_ts,
                 last_signal="CASH",
                 updated_at=ts,
+                favorable_extreme=held_extreme,
             )
 
     signal_quality: str | None = None

@@ -107,12 +107,13 @@ def test_load_settings_rejects_live_trading_host(monkeypatch: pytest.MonkeyPatch
 def test_load_settings_paper_defaults(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ALPACA_API_KEY", "test-key")
     monkeypatch.setenv("ALPACA_API_SECRET", "test-secret")
-    monkeypatch.delenv("ALPACA_PAPER_TRADING", raising=False)
     monkeypatch.delenv("ALPACA_TRADING_BASE_URL", raising=False)
     monkeypatch.delenv("TRADE_LOG_JSONL", raising=False)
     # Explicit values: load_dotenv() would otherwise refill from a local .env.
+    monkeypatch.setenv("ALPACA_PAPER_TRADING", "false")
     monkeypatch.setenv("ALPACA_PAPER_NOTIONAL", "500")
     monkeypatch.setenv("ALPACA_PAPER_EQUITY_PCT", "0")
+    monkeypatch.setenv("ALPACA_PAPER_VOL_SIZING", "false")
     settings = load_settings()
     assert settings.alpaca_paper_trading is False
     assert settings.alpaca_trading_base_url == PAPER_TRADING_BASE_URL

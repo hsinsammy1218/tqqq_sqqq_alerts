@@ -229,14 +229,23 @@ def load_candles(
     api_secret: str,
     data_base_url: str = DEFAULT_DATA_BASE_URL,
     feed: str = DEFAULT_DATA_FEED,
+    daily_lookback_days: int = 650,
+    max_daily_bars: int = 400,
+    hourly_lookback_days: int | None = None,
+    max_hourly_bars: int | None = None,
 ) -> CandleData:
-    """Load daily + synthetic 4h candles for ``ticker`` from Alpaca Market Data."""
+    """Load daily + synthetic 4h candles for ``ticker`` from Alpaca Market Data.
+
+    Defaults match the live alert path (~400 daily bars). Research commands may
+    request a longer daily window (about 2–4 years). Hourly history is still
+    capped; older daily bars fall back to a daily-derived 4h series in backtests.
+    """
     if not api_key or not api_secret:
         raise DataError("ALPACA_API_KEY and ALPACA_API_SECRET are required to load candles.")
 
     reset_cli_call_count()
     now = datetime.now(timezone.utc)
-    daily_start = now - timedelta(days=650)
+    daily_start = now - timedelta(days=max(120, int(daily_lookback_days)))
     daily = _fetch_bars(
         ticker,
         timeframe="1Day",
@@ -245,13 +254,16 @@ def load_candles(
         api_secret=api_secret,
         data_base_url=data_base_url,
         feed=feed,
-        max_bars=400,
+        max_bars=max(80, int(max_daily_bars)),
     )
 
     # Hourly history must cover the daily window used for indicators/backtests.
     span_days = max(7, (daily.index[-1] - daily.index[0]).days + 14)
+    hourly_cap_days = 730 if hourly_lookback_days is None else max(7, int(hourly_lookback_days))
     hourly_bars = min(12000, max(800, span_days * 24))
-    hourly_start = now - timedelta(days=min(span_days + 14, 730))
+    if max_hourly_bars is not None:
+        hourly_bars = min(hourly_bars, max(800, int(max_hourly_bars)))
+    hourly_start = now - timedelta(days=min(span_days + 14, hourly_cap_days))
     hourly = _fetch_bars(
         ticker,
         timeframe="1Hour",

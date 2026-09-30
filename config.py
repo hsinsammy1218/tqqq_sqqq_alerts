@@ -26,6 +26,10 @@ class Settings:
     alpaca_paper_notional: float
     alpaca_paper_equity_pct: float
     alpaca_paper_limit_offset_bps: int
+    alpaca_paper_vol_sizing: bool
+    alpaca_paper_risk_fraction: float
+    alpaca_paper_vol_stop: str
+    alpaca_paper_atr_stop_mult: float
     discord_webhook_url: str
     dry_run: bool
     bull_entry_threshold: int
@@ -55,6 +59,8 @@ class Settings:
     entry_dominance_gap_weight: float
     flip_in_range_regime: bool
     min_confidence_to_trade: int
+    exit_mode: str
+    atr_trail_mult: float
     alpaca_monthly_limit: int
     alpaca_usage_warn_pct: int
 
@@ -102,6 +108,8 @@ def strategy_params_from_settings(settings: Settings) -> StrategyParams:
             entry_dominance_gap_weight=settings.entry_dominance_gap_weight,
             flip_in_range_regime=settings.flip_in_range_regime,
             min_confidence_to_trade=settings.min_confidence_to_trade,
+            exit_mode=settings.exit_mode,
+            atr_trail_mult=settings.atr_trail_mult,
         )
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
@@ -136,6 +144,22 @@ def load_settings() -> Settings:
         raise ConfigError("ALPACA_PAPER_EQUITY_PCT must be >= 0.")
     if alpaca_paper_limit_offset_bps < 0:
         raise ConfigError("ALPACA_PAPER_LIMIT_OFFSET_BPS must be >= 0.")
+    alpaca_paper_vol_sizing = _to_bool(os.getenv("ALPACA_PAPER_VOL_SIZING", "false"), default=False)
+    alpaca_paper_risk_fraction = float(os.getenv("ALPACA_PAPER_RISK_FRACTION", "0.0075"))
+    if alpaca_paper_risk_fraction <= 0 or alpaca_paper_risk_fraction > 0.02:
+        raise ConfigError("ALPACA_PAPER_RISK_FRACTION must be in (0, 0.02].")
+    alpaca_paper_vol_stop = (os.getenv("ALPACA_PAPER_VOL_STOP", "stop_pct").strip().lower() or "stop_pct")
+    if alpaca_paper_vol_stop not in {"stop_pct", "atr"}:
+        raise ConfigError("ALPACA_PAPER_VOL_STOP must be 'stop_pct' or 'atr'.")
+    alpaca_paper_atr_stop_mult = float(os.getenv("ALPACA_PAPER_ATR_STOP_MULT", "2"))
+    if alpaca_paper_atr_stop_mult <= 0:
+        raise ConfigError("ALPACA_PAPER_ATR_STOP_MULT must be positive.")
+    exit_mode = (os.getenv("EXIT_MODE", "fixed").strip().lower() or "fixed")
+    if exit_mode not in {"fixed", "atr_trail"}:
+        raise ConfigError("EXIT_MODE must be 'fixed' or 'atr_trail'.")
+    atr_trail_mult = float(os.getenv("ATR_TRAIL_MULT", "2"))
+    if atr_trail_mult <= 0:
+        raise ConfigError("ATR_TRAIL_MULT must be positive.")
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     dry_run = _to_bool(os.getenv("DRY_RUN", "true"), default=True)
 
@@ -166,6 +190,10 @@ def load_settings() -> Settings:
         alpaca_paper_notional=alpaca_paper_notional,
         alpaca_paper_equity_pct=alpaca_paper_equity_pct,
         alpaca_paper_limit_offset_bps=alpaca_paper_limit_offset_bps,
+        alpaca_paper_vol_sizing=alpaca_paper_vol_sizing,
+        alpaca_paper_risk_fraction=alpaca_paper_risk_fraction,
+        alpaca_paper_vol_stop=alpaca_paper_vol_stop,
+        alpaca_paper_atr_stop_mult=alpaca_paper_atr_stop_mult,
         discord_webhook_url=webhook,
         dry_run=dry_run,
         bull_entry_threshold=int(os.getenv("BULL_ENTRY_THRESHOLD", "5")),
@@ -196,6 +224,8 @@ def load_settings() -> Settings:
         flip_in_range_regime=_to_bool(os.getenv("FLIP_ALLOW_IN_RANGE", "false"), default=False),
         # Locked from walk-forward rank 1 (reports/walk_forward_results.csv): avg_score best row → 62.
         min_confidence_to_trade=int(os.getenv("MIN_CONFIDENCE_TO_TRADE", "62")),
+        exit_mode=exit_mode,
+        atr_trail_mult=atr_trail_mult,
         alpaca_monthly_limit=int(os.getenv("ALPACA_MONTHLY_LIMIT", "0")),
         alpaca_usage_warn_pct=int(os.getenv("ALPACA_USAGE_WARN_PCT", "80")),
     )

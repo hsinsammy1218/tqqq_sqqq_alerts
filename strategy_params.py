@@ -35,6 +35,10 @@ class StrategyParams:
     # Minimum normalized confidence (0-100 stack dominance) required for a flat BUY; 0 disables.
     # Default in load_settings matches walk-forward best row (see config.load_settings).
     min_confidence_to_trade: int
+    # fixed: stop % + take-profit % exits. atr_trail: ATR trailing stop replaces the fixed TP exit.
+    # Stretch take-profit is never an automatic exit in either mode.
+    exit_mode: str = "fixed"
+    atr_trail_mult: float = 2.0
 
     def __post_init__(self) -> None:
         if len(self.score_weights) != 8:
@@ -45,6 +49,10 @@ class StrategyParams:
             raise ValueError("entry_dominance_gap_weight must be non-negative.")
         if not 0 <= self.min_confidence_to_trade <= 100:
             raise ValueError("min_confidence_to_trade must be between 0 and 100 inclusive.")
+        if self.exit_mode not in {"fixed", "atr_trail"}:
+            raise ValueError("exit_mode must be 'fixed' or 'atr_trail'.")
+        if self.atr_trail_mult <= 0:
+            raise ValueError("atr_trail_mult must be positive.")
 
     @property
     def weight_scale(self) -> float:

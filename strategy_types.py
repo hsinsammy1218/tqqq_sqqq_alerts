@@ -13,6 +13,8 @@ class PositionState:
     entry_timestamp: str | None = None
     last_signal: str | None = None
     updated_at: str | None = None
+    # Best close since entry while EXIT_MODE=atr_trail (high for TQQQ, low for SQQQ).
+    favorable_extreme: float | None = None
 
 
 @dataclass

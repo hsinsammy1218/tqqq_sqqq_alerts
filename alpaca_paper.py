@@ -106,6 +106,107 @@ def buy_notional_usd(*, fixed_notional: float, equity_pct: float, equity: float)
     return float(fixed_notional)
 
 
+def stop_distance_pct(
+    *,
+    mode: str,
+    stop_loss_pct: float,
+    atr: float | None = None,
+    atr_price: float | None = None,
+    atr_mult: float = 2.0,
+) -> float:
+    """Fractional stop distance used by volatility sizing (not a dollar stop)."""
+    selected = (mode or "stop_pct").strip().lower()
+    if selected == "atr":
+        if atr is None or atr_price is None or atr <= 0 or atr_price <= 0 or atr_mult <= 0:
+            raise PaperTradingError("ATR stop distance needs a positive ATR, price, and multiplier.")
+        return (float(atr_mult) * float(atr)) / float(atr_price)
+    if selected != "stop_pct":
+        raise PaperTradingError("Volatility stop mode must be 'stop_pct' or 'atr'.")
+    if stop_loss_pct <= 0:
+        raise PaperTradingError("STOP_LOSS_PCT must be positive for volatility sizing.")
+    return float(stop_loss_pct)
+
+
+def volatility_notional_usd(
+    *,
+    equity: float,
+    risk_fraction: float,
+    stop_distance: float,
+    notional_cap: float,
+) -> float:
+    """Risk a fraction of equity divided by stop distance, then cap notional.
+
+    No Kelly scaling and no martingale. ``notional_cap`` is ALPACA_PAPER_NOTIONAL
+    (0 or negative means no cap).
+    """
+    if equity <= 0:
+        raise PaperTradingError("Paper account equity is not positive; cannot volatility-size.")
+    if risk_fraction <= 0:
+        raise PaperTradingError("ALPACA_PAPER_RISK_FRACTION must be positive.")
+    if stop_distance <= 0:
+        raise PaperTradingError("Stop distance must be positive for volatility sizing.")
+    raw = float(equity) * float(risk_fraction) / float(stop_distance)
+    if notional_cap and notional_cap > 0:
+        return min(raw, float(notional_cap))
+    return raw
+
+
+def select_buy_notional(
+    *,
+    vol_sizing: bool,
+    fixed_notional: float,
+    equity_pct: float,
+    equity: float | None,
+    risk_fraction: float = 0.0075,
+    stop_loss_pct: float = 0.08,
+    vol_stop_mode: str = "stop_pct",
+    atr: float | None = None,
+    atr_price: float | None = None,
+    atr_mult: float = 2.0,
+) -> tuple[float, str]:
+    """Return (notional, mode_used).
+
+    Volatility sizing is opt-in. When it is off, or equity/ATR inputs are missing,
+    the existing fixed-notional or equity-% path is unchanged.
+    """
+    if not vol_sizing:
+        return (
+            buy_notional_usd(
+                fixed_notional=fixed_notional,
+                equity_pct=equity_pct,
+                equity=equity or 0.0,
+            ),
+            "equity_pct" if equity_pct and equity_pct > 0 else "fixed_notional",
+        )
+    if equity is None or equity <= 0:
+        return (
+            buy_notional_usd(fixed_notional=fixed_notional, equity_pct=0.0, equity=0.0),
+            "fallback_notional",
+        )
+    try:
+        distance = stop_distance_pct(
+            mode=vol_stop_mode,
+            stop_loss_pct=stop_loss_pct,
+            atr=atr,
+            atr_price=atr_price,
+            atr_mult=atr_mult,
+        )
+    except PaperTradingError:
+        return (
+            buy_notional_usd(fixed_notional=fixed_notional, equity_pct=0.0, equity=0.0),
+            "fallback_notional",
+        )
+    return (
+        volatility_notional_usd(
+            equity=equity,
+            risk_fraction=risk_fraction,
+            stop_distance=distance,
+            notional_cap=fixed_notional,
+        ),
+        "volatility",
+    )
+
+
 def qty_for_notional(notional: float, price: float) -> str:
     if price <= 0:
         raise PaperTradingError(f"Invalid price for sizing: {price}")
@@ -304,7 +405,14 @@ def resolve_order_qty(
     equity_pct: float,
     equity: float | None,
     session: requests.Session | None = None,
-) -> tuple[str, float]:
+    vol_sizing: bool = False,
+    risk_fraction: float = 0.0075,
+    vol_stop_mode: str = "stop_pct",
+    stop_loss_pct: float = 0.08,
+    atr: float | None = None,
+    atr_price: float | None = None,
+    atr_stop_mult: float = 2.0,
+) -> tuple[str, float, str]:
     """Return (qty, reference_price)."""
     price = fetch_latest_trade_price(
         intent.symbol,
@@ -323,7 +431,7 @@ def resolve_order_qty(
             session=session,
         )
         if held_qty:
-            return held_qty, price
+            return held_qty, price, "position_qty"
         # No broker position — size a conservative sell from notional (still may reject at API).
         if equity is None:
             equity = fetch_paper_equity(
@@ -333,17 +441,28 @@ def resolve_order_qty(
                 session=session,
             )
         notional = buy_notional_usd(fixed_notional=fixed_notional, equity_pct=equity_pct, equity=equity)
-        return qty_for_notional(notional, price), price
+        return qty_for_notional(notional, price), price, "fixed_notional"
 
-    if equity is None:
+    if equity is None and (vol_sizing or (equity_pct and equity_pct > 0)):
         equity = fetch_paper_equity(
             api_key=api_key,
             api_secret=api_secret,
             trading_base_url=trading_base_url,
             session=session,
         )
-    notional = buy_notional_usd(fixed_notional=fixed_notional, equity_pct=equity_pct, equity=equity)
-    return qty_for_notional(notional, price), price
+    notional, size_mode = select_buy_notional(
+        vol_sizing=vol_sizing,
+        fixed_notional=fixed_notional,
+        equity_pct=equity_pct,
+        equity=equity,
+        risk_fraction=risk_fraction,
+        stop_loss_pct=stop_loss_pct,
+        vol_stop_mode=vol_stop_mode,
+        atr=atr,
+        atr_price=atr_price,
+        atr_mult=atr_stop_mult,
+    )
+    return qty_for_notional(notional, price), price, size_mode
 
 
 def _safe_append_trade_log(
@@ -374,6 +493,13 @@ def execute_paper_orders(
     equity_pct: float,
     limit_offset_bps: int,
     logger: logging.Logger | None = None,
+    vol_sizing: bool = False,
+    risk_fraction: float = 0.0075,
+    vol_stop_mode: str = "stop_pct",
+    stop_loss_pct: float = 0.08,
+    atr: float | None = None,
+    atr_price: float | None = None,
+    atr_stop_mult: float = 2.0,
     session: requests.Session | None = None,
     trade_log_path: Path | str | None = DEFAULT_TRADE_LOG_PATH,
     source: str = "strategy",
@@ -490,7 +616,7 @@ def execute_paper_orders(
                     )
                     continue
 
-            qty, ref_price = resolve_order_qty(
+            qty, ref_price, size_mode = resolve_order_qty(
                 intent,
                 api_key=api_key,
                 api_secret=api_secret,
@@ -501,6 +627,13 @@ def execute_paper_orders(
                 equity_pct=equity_pct,
                 equity=equity,
                 session=session,
+                vol_sizing=vol_sizing,
+                risk_fraction=risk_fraction,
+                vol_stop_mode=vol_stop_mode,
+                stop_loss_pct=stop_loss_pct,
+                atr=atr,
+                atr_price=atr_price,
+                atr_stop_mult=atr_stop_mult,
             )
             limit_price = limit_price_from_trade(
                 ref_price, side=intent.side, offset_bps=limit_offset_bps
@@ -508,7 +641,7 @@ def execute_paper_orders(
             payload = build_limit_order_payload(intent, qty=qty, limit_price=limit_price)
             print(
                 f"[alpaca-paper] Submitting {intent.side} {intent.symbol} qty={qty} "
-                f"limit={limit_price} ({intent.purpose})"
+                f"limit={limit_price} ({intent.purpose}, size={size_mode})"
             )
             log_event(
                 log,

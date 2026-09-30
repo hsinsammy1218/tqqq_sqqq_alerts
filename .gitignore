@@ -18,5 +18,6 @@ logs/
 # Local Cursor config (MCP, agent rules) — not part of this repo
 .cursor/
 
-# Local research outputs (backtest/sweep/walk-forward CSVs).
+# Local research outputs (backtest/sweep/walk-forward CSVs and eval JSON).
 reports/*.csv
+reports/*.json
