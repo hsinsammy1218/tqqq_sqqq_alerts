@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-DEFAULT_SCORE_WEIGHTS: tuple[float, ...] = (1.0,) * 8
+DEFAULT_SCORE_WEIGHTS: tuple[float, ...] = (1.5, 1.5, 0.5, 1.0, 1.5, 1.5, 1.0, 0.5)
+"""Trend-tilted checklist: boost daily/4h EMA stack; cut RSI and volume noise.
+
+Measured via ``--checklist-compare`` on 756 sessions (2023-09 → 2026-09):
+net +4.4% vs equal-weight baseline −9.0%. Still fails the paper gate (WFE < 0).
+"""
 
 
 @dataclass(frozen=True)

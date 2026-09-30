@@ -17,8 +17,8 @@ from typing import Sequence
 from backtest import BacktestResult, BacktestTradeRow, run_backtest
 from backtest_sweep import NeighborShare, SweepResultRow, profitable_neighbor_share
 from data import CandleData
+from strategy_params import DEFAULT_SCORE_WEIGHTS, StrategyParams
 from strategy import DecideOptions
-from strategy_params import StrategyParams
 
 MIN_TRADES = 30
 REWARD_RISK_BAR = 3.0
@@ -660,16 +660,22 @@ def format_strategy_eval_report(payload: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-# Trend-following checklist tilt: boost daily/4h EMA stack, cut RSI + volume noise.
-TREND_EMA_WEIGHTS: tuple[float, ...] = (1.5, 1.5, 0.5, 1.0, 1.5, 1.5, 1.0, 0.5)
+# Alias kept for research reports; live defaults now use the same tilt.
+TREND_EMA_WEIGHTS: tuple[float, ...] = DEFAULT_SCORE_WEIGHTS
+EQUAL_SCORE_WEIGHTS: tuple[float, ...] = (1.0,) * 8
 
 
 def checklist_variant_specs(
     base: StrategyParams,
 ) -> list[tuple[str, str, StrategyParams]]:
-    """Named research variants. Defaults on ``base`` are the live checklist."""
+    """Named research variants. ``base`` should be current live params."""
     return [
         ("baseline", "Current live decide() rules", base),
+        (
+            "equal_weights_legacy",
+            "Pre-adoption equal checklist weights (1.0 × 8)",
+            replace(base, score_weights=EQUAL_SCORE_WEIGHTS),
+        ),
         (
             "aligned_entry",
             "Flat BUY only TQQQ in trend_up / SQQQ in trend_down; exits unchanged",
@@ -701,16 +707,6 @@ def checklist_variant_specs(
             replace(base, adverse_hold_weak_add=1.0),
         ),
         (
-            "trend_ema_weights",
-            "Reweight checklist toward EMA stack; cut RSI/volume",
-            replace(base, score_weights=TREND_EMA_WEIGHTS),
-        ),
-        (
-            "aligned_entry_trend_weights",
-            "Aligned entries + trend EMA weights",
-            replace(base, entry_require_regime_align=True, score_weights=TREND_EMA_WEIGHTS),
-        ),
-        (
             "blunt_adverse_exit",
             "Prior failed blunt filter: aligned entry + force exit when regime turns adverse",
             replace(base, entry_require_regime_align=True, exit_on_adverse_regime=True),
@@ -731,27 +727,48 @@ def compare_checklist_variants(
     wfe_segments: int = 3,
     data_window: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """Run fixed-exit strategy-eval metrics for each checklist redesign candidate."""
+    """Run fixed-exit metrics for each checklist redesign candidate (no exit-mode grid)."""
+    common = dict(
+        anchor_date=anchor_date,
+        blocked_dates=blocked_dates,
+        bars=bars,
+        decide_options=decide_options,
+        entry_slippage_bps=entry_slippage_bps,
+        exit_slippage_bps=exit_slippage_bps,
+    )
     rows: list[dict[str, object]] = []
     baseline_net: float | None = None
+    split = is_oos_split(len(candles.daily), bars, n_segments=wfe_segments)
+
     for name, description, params in checklist_variant_specs(strategy_params):
-        payload = run_strategy_evaluation(
-            candles,
-            anchor_date=anchor_date,
-            blocked_dates=blocked_dates,
-            strategy_params=params,
-            bars=bars,
-            decide_options=decide_options,
-            plateau_rows=None,
-            data_window=data_window,
-            entry_slippage_bps=entry_slippage_bps,
-            exit_slippage_bps=exit_slippage_bps,
-            wfe_segments=wfe_segments,
-        )
-        metrics = payload["baseline"]["metrics"]  # type: ignore[index]
-        assert isinstance(metrics, dict)
-        wfe = payload["walk_forward_efficiency"]
-        assert isinstance(wfe, dict)
+        print(f"[checklist-compare] evaluating {name}...", flush=True)
+        fixed = replace(params, exit_mode="fixed")
+        result = run_backtest(candles, strategy_params=fixed, **common)
+        metrics = metrics_from_backtest(result)
+        wfe_value: float | None = None
+        if split is not None:
+            (is_lo, is_hi), (oos_lo, oos_hi), _segments = split
+            in_sample = run_backtest(
+                candles,
+                strategy_params=fixed,
+                loop_start_idx=is_lo,
+                loop_end_idx_exclusive=is_hi,
+                **common,
+            )
+            out_of_sample = run_backtest(
+                candles,
+                strategy_params=fixed,
+                loop_start_idx=oos_lo,
+                loop_end_idx_exclusive=oos_hi,
+                **common,
+            )
+            wfe_block = walk_forward_efficiency_from_results(
+                in_sample,
+                out_of_sample,
+                method=f"equal_{wfe_segments}_segments_last_oos",
+            )
+            raw = wfe_block.get("walk_forward_efficiency")
+            wfe_value = None if raw is None else float(raw)
         net = float(metrics["net_profit_pct"])
         if name == "baseline":
             baseline_net = net
@@ -766,17 +783,12 @@ def compare_checklist_variants(
                 "max_drawdown_pct": metrics["max_drawdown_pct"],
                 "profit_factor": metrics["profit_factor"],
                 "reward_risk": metrics["reward_risk"],
-                "walk_forward_efficiency": wfe.get("walk_forward_efficiency"),
+                "walk_forward_efficiency": wfe_value,
                 "beats_baseline": bool(delta is not None and delta > 0),
-                "paper_gate_passes": payload["paper_gate"]["passes"],  # type: ignore[index]
             }
         )
 
-    adoptable = [
-        r
-        for r in rows
-        if r["name"] != "baseline" and r["beats_baseline"]
-    ]
+    adoptable = [r for r in rows if r["name"] != "baseline" and r["beats_baseline"]]
     adoptable.sort(key=lambda r: float(r["net_profit_pct"]), reverse=True)
     best = adoptable[0] if adoptable else None
     return {

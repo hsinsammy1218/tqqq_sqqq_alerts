@@ -109,11 +109,11 @@ Optional event-risk avoidance (never fatal):
 
 When `EVENT_RISK_AVOIDANCE` is false or no risk data is present, behavior matches manual `blocked_dates` only. Missing `events.json` is still OK (no blackout dates).
 
-Optional strategy tuning (baseline **5/5** entry, **3 weak** with equal weights; chop/range and flip behavior tuned via rows below):
+Optional strategy tuning (baseline **5/5** entry, **3 weak** with trend-tilted checklist weights; chop/range and flip behavior tuned via rows below):
 
 | Variable | Meaning |
 |----------|---------|
-| `SCORE_WEIGHTS` | Eight comma-separated weights for the checklist items (daily→4h→VWAP→volume order); empty = all `1` |
+| `SCORE_WEIGHTS` | Eight comma-separated weights for the checklist items (daily→4h→VWAP→volume order); empty = trend-tilted default `1.5,1.5,0.5,1,1.5,1.5,1,0.5` |
 | `REGIME_SEP_ATR_MULT` | \|(EMA20−EMA50)\|/ATR threshold for trending vs chop |
 | `REGIME_SLOPE_ATR_MULT` | Daily EMA20 one-bar slope / ATR threshold |
 | `REGIME_RANGING_THRESHOLD_WEIGHT_ADD` | Extra weighted hurdle for **both** sides in `range` regime |
