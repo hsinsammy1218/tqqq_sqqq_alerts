@@ -12,6 +12,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dry-run", action="store_true", help="Print payloads without sending Discord alerts.")
     parser.add_argument(
+        "--discord-test",
+        action="store_true",
+        help=(
+            "Post one Discord preview embed from the latest journal row (or a sample BUY), "
+            "then exit. Does not fetch market data, update position, or place paper orders. "
+            "Ignores DRY_RUN so the webhook can be exercised safely."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],

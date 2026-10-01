@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from alerts import (
+    _COLOR_BUY,
+    _COLOR_CASH,
+    _COLOR_FLIP,
+    _COLOR_HOLD,
+    _COLOR_SELL,
+    _COLOR_SKIP,
     _action_line,
+    _embed_color,
     _embed_title,
     _regime_from_trend,
     _show_trade_levels,
     _summary_line,
     build_discord_embed,
     format_alert_message,
+    format_paper_results_summary,
 )
 from strategy_types import (
     HIGH_SIGNAL_QUALITY_THRESHOLD,
@@ -17,14 +27,14 @@ from strategy_types import (
 )
 
 
-def _meta(*, min_confidence_to_trade: int = 62) -> RunTechnicalMeta:
+def _meta(*, min_confidence_to_trade: int = 62, regime: str = "trend_up") -> RunTechnicalMeta:
     return RunTechnicalMeta(
         qqq_ticker="QQQ",
         run_utc_iso="2026-05-19T12:21:15Z",
         daily_bar_end="2026-05-19",
         h4_bar_end="2026-05-19",
         blocked_today=False,
-        regime="trend_up",
+        regime=regime,
         base_bull_entry_threshold=5,
         base_bear_entry_threshold=5,
         base_weak_threshold=3,
@@ -63,6 +73,29 @@ def _cash_alert(**kwargs: object) -> AlertDecision:
         timestamp="2026-05-19T12:21:15Z",
         notes="Entry skipped: stack dominance 50% is below minimum 62%.",
         notes_kind="entry_skipped_confidence",
+    )
+    defaults.update(kwargs)
+    return AlertDecision(**defaults)  # type: ignore[arg-type]
+
+
+def _buy_alert(**kwargs: object) -> AlertDecision:
+    defaults = dict(
+        alert_type="BUY",
+        symbol="TQQQ",
+        qqq_trend_reason="daily close > EMA20 | regime=trend_up",
+        bullish_score=75,
+        bearish_score=25,
+        confidence_score=78,
+        entry_zone_low=432.10,
+        entry_zone_high=439.70,
+        stop_loss=400.65,
+        take_profit=502.13,
+        stretch_take_profit=545.79,
+        max_hold_date="2026-05-15",
+        timestamp="2026-05-01T14:20:00Z",
+        notes="Bullish QQQ setup.",
+        notes_kind="buy_bull",
+        signal_quality="HIGH",
     )
     defaults.update(kwargs)
     return AlertDecision(**defaults)  # type: ignore[arg-type]
@@ -175,7 +208,7 @@ def test_blocked_embed_title():
         notes="Entry blocked by event calendar (manual blackout + optional CPI/FOMC/earnings risk dates).",
         notes_kind="blocked",
     )
-    assert _embed_title(alert) == "No trade (calendar)"
+    assert _embed_title(alert) == "CASH · Calendar"
 
 
 def test_flat_cash_hides_trade_levels():
@@ -204,17 +237,75 @@ def test_sell_hides_trade_levels():
     assert not _show_trade_levels(alert)
     embed = build_discord_embed(alert)
     names = [f["name"] for f in embed["fields"]]  # type: ignore[index]
-    assert "Levels (QQQ-based)" not in names
+    assert "Levels (QQQ)" not in names
 
 
 def test_discord_embed_no_zero_levels_for_skipped_entry():
     alert = _cash_alert()
-    embed = build_discord_embed(alert)
+    embed = build_discord_embed(alert, technical_meta=_meta())
     names = [f["name"] for f in embed["fields"]]  # type: ignore[index]
-    assert "Levels (QQQ-based)" not in names
-    assert "Stack dominance" in names
-    assert "Why" in names
-    assert _embed_title(alert) == "No trade (weak TQQQ signal)"
+    assert "Levels (QQQ)" not in names
+    assert "Confidence" in names
+    assert "Reason" in names
+    assert "Symbol" in names
+    assert "Regime" in names
+    assert "Strength" in names
+    assert _embed_title(alert) == "CASH · Weak TQQQ"
+    assert "Manual trade" in embed["description"]  # type: ignore[operator]
+    assert "QQQ trend (detail)" not in names
+    assert "Rules (reference)" not in names
+    assert "Bull checklist" not in "".join(names)
+    assert embed["timestamp"] == "2026-05-19T12:21:15Z"
+    assert _embed_color(alert) == _COLOR_SKIP
+
+
+def test_discord_embed_buy_shape_and_levels():
+    alert = _buy_alert()
+    embed = build_discord_embed(alert, technical_meta=_meta())
+    assert embed["title"] == "BUY TQQQ"
+    assert embed["color"] == _COLOR_BUY
+    names = [f["name"] for f in embed["fields"]]  # type: ignore[index]
+    assert names[:4] == ["Symbol", "Confidence", "Regime", "Strength"]
+    assert "Levels (QQQ)" in names
+    assert "Reason" in names
+    levels = next(f for f in embed["fields"] if f["name"] == "Levels (QQQ)")  # type: ignore[index]
+    assert "432.10" in levels["value"]
+    assert "400.65" in levels["value"]
+    conf = next(f for f in embed["fields"] if f["name"] == "Confidence")  # type: ignore[index]
+    assert "78%" in conf["value"]
+    assert "HIGH" in conf["value"]
+    assert "BUY TQQQ" in embed["description"]  # type: ignore[operator]
+
+
+def test_discord_embed_action_colors():
+    assert _embed_color(_buy_alert()) == _COLOR_BUY
+    assert _embed_color(_buy_alert(alert_type="SELL", notes_kind="exit", signal_quality=None)) == _COLOR_SELL
+    assert _embed_color(_buy_alert(alert_type="FLIP", symbol="SQQQ", notes_kind="flip", signal_quality=None)) == _COLOR_FLIP
+    hold = _cash_alert(symbol="TQQQ", notes_kind="holding", notes="Holding active position.")
+    assert _embed_color(hold) == _COLOR_HOLD
+    assert _embed_title(hold) == "HOLD TQQQ"
+    plain = _cash_alert(notes_kind="other", notes="No high-confidence setup.", confidence_score=0)
+    assert _embed_color(plain) == _COLOR_CASH
+    assert _embed_title(plain) == "CASH"
+
+
+def test_discord_embed_paper_and_preview():
+    alert = _buy_alert()
+    intent = SimpleNamespace(symbol="TQQQ", side="buy", purpose="entry")
+    paper = [SimpleNamespace(intent=intent, ok=True, status="accepted", order_id="ord-1", detail="ok")]
+    embed = build_discord_embed(alert, paper_results=paper, preview=True)
+    names = [f["name"] for f in embed["fields"]]  # type: ignore[index]
+    assert "Paper" in names
+    paper_field = next(f for f in embed["fields"] if f["name"] == "Paper")  # type: ignore[index]
+    assert "BUY TQQQ" in paper_field["value"]
+    assert "ord-1" in paper_field["value"]
+    assert "Preview" in embed["description"]  # type: ignore[operator]
+    assert "preview" in embed["footer"]["text"]  # type: ignore[index]
+
+
+def test_format_paper_results_summary_empty():
+    assert format_paper_results_summary(None) is None
+    assert format_paper_results_summary([]) is None
 
 
 def test_regime_from_trend():
@@ -225,6 +316,6 @@ def test_regime_from_trend():
 def test_discord_embed_empty_timestamp_guard():
     alert = _cash_alert(timestamp="")
     embed = build_discord_embed(alert)
-    time_field = next(f for f in embed["fields"] if f["name"] == "Time (UTC)")  # type: ignore[index]
-    assert time_field["value"] == "—"
-
+    assert "timestamp" not in embed
+    names = [f["name"] for f in embed["fields"]]  # type: ignore[index]
+    assert "Time (UTC)" not in names

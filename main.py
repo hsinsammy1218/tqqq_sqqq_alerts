@@ -32,7 +32,7 @@ from data import DataError, MarketDataQuotaError, cli_calls_attempted, format_cl
 from event_calendar import load_merged_blackout_dates
 from health_check import run_health_check
 from indicators import build_snapshot
-from journal import append_journal
+from journal import append_journal, load_last_journal_alert
 from market_hours import market_closed_reason
 from runtime_logging import format_utc_z, log_event, setup_logger
 from trade_log_report import (
@@ -50,12 +50,70 @@ from walk_forward import (
 from position_store import PositionStoreError, position_store_from_settings
 from trade_log_store import TradeLogStoreError, trade_log_store_from_settings
 from strategy import (
+    AlertDecision,
     DecideOptions,
     PositionState,
     RunTechnicalMeta,
     decide,
     format_technical_breakdown,
 )
+
+
+def _sample_discord_preview_alert() -> AlertDecision:
+    return AlertDecision(
+        alert_type="BUY",
+        symbol="TQQQ",
+        qqq_trend_reason="daily close > EMA20; daily EMA20 > EMA50 | regime=trend_up",
+        bullish_score=75,
+        bearish_score=25,
+        confidence_score=78,
+        entry_zone_low=432.10,
+        entry_zone_high=439.70,
+        stop_loss=400.65,
+        take_profit=502.13,
+        stretch_take_profit=545.79,
+        max_hold_date="2026-05-15",
+        timestamp=format_utc_z(datetime.now(timezone.utc)),
+        notes="Bullish QQQ setup (Discord preview sample).",
+        notes_kind="buy_bull",
+        signal_quality="HIGH",
+    )
+
+
+def _run_discord_test(settings: Settings, logger: logging.Logger) -> int:
+    """Post one preview embed; never runs paper trading or updates position."""
+    if not settings.discord_webhook_url:
+        print("Config error: DISCORD_WEBHOOK_URL is required for --discord-test.")
+        return 1
+    journal_alert = load_last_journal_alert(settings.journal_csv)
+    if journal_alert is not None:
+        alert = journal_alert
+        source = "journal"
+    else:
+        alert = _sample_discord_preview_alert()
+        source = "sample"
+    print(f"Discord preview from {source}: {alert.alert_type} {alert.symbol}")
+    try:
+        send_discord(
+            settings.discord_webhook_url,
+            alert,
+            dry_run=False,
+            preview=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Discord preview failed: {exc}")
+        log_event(logger, logging.ERROR, "Discord preview failed", error=str(exc))
+        return 1
+    print("Discord preview posted (no paper orders, no position change).")
+    log_event(
+        logger,
+        logging.INFO,
+        "Discord preview posted",
+        alert_type=alert.alert_type,
+        symbol=alert.symbol,
+        source=source,
+    )
+    return 0
 
 
 def _parse_entry_time_arg(value: str) -> datetime:
@@ -301,6 +359,9 @@ def run() -> int:
 
     if args.health_check:
         return run_health_check(settings, settings.dry_run, logger)
+
+    if args.discord_test:
+        return _run_discord_test(settings, logger)
 
     if args.trade_log_report:
         research_dd = load_research_max_dd_pct()
@@ -763,30 +824,6 @@ def run() -> int:
         print()
         print(format_technical_breakdown(snapshot, alert, position, tech_meta, today_iso))
 
-    try:
-        send_discord(
-            settings.discord_webhook_url,
-            alert,
-            settings.dry_run,
-            snapshot=snapshot,
-            position_before=position,
-            technical_meta=tech_meta,
-            today_iso=today_iso,
-        )
-        log_event(
-            logger,
-            logging.INFO,
-            "Discord send completed",
-            dry_run=settings.dry_run,
-            webhook_configured=bool(settings.discord_webhook_url),
-            alert_type=alert.alert_type,
-            symbol=alert.symbol,
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"Output error: {exc}")
-        log_event(logger, logging.ERROR, "Discord send failed", error=str(exc))
-        return 1
-
     paper_results = execute_paper_orders(
         alert,
         position,
@@ -830,6 +867,32 @@ def run() -> int:
                 for r in paper_results
             ],
         )
+
+    try:
+        send_discord(
+            settings.discord_webhook_url,
+            alert,
+            settings.dry_run,
+            snapshot=snapshot,
+            position_before=position,
+            technical_meta=tech_meta,
+            today_iso=today_iso,
+            paper_results=paper_results or None,
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "Discord send completed",
+            dry_run=settings.dry_run,
+            webhook_configured=bool(settings.discord_webhook_url),
+            alert_type=alert.alert_type,
+            symbol=alert.symbol,
+            paper_result_count=len(paper_results),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Output error: {exc}")
+        log_event(logger, logging.ERROR, "Discord send failed", error=str(exc))
+        return 1
 
     try:
         position_store.save(new_position)

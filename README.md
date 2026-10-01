@@ -40,7 +40,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - Structured JSON logs in `logs/bot.log` with daily rotation
 - Dry-run mode for testing without Discord sends
 - Optional `--backtest` mode for historical rule replay (QQQ directional proxy; see below)
-- Discord **rich embeds** match the console breakdown: bot memory (flat vs symbol), bar timestamps + blackout, full QQQ daily/4h indicator lines, every bull/bear checklist item, rule thresholds, hold exit flags when applicable, then notes
+- Discord **rich embeds** are mobile-first: strong BUY/SELL/FLIP/HOLD/CASH title, symbol/confidence/regime/strength, levels when relevant, short reason + leading checklist summary, optional paper-order outcome; full technical dump stays on the console (`--no-technical` to hide)
 - Alpaca Market Data API backend (daily + 1h → synthetic 4h)
 - Cloud scheduling via Render weekday crons; local durable learning via `scripts/run_weekday_paper.py`
 
@@ -133,6 +133,12 @@ python main.py --dry-run
 ```
 
 Dry-run never submits Alpaca paper orders (`ALPACA_PAPER_TRADING` is ignored while `DRY_RUN=true` / `--dry-run`).
+
+Preview a live Discord embed (posts one message; **no** market fetch, **no** paper orders, **no** position change) from the latest journal row, or a sample BUY if the journal is empty:
+
+```bash
+python main.py --discord-test
+```
 
 ### Optional Alpaca paper orders
 
@@ -234,7 +240,7 @@ Render Cron containers are **ephemeral** — local `position_state.json` and `lo
 
 **DST note:** Render cron expressions are UTC. The schedules above assume Eastern Daylight (UTC−4). In Eastern Standard (UTC−5), shift each hour +1, or leave as-is and rely on `--market-hours-only` (jobs may skip or run near the edge of the session).
 
-**Journal CSV / usage JSON** on Render are best-effort only (ephemeral disk). Discord is sent **before** position is persisted so a webhook failure can retry on the next cron. Discord remains the durable alert channel. Trade outcomes accumulate in **`public.bot_trade_log`** toward the ≥10 strategy round-trip learning gate — no local `--loop` required for durability.
+**Journal CSV / usage JSON** on Render are best-effort only (ephemeral disk). Optional paper orders run first (when armed); Discord is sent **before** position is persisted so a webhook failure can retry on the next cron. Discord remains the durable alert channel. Trade outcomes accumulate in **`public.bot_trade_log`** toward the ≥10 strategy round-trip learning gate — no local `--loop` required for durability.
 
 Optional local backup (same slots; also appends JSONL on disk):
 
@@ -453,27 +459,27 @@ Mutual exclusivity is enforced: never hold TQQQ and SQQQ simultaneously.
 
 ## Sample Discord alert
 
-```text
-ACTION: BUY TQQQ
-(You trade manually - alerts only, no broker execution.)
+Embed shape (colors: green BUY, red SELL, amber FLIP, blue HOLD, gray/orange CASH):
 
-Alert: BUY
-Symbol: TQQQ
-QQQ trend: daily close > EMA20; daily EMA20 > EMA50; 4h EMA20 > EMA50 | regime=trend_up
-Bullish strength: 75/100 (weighted checklist)
-Bearish strength: 25/100 (weighted checklist)
-Confidence (normalized): 78%
-Signal quality: HIGH
-Entry zone: 432.10 - 439.70
-Stop loss: 400.65
-Take profit: 502.13
-Stretch target: 545.79
-Max hold date: 2026-05-15
-Timestamp: 2026-05-01T14:20:00Z
-Notes: Bullish QQQ setup.
+```text
+Title: BUY TQQQ
+Description:
+  BUY TQQQ — consider opening a position
+  QQQ looks bullish (checklist 75/25, dominance 78%) (HIGH).
+  Manual trade · not broker advice
+
+Fields:
+  Symbol        TQQQ
+  Confidence    78% · HIGH
+  Regime        trend_up
+  Strength      Bull 75 · Bear 25
+  Levels (QQQ)  Entry 432.10–439.70 / Stop / TP / Stretch / Max hold
+  Reason        Bullish QQQ setup.
+  Checklist     top bull (or bear) reasons when technical context is available
+  Paper         optional — only when Alpaca paper trading submitted orders
 ```
 
-Flat **BUY** alerts include **Signal quality**: **HIGH** when normalized confidence ≥75%, **MEDIUM** when ≥`MIN_CONFIDENCE_TO_TRADE` and below 75%. Non-BUY alerts omit the line.
+Console text output still includes the longer breakdown. Flat **BUY** alerts include **Signal quality**: **HIGH** when normalized confidence ≥75%, **MEDIUM** when ≥`MIN_CONFIDENCE_TO_TRADE` and below 75%. Non-BUY alerts omit the line.
 
 ## Sample CSV journal format
 
