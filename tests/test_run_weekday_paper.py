@@ -14,10 +14,20 @@ from weekday_paper_schedule import (
 
 ET = ZoneInfo("America/New_York")
 
+DEFAULT_HM = [
+    (10, 0),
+    (11, 0),
+    (12, 0),
+    (13, 0),
+    (14, 0),
+    (15, 0),
+    (15, 30),
+]
+
 
 def test_parse_slots_default():
     slots = parse_slots(None)
-    assert [(s.hour, s.minute) for s in slots] == [(10, 0), (12, 30), (15, 30)]
+    assert [(s.hour, s.minute) for s in slots] == DEFAULT_HM
 
 
 def test_parse_slots_custom():
@@ -26,8 +36,14 @@ def test_parse_slots_custom():
 
 
 def test_next_slot_same_weekday_afternoon():
-    # Wednesday 2026-09-30 12:40 ET → next is 15:30 same day
+    # Wednesday 2026-09-30 12:40 ET → next is 13:00 same day
     now = datetime(2026, 9, 30, 12, 40, tzinfo=ET)
+    nxt = next_slot_after(now, parse_slots(None))
+    assert nxt == datetime(2026, 9, 30, 13, 0, tzinfo=ET)
+
+
+def test_next_slot_after_1500_is_1530():
+    now = datetime(2026, 9, 30, 15, 5, tzinfo=ET)
     nxt = next_slot_after(now, parse_slots(None))
     assert nxt == datetime(2026, 9, 30, 15, 30, tzinfo=ET)
 
@@ -41,5 +57,9 @@ def test_next_slot_skips_weekend():
 
 def test_utc_cron_edt():
     assert utc_cron_for_eastern_slot(10, 0, edt=True) == "0 14 * * 1-5"
-    assert utc_cron_for_eastern_slot(12, 30, edt=True) == "30 16 * * 1-5"
+    assert utc_cron_for_eastern_slot(11, 0, edt=True) == "0 15 * * 1-5"
+    assert utc_cron_for_eastern_slot(12, 0, edt=True) == "0 16 * * 1-5"
+    assert utc_cron_for_eastern_slot(13, 0, edt=True) == "0 17 * * 1-5"
+    assert utc_cron_for_eastern_slot(14, 0, edt=True) == "0 18 * * 1-5"
+    assert utc_cron_for_eastern_slot(15, 0, edt=True) == "0 19 * * 1-5"
     assert utc_cron_for_eastern_slot(15, 30, edt=True) == "30 19 * * 1-5"

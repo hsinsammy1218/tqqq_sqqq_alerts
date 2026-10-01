@@ -212,12 +212,16 @@ Render Cron containers are **ephemeral** — local `position_state.json` and `lo
 
    Copy any other strategy knobs from your local `.env` as needed. Secrets stay in the Dashboard — never commit `.env`. Live Alpaca host stays blocked; **do not wire Robinhood**.
 
-3. **Deploy the Blueprint**: Dashboard → New → Blueprint → this repo (`render.yaml`). That creates three weekday crons (EDT / UTC−4):
+3. **Deploy the Blueprint**: Dashboard → New → Blueprint → this repo (`render.yaml`). That creates **seven** weekday crons — hourly 10:00–15:00 ET plus near-close 15:30 (EDT / UTC−4):
 
    | Service | Local Eastern | UTC cron |
    |---------|---------------|----------|
    | `tqqq-sqqq-alerts-1000` | 10:00 | `0 14 * * 1-5` |
-   | `tqqq-sqqq-alerts-1230` | 12:30 | `30 16 * * 1-5` |
+   | `tqqq-sqqq-alerts-1100` | 11:00 | `0 15 * * 1-5` |
+   | `tqqq-sqqq-alerts-1200` | 12:00 | `0 16 * * 1-5` |
+   | `tqqq-sqqq-alerts-1300` | 13:00 | `0 17 * * 1-5` |
+   | `tqqq-sqqq-alerts-1400` | 14:00 | `0 18 * * 1-5` |
+   | `tqqq-sqqq-alerts-1500` | 15:00 | `0 19 * * 1-5` |
    | `tqqq-sqqq-alerts-1530` | 15:30 | `30 19 * * 1-5` |
 
    Start command: `python main.py --no-technical --market-hours-only`.
