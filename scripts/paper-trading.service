@@ -1,0 +1,16 @@
+[Unit]
+Description=Weekday Alpaca paper-learning loop (tmux)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# %h is the user home; override WorkingDirectory via install script drop-in if needed.
+WorkingDirectory=%h/workspace
+ExecStart=%h/workspace/scripts/start_paper_trading.sh
+ExecStop=tmux kill-session -t weekday-paper-loop
+TimeoutStartSec=30
+
+[Install]
+WantedBy=default.target

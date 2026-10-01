@@ -42,7 +42,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - Optional `--backtest` mode for historical rule replay (QQQ directional proxy; see below)
 - Discord **rich embeds** are mobile-first: strong BUY/SELL/FLIP/HOLD/CASH title, symbol/confidence/regime/strength, levels when relevant, short reason + leading checklist summary, optional paper-order outcome; full technical dump stays on the console (`--no-technical` to hide)
 - Alpaca Market Data API backend (daily + 1h → synthetic 4h)
-- Cloud scheduling via Render weekday crons; local durable learning via `scripts/run_weekday_paper.py`
+- Cloud scheduling via Render weekday crons; local durable learning via `scripts/run_weekday_paper.py` (autostart once with `bash scripts/install_paper_autostart.sh`)
 - Read-only learner: `python main.py --learn-from-trades` (digest + gated proposals; no auto-apply)
 
 ## File layout
@@ -253,8 +253,12 @@ Render Cron containers are **ephemeral** — local `position_state.json` and `lo
 Optional local backup (same slots; also appends JSONL on disk):
 
 ```bash
-# leave running (tmux/systemd); uses .env paper flags
+# one-time: durable boot autostart (systemd --user or crontab @reboot → tmux loop)
+bash scripts/install_paper_autostart.sh
+
+# leave running (tmux); uses .env paper flags
 python scripts/run_weekday_paper.py --loop
+# or: bash scripts/start_paper_trading.sh
 
 # smoke one slot now
 python scripts/run_weekday_paper.py --once
