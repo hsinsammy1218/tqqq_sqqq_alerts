@@ -35,6 +35,7 @@ from indicators import build_snapshot
 from journal import append_journal, load_last_journal_alert
 from market_hours import market_closed_reason
 from runtime_logging import format_utc_z, log_event, setup_logger
+from learner import format_learner_summary, run_learn_from_trades
 from trade_log_report import (
     format_trade_log_report_summary,
     load_research_max_dd_pct,
@@ -181,6 +182,7 @@ def run() -> int:
         args.small_grid,
         args.checklist_compare,
         args.trade_log_report,
+        args.learn_from_trades,
     )
     if args.walk_forward and (
         args.backtest
@@ -189,28 +191,50 @@ def run() -> int:
         or args.small_grid
         or args.checklist_compare
         or args.trade_log_report
+        or args.learn_from_trades
     ):
         print(
             "Config error: --walk-forward cannot be combined with --backtest, "
             "--backtest-sweep, --strategy-eval, --small-grid, --checklist-compare, "
-            "or --trade-log-report."
+            "--trade-log-report, or --learn-from-trades."
         )
         return 1
     if sum(1 for flag in (args.backtest, args.backtest_sweep) if flag) and (
-        args.strategy_eval or args.small_grid or args.checklist_compare or args.trade_log_report
+        args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.trade_log_report
+        or args.learn_from_trades
     ):
         print(
             "Config error: --strategy-eval / --small-grid / --checklist-compare / "
-            "--trade-log-report cannot be combined with --backtest or --backtest-sweep."
+            "--trade-log-report / --learn-from-trades cannot be combined with "
+            "--backtest or --backtest-sweep."
         )
         return 1
     if args.trade_log_report and (
-        args.strategy_eval or args.small_grid or args.checklist_compare or args.health_check
+        args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.health_check
+        or args.learn_from_trades
     ):
         print(
             "Config error: --trade-log-report cannot be combined with "
+            "--strategy-eval, --small-grid, --checklist-compare, --health-check, "
+            "or --learn-from-trades."
+        )
+        return 1
+    if args.learn_from_trades and (
+        args.strategy_eval or args.small_grid or args.checklist_compare or args.health_check
+    ):
+        print(
+            "Config error: --learn-from-trades cannot be combined with "
             "--strategy-eval, --small-grid, --checklist-compare, or --health-check."
         )
+        return 1
+    if args.learn_discord and not args.learn_from_trades:
+        print("Config error: --learn-discord requires --learn-from-trades.")
         return 1
     if args.debug_strategy_sanity and not args.debug_strategy:
         print("Config error: --debug-strategy-sanity requires --debug-strategy.")
@@ -234,6 +258,8 @@ def run() -> int:
         small_grid=args.small_grid,
         checklist_compare=args.checklist_compare,
         trade_log_report=args.trade_log_report,
+        learn_from_trades=args.learn_from_trades,
+        learn_discord=args.learn_discord,
         debug_strategy=args.debug_strategy,
         debug_strategy_sanity=args.debug_strategy_sanity,
         high_confidence_only=args.high_confidence_only,
@@ -388,6 +414,44 @@ def run() -> int:
             source_path=payload.get("source_path"),
             row_count=payload.get("row_count"),
             enough_data_for_rule_changes=payload.get("enough_data_for_rule_changes"),
+        )
+        return 0
+
+    if args.learn_from_trades:
+        research_dd = load_research_max_dd_pct()
+        try:
+            trade_log_store = trade_log_store_from_settings(settings)
+            result = run_learn_from_trades(
+                trade_log_path=settings.trade_log_jsonl,
+                digest_path=args.learn_digest_json,
+                proposals_path=args.learn_proposals_md,
+                research_max_dd_pct=research_dd,
+                trade_log_store=trade_log_store,
+                send_discord=bool(args.learn_discord),
+                discord_webhook_url=settings.discord_webhook_url or "",
+                discord_dry_run=bool(settings.dry_run),
+            )
+        except (OSError, TradeLogStoreError, ConfigError, RuntimeError) as exc:
+            print(f"Learner error: {exc}")
+            log_event(logger, logging.ERROR, "Learner failed", error=str(exc))
+            return 1
+        digest = result["digest"]
+        print(format_learner_summary(digest, result["proposals"]))
+        print(f"Learner digest JSON written: {args.learn_digest_json}")
+        print(f"Learner proposals written: {args.learn_proposals_md}")
+        print(f"Learner source: {digest.get('source_path')}")
+        if args.learn_discord:
+            print("Learner Discord summary requested (--learn-discord).")
+        log_event(
+            logger,
+            logging.INFO,
+            "Learner digest written",
+            digest_path=args.learn_digest_json,
+            proposals_path=args.learn_proposals_md,
+            source_path=digest.get("source_path"),
+            row_count=digest.get("row_count"),
+            enough_data=digest.get("enough_data"),
+            learn_discord=bool(args.learn_discord),
         )
         return 0
 

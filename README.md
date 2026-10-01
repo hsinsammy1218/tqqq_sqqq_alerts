@@ -43,6 +43,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - Discord **rich embeds** are mobile-first: strong BUY/SELL/FLIP/HOLD/CASH title, symbol/confidence/regime/strength, levels when relevant, short reason + leading checklist summary, optional paper-order outcome; full technical dump stays on the console (`--no-technical` to hide)
 - Alpaca Market Data API backend (daily + 1h → synthetic 4h)
 - Cloud scheduling via Render weekday crons; local durable learning via `scripts/run_weekday_paper.py`
+- Read-only learner: `python main.py --learn-from-trades` (digest + gated proposals; no auto-apply)
 
 ## File layout
 
@@ -59,6 +60,7 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - `backtest_sweep.py`
 - `strategy_eval.py`
 - `walk_forward.py`
+- `learner.py` — read-only trade-log digest + gated proposals (`--learn-from-trades`)
 - `main.py`
 - `.env.example`
 - `requirements.txt`
@@ -240,6 +242,8 @@ Render Cron containers are **ephemeral** — local `position_state.json` and `lo
 
    ```bash
    python main.py --trade-log-report
+   # Read-only learner digest + gated proposals (no orders; optional --learn-discord)
+   python main.py --learn-from-trades
    ```
 
 **DST note:** Render cron expressions are UTC. The schedules above assume Eastern Daylight (UTC−4). In Eastern Standard (UTC−5), shift each hour +1, or leave as-is and rely on `--market-hours-only` (jobs may skip or run near the edge of the session).

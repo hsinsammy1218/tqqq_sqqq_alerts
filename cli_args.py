@@ -140,6 +140,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path for --trade-log-report JSON (default: reports/trade_log_report.json).",
     )
     parser.add_argument(
+        "--learn-from-trades",
+        action="store_true",
+        help=(
+            "Read-only learner agent: digest the paper trade journal (same backends as "
+            "--trade-log-report) and write reports/learner_digest.json plus gated "
+            "proposals in reports/learner_proposals.md. Never places orders or edits "
+            "live decide()/DEFAULT_SCORE_WEIGHTS. Proposals stay blocked until ≥10 "
+            "strategy round-trips; humans must still validate via --strategy-eval / WFE."
+        ),
+    )
+    parser.add_argument(
+        "--learn-digest-json",
+        default="reports/learner_digest.json",
+        metavar="PATH",
+        help="Path for --learn-from-trades digest JSON (default: reports/learner_digest.json).",
+    )
+    parser.add_argument(
+        "--learn-proposals-md",
+        default="reports/learner_proposals.md",
+        metavar="PATH",
+        help="Path for --learn-from-trades proposals markdown (default: reports/learner_proposals.md).",
+    )
+    parser.add_argument(
+        "--learn-discord",
+        action="store_true",
+        help=(
+            "With --learn-from-trades: post a short digest summary to DISCORD_WEBHOOK_URL. "
+            "Default off (no spam)."
+        ),
+    )
+    parser.add_argument(
         "--debug-strategy",
         action="store_true",
         help="With --backtest, --backtest-sweep, or --walk-forward: print score/regime/threshold diagnostics.",
