@@ -128,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Summarize the paper trade journal (status/source/alert/regime/confidence buckets, "
-            "inferred fill P&L, paper DD vs research ~19%). Writes reports/trade_log_report.json. "
+            "inferred fill P&L, paper DD vs research ~19%%). Writes reports/trade_log_report.json. "
             "Prefers Supabase bot_trade_log when TRADE_LOG_BACKEND=supabase; else logs/trades.jsonl. "
             "No live orders."
         ),
@@ -183,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--high-confidence-only",
         action="store_true",
-        help="Flat BUY only when normalized confidence ≥75% (after MIN_CONFIDENCE_TO_TRADE). Applies to live and research modes.",
+        help="Flat BUY only when normalized confidence ≥75%% (after MIN_CONFIDENCE_TO_TRADE). Applies to live and research modes.",
     )
     parser.add_argument(
         "--market-hours-only",
