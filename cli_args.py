@@ -80,6 +80,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path for ranked walk-forward CSV (default: reports/walk_forward_results.csv).",
     )
     parser.add_argument(
+        "--etf-backtest",
+        action="store_true",
+        help=(
+            "Research only: replay live decide() on TQQQ and SQQQ with next-bar day-limit "
+            "fills. Prints the development window and does not evaluate the sealed final "
+            "block. Does not submit orders or change live defaults."
+        ),
+    )
+    parser.add_argument(
+        "--etf-sealed-oos",
+        action="store_true",
+        help=(
+            "Research only: one look at the sealed final block of the ETF backtest. "
+            "Refuses to run again if reports/etf_sealed_oos.json already exists. "
+            "Does not submit orders or change live defaults."
+        ),
+    )
+    parser.add_argument(
         "--strategy-eval",
         action="store_true",
         help=(

@@ -5,7 +5,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from alerts import format_alert_message, send_discord
-from alpaca_paper import execute_paper_orders
+from alpaca_paper import (
+    PaperTradingError,
+    execute_paper_orders,
+    fetch_broker_snapshot,
+    should_submit_paper_orders,
+)
 from api_quota_notify import maybe_notify_quota_reached
 from api_usage import track_and_maybe_warn_api_usage
 from backtest import export_backtest_trades_csv, format_backtest_report, run_backtest
@@ -28,7 +33,21 @@ from strategy_eval import (
 )
 from cli_args import build_parser
 from config import ConfigError, Settings, load_settings, strategy_params_from_settings
-from data import DataError, MarketDataQuotaError, cli_calls_attempted, format_cli_usage_line, load_candles
+from data import (
+    DataError,
+    MarketDataQuotaError,
+    cli_calls_attempted,
+    format_cli_usage_line,
+    load_candles,
+    load_daily_bars,
+)
+from etf_backtest import (
+    SEAL_PATH,
+    evaluate_development,
+    evaluate_sealed,
+    format_phase_report,
+    write_seal,
+)
 from event_calendar import load_merged_blackout_dates
 from health_check import run_health_check
 from indicators import build_snapshot
@@ -48,6 +67,7 @@ from walk_forward import (
     walk_forward_fold_count,
     walk_forward_grid_from_settings,
 )
+from position_reconcile import reconcile_at_start, state_to_save
 from position_store import PositionStoreError, position_store_from_settings
 from trade_log_store import TradeLogStoreError, trade_log_store_from_settings
 from strategy import (
@@ -183,7 +203,24 @@ def run() -> int:
         args.checklist_compare,
         args.trade_log_report,
         args.learn_from_trades,
+        args.etf_backtest,
+        args.etf_sealed_oos,
     )
+    if args.etf_backtest and args.etf_sealed_oos:
+        print("Config error: run --etf-backtest and --etf-sealed-oos as separate commands.")
+        return 1
+    if (args.etf_backtest or args.etf_sealed_oos) and (
+        args.backtest
+        or args.backtest_sweep
+        or args.walk_forward
+        or args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.trade_log_report
+        or args.learn_from_trades
+    ):
+        print("Config error: the ETF backtest cannot be combined with other research commands.")
+        return 1
     if args.walk_forward and (
         args.backtest
         or args.backtest_sweep
@@ -469,7 +506,13 @@ def run() -> int:
             log_event(logger, logging.INFO, "Market hours skip", reason=closed_reason, alpaca_api_calls=0)
             return 0
 
-    long_research = bool(args.strategy_eval or args.small_grid or args.checklist_compare)
+    long_research = bool(
+        args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.etf_backtest
+        or args.etf_sealed_oos
+    )
     research_window = ResearchWindow() if long_research else None
     try:
         candle_kwargs: dict[str, int] = {}
@@ -567,6 +610,55 @@ def run() -> int:
         debug_sanity_dominate=args.debug_strategy_sanity,
         high_confidence_only=args.high_confidence_only,
     )
+
+    if args.etf_backtest or args.etf_sealed_oos:
+        window = research_window or ResearchWindow()
+        try:
+            tqqq_daily = load_daily_bars(
+                "TQQQ",
+                api_key=settings.alpaca_api_key,
+                api_secret=settings.alpaca_api_secret,
+                data_base_url=settings.alpaca_data_base_url,
+                feed=settings.alpaca_data_feed,
+                daily_lookback_days=window.daily_lookback_days,
+                max_daily_bars=window.max_daily_bars,
+            )
+            sqqq_daily = load_daily_bars(
+                "SQQQ",
+                api_key=settings.alpaca_api_key,
+                api_secret=settings.alpaca_api_secret,
+                data_base_url=settings.alpaca_data_base_url,
+                feed=settings.alpaca_data_feed,
+                daily_lookback_days=window.daily_lookback_days,
+                max_daily_bars=window.max_daily_bars,
+            )
+            etf_kwargs = dict(
+                strategy_params=strategy_params,
+                blocked_dates=blocked_dates,
+                anchor_date=settings.anchor_date or None,
+                requested_bars=args.backtest_bars,
+                expand_default=True,
+                cost_bps=float(settings.alpaca_paper_limit_offset_bps),
+                decide_options=research_decide_options,
+            )
+            if args.etf_sealed_oos:
+                if SEAL_PATH.exists():
+                    print(
+                        f"Sealed ETF window already recorded at {SEAL_PATH}. "
+                        "Refusing a second look."
+                    )
+                    return 1
+                evaluation = evaluate_sealed(candles, tqqq_daily, sqqq_daily, **etf_kwargs)
+                print(format_phase_report(evaluation))
+                write_seal(SEAL_PATH, evaluation)
+                print(f"Sealed look recorded: {SEAL_PATH}")
+            else:
+                evaluation = evaluate_development(candles, tqqq_daily, sqqq_daily, **etf_kwargs)
+                print(format_phase_report(evaluation))
+        except (ValueError, DataError) as exc:
+            print(f"ETF backtest error: {exc}")
+            return 1
+        return 0
 
     if args.walk_forward:
         try:
@@ -819,6 +911,36 @@ def run() -> int:
         warnings=position_warnings,
         position_before=_position_to_dict(position),
     )
+    submit_orders = should_submit_paper_orders(
+        paper_trading=settings.alpaca_paper_trading,
+        dry_run=settings.dry_run,
+    )
+    block_new_orders = False
+    reconcile_reason = ""
+    if submit_orders:
+        try:
+            broker_before = fetch_broker_snapshot(
+                api_key=settings.alpaca_api_key,
+                api_secret=settings.alpaca_api_secret,
+                trading_base_url=settings.alpaca_trading_base_url,
+            )
+        except PaperTradingError as exc:
+            block_new_orders = True
+            reconcile_reason = f"broker snapshot failed; not submitting orders ({exc})"
+        else:
+            rec = reconcile_at_start(position, broker_before)
+            position = rec.position_for_decide
+            block_new_orders = rec.block_new_orders
+            reconcile_reason = rec.reason
+        print(f"[position] {reconcile_reason}")
+        log_event(
+            logger,
+            logging.WARNING if block_new_orders else logging.INFO,
+            "Position reconciled",
+            reason=reconcile_reason,
+            block_new_orders=block_new_orders,
+            position_for_decide=_position_to_dict(position),
+        )
     alert, new_position, dbg = decide(
         snapshot=snapshot,
         position=position,
@@ -888,31 +1010,41 @@ def run() -> int:
         print()
         print(format_technical_breakdown(snapshot, alert, position, tech_meta, today_iso))
 
-    paper_results = execute_paper_orders(
-        alert,
-        position,
-        paper_trading=settings.alpaca_paper_trading,
-        dry_run=settings.dry_run,
-        api_key=settings.alpaca_api_key,
-        api_secret=settings.alpaca_api_secret,
-        trading_base_url=settings.alpaca_trading_base_url,
-        data_base_url=settings.alpaca_data_base_url,
-        feed=settings.alpaca_data_feed,
-        fixed_notional=settings.alpaca_paper_notional,
-        equity_pct=settings.alpaca_paper_equity_pct,
-        limit_offset_bps=settings.alpaca_paper_limit_offset_bps,
-        vol_sizing=settings.alpaca_paper_vol_sizing,
-        risk_fraction=settings.alpaca_paper_risk_fraction,
-        vol_stop_mode=settings.alpaca_paper_vol_stop,
-        stop_loss_pct=settings.stop_loss_pct,
-        atr=float(snapshot.daily_atr14),
-        atr_price=float(snapshot.daily_close),
-        atr_stop_mult=settings.alpaca_paper_atr_stop_mult,
-        logger=logger,
-        trade_log_path=settings.trade_log_jsonl,
-        trade_log_store=trade_log_store_from_settings(settings),
-        source="strategy",
-    )
+    if submit_orders and block_new_orders:
+        paper_results = []
+        print(f"[alpaca-paper] Orders suppressed after reconcile: {reconcile_reason}")
+        log_event(
+            logger,
+            logging.WARNING,
+            "Alpaca paper orders suppressed",
+            reason=reconcile_reason,
+        )
+    else:
+        paper_results = execute_paper_orders(
+            alert,
+            position,
+            paper_trading=settings.alpaca_paper_trading,
+            dry_run=settings.dry_run,
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            trading_base_url=settings.alpaca_trading_base_url,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
+            fixed_notional=settings.alpaca_paper_notional,
+            equity_pct=settings.alpaca_paper_equity_pct,
+            limit_offset_bps=settings.alpaca_paper_limit_offset_bps,
+            vol_sizing=settings.alpaca_paper_vol_sizing,
+            risk_fraction=settings.alpaca_paper_risk_fraction,
+            vol_stop_mode=settings.alpaca_paper_vol_stop,
+            stop_loss_pct=settings.stop_loss_pct,
+            atr=float(snapshot.daily_atr14),
+            atr_price=float(snapshot.daily_close),
+            atr_stop_mult=settings.alpaca_paper_atr_stop_mult,
+            logger=logger,
+            trade_log_path=settings.trade_log_jsonl,
+            trade_log_store=trade_log_store_from_settings(settings),
+            source="strategy",
+        )
     if paper_results:
         log_event(
             logger,
@@ -931,6 +1063,67 @@ def run() -> int:
                 for r in paper_results
             ],
         )
+
+    broker_check_failed = False
+    if submit_orders:
+        if block_new_orders:
+            print("[position] Not advancing PositionState; reconcile blocked this run.")
+            log_event(
+                logger,
+                logging.INFO,
+                "Position state left unchanged",
+                reason=reconcile_reason,
+            )
+        else:
+            try:
+                broker_after = fetch_broker_snapshot(
+                    api_key=settings.alpaca_api_key,
+                    api_secret=settings.alpaca_api_secret,
+                    trading_base_url=settings.alpaca_trading_base_url,
+                )
+            except PaperTradingError as exc:
+                broker_check_failed = True
+                print(f"[position] Not advancing PositionState; broker check failed: {exc}")
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "Position save skipped; broker check failed",
+                    error=str(exc),
+                )
+            else:
+                matched = state_to_save(new_position, broker_after)
+                if matched is None:
+                    print(
+                        "[position] Not advancing PositionState; "
+                        f"decision={new_position.active_symbol!r} "
+                        f"broker={broker_after.held_symbol()!r}."
+                    )
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "Position state left unchanged",
+                        decision_symbol=new_position.active_symbol,
+                        broker_symbol=broker_after.held_symbol(),
+                    )
+                else:
+                    try:
+                        position_store.save(matched)
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "Position state saved",
+                            position_state_path=position_state_label,
+                            position_after=_position_to_dict(matched),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"Position store error: {exc}")
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "Position state save failed",
+                            error=str(exc),
+                        )
+                        return 1
 
     try:
         send_discord(
@@ -958,19 +1151,20 @@ def run() -> int:
         log_event(logger, logging.ERROR, "Discord send failed", error=str(exc))
         return 1
 
-    try:
-        position_store.save(new_position)
-        log_event(
-            logger,
-            logging.INFO,
-            "Position state saved",
-            position_state_path=position_state_label,
-            position_after=_position_to_dict(new_position),
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"Position store error (Discord already sent): {exc}")
-        log_event(logger, logging.ERROR, "Position state save failed after Discord", error=str(exc))
-        return 1
+    if not submit_orders:
+        try:
+            position_store.save(new_position)
+            log_event(
+                logger,
+                logging.INFO,
+                "Position state saved",
+                position_state_path=position_state_label,
+                position_after=_position_to_dict(new_position),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"Position store error (Discord already sent): {exc}")
+            log_event(logger, logging.ERROR, "Position state save failed after Discord", error=str(exc))
+            return 1
     try:
         append_journal(settings.journal_csv, alert)
         log_event(
@@ -984,6 +1178,9 @@ def run() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"Journal warning (alert already sent): {exc}")
         log_event(logger, logging.WARNING, "Journal append failed after alert", error=str(exc))
+    if broker_check_failed:
+        log_event(logger, logging.ERROR, "Run completed with broker check failure", exit_code=1)
+        return 1
     log_event(logger, logging.INFO, "Run completed", exit_code=0)
     return 0
 

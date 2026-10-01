@@ -13,6 +13,7 @@ from alpaca_paper import (
     execute_paper_orders,
     is_live_trading_host,
     limit_price_from_trade,
+    make_client_order_id,
     qty_for_notional,
     should_submit_paper_orders,
 )
@@ -179,6 +180,7 @@ def test_execute_paper_orders_buy_path_mocked(tmp_path):
             assert json["time_in_force"] == "day"
             assert json["qty"] == "5"
             assert json["limit_price"] == "100.10"
+            assert json["client_order_id"] == "entry-TQQQ-buy-2026-09-30"
             resp.text = '{"id":"ord-1","status":"accepted"}'
             resp.json.return_value = {"id": "ord-1", "status": "accepted"}
         else:
@@ -191,6 +193,11 @@ def test_execute_paper_orders_buy_path_mocked(tmp_path):
             resp.status_code = 200
             resp.text = '{"trade":{"p":100.0}}'
             resp.json.return_value = {"trade": {"p": 100.0}}
+            return resp
+        if "orders:client_order_id:" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
             return resp
         raise AssertionError(f"unexpected GET {url}")
 
@@ -236,8 +243,9 @@ def test_execute_paper_orders_flip_mocked(tmp_path):
             resp.text = '{"trade":{"p":50.0}}'
             resp.json.return_value = {"trade": {"p": 50.0}}
         elif url.endswith("/v2/orders") and method == "POST":
-            resp.text = '{"id":"ord-x","status":"accepted"}'
-            resp.json.return_value = {"id": "ord-x", "status": "accepted"}
+            status = "filled" if json and json.get("side") == "sell" else "accepted"
+            resp.text = f'{{"id":"ord-x","status":"{status}"}}'
+            resp.json.return_value = {"id": "ord-x", "status": status}
         else:
             raise AssertionError(f"unexpected {method} {url}")
         return resp
@@ -254,6 +262,11 @@ def test_execute_paper_orders_flip_mocked(tmp_path):
             resp.status_code = 200
             resp.text = '{"trade":{"p":50.0}}'
             resp.json.return_value = {"trade": {"p": 50.0}}
+            return resp
+        if "orders:client_order_id:" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
             return resp
         raise AssertionError(f"unexpected GET {url}")
 
@@ -324,3 +337,164 @@ def test_execute_paper_orders_sell_skips_without_position(capfd, tmp_path):
     assert len(results) == 1
     assert results[0].status == "skipped"
     assert "No Alpaca paper position" in capfd.readouterr().out
+
+
+def test_client_order_id_is_stable_for_the_same_session():
+    intent = OrderIntent(symbol="TQQQ", side="buy", purpose="entry")
+    first = make_client_order_id(intent, signal_day="2026-09-30")
+    second = make_client_order_id(intent, signal_day="2026-09-30")
+    assert first == second == "entry-TQQQ-buy-2026-09-30"
+    assert len(first) <= 48
+
+
+def _paper_session_kwargs(tmp_path, session):
+    return dict(
+        paper_trading=True,
+        dry_run=False,
+        api_key="k",
+        api_secret="s",
+        trading_base_url=PAPER_TRADING_BASE_URL,
+        data_base_url="https://data.alpaca.markets",
+        feed="iex",
+        fixed_notional=500,
+        equity_pct=0,
+        limit_offset_bps=10,
+        logger=MagicMock(),
+        session=session,
+        trade_log_path=tmp_path / "trades.jsonl",
+    )
+
+
+def test_flip_blocks_second_leg_when_sell_is_only_accepted(tmp_path):
+    session = MagicMock()
+    posts: list[str] = []
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        resp = MagicMock()
+        resp.status_code = 200
+        if url.endswith("/v2/account"):
+            resp.text = '{"equity":"50000"}'
+            resp.json.return_value = {"equity": "50000"}
+            return resp
+        if url.endswith("/v2/orders") and method == "POST":
+            posts.append(json["side"])
+            resp.text = '{"id":"ord-sell","status":"accepted"}'
+            resp.json.return_value = {"id": "ord-sell", "status": "accepted"}
+            return resp
+        raise AssertionError(f"unexpected {method} {url}")
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        resp = MagicMock()
+        if url.endswith("/v2/positions/TQQQ"):
+            resp.status_code = 200
+            resp.text = '{"qty":"2"}'
+            resp.json.return_value = {"qty": "2"}
+            return resp
+        if "/trades/latest" in url:
+            resp.status_code = 200
+            resp.text = '{"trade":{"p":50.0}}'
+            resp.json.return_value = {"trade": {"p": 50.0}}
+            return resp
+        if "orders:client_order_id:" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
+        raise AssertionError(f"unexpected GET {url}")
+
+    session.request.side_effect = fake_request
+    session.get.side_effect = fake_get
+    results = execute_paper_orders(
+        _alert(alert_type="FLIP", symbol="SQQQ"),
+        PositionState(active_symbol="TQQQ"),
+        **_paper_session_kwargs(tmp_path, session),
+    )
+    assert posts == ["sell"]
+    assert [r.status for r in results] == ["accepted", "blocked"]
+    assert results[1].intent.purpose == "flip_entry"
+    assert results[1].ok is False
+
+
+def test_flip_blocks_second_leg_when_sell_errors(tmp_path):
+    session = MagicMock()
+    posts: list[str] = []
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        resp = MagicMock()
+        if url.endswith("/v2/account"):
+            resp.status_code = 200
+            resp.text = '{"equity":"50000"}'
+            resp.json.return_value = {"equity": "50000"}
+            return resp
+        if url.endswith("/v2/orders") and method == "POST":
+            posts.append(json["side"])
+            resp.status_code = 500
+            resp.text = "sell rejected"
+            resp.reason = "error"
+            return resp
+        raise AssertionError(f"unexpected {method} {url}")
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        resp = MagicMock()
+        if url.endswith("/v2/positions/TQQQ"):
+            resp.status_code = 200
+            resp.text = '{"qty":"2"}'
+            resp.json.return_value = {"qty": "2"}
+            return resp
+        if "/trades/latest" in url:
+            resp.status_code = 200
+            resp.text = '{"trade":{"p":50.0}}'
+            resp.json.return_value = {"trade": {"p": 50.0}}
+            return resp
+        if "orders:client_order_id:" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
+        raise AssertionError(f"unexpected GET {url}")
+
+    session.request.side_effect = fake_request
+    session.get.side_effect = fake_get
+    results = execute_paper_orders(
+        _alert(alert_type="FLIP", symbol="SQQQ"),
+        PositionState(active_symbol="TQQQ"),
+        **_paper_session_kwargs(tmp_path, session),
+    )
+    assert posts == ["sell"]
+    assert results[0].ok is False
+    assert results[1].status == "blocked"
+
+
+def test_repeat_client_order_id_does_not_post_again(tmp_path):
+    session = MagicMock()
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        resp = MagicMock()
+        resp.status_code = 200
+        if url.endswith("/v2/account"):
+            resp.text = '{"equity":"100000"}'
+            resp.json.return_value = {"equity": "100000"}
+            return resp
+        raise AssertionError(f"unexpected second submit {method} {url}")
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        resp = MagicMock()
+        if "orders:client_order_id:entry-TQQQ-buy-2026-09-30" in url:
+            resp.status_code = 200
+            resp.text = '{"id":"existing","status":"accepted"}'
+            resp.json.return_value = {"id": "existing", "status": "accepted"}
+            return resp
+        raise AssertionError(f"unexpected GET {url}")
+
+    session.request.side_effect = fake_request
+    session.get.side_effect = fake_get
+    results = execute_paper_orders(
+        _alert(alert_type="BUY", symbol="TQQQ"),
+        None,
+        **_paper_session_kwargs(tmp_path, session),
+    )
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert results[0].order_id == "existing"
+    assert results[0].status == "accepted"
+    assert "idempotent" in results[0].detail

@@ -425,6 +425,11 @@ def test_execute_paper_orders_uses_trade_log_store(tmp_path: Path, monkeypatch: 
             resp.text = '{"trade":{"p":100.0}}'
             resp.json.return_value = {"trade": {"p": 100.0}}
             return resp
+        if "orders:client_order_id:" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
         raise AssertionError(f"unexpected GET {url}")
 
     session.request.side_effect = fake_request

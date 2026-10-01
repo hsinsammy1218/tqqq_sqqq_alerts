@@ -275,6 +275,8 @@ Replays the same scoring and `decide()` rules over recent historical QQQ daily b
 
 **Caveat — QQQ directional proxy only:** reported equity applies QQQ close-to-close moves as a stand-in (long TQQQ ~ positive QQQ return, long SQQQ ~ negative QQQ return). It ignores leveraged ETF mechanics, borrow/fees, spreads, and partial fills. Treat results as rule-frequency / rough regime checks, not predictive performance.
 
+**ETF replay (research only):** `python main.py --etf-backtest` reruns the live `decide()` rules on TQQQ and SQQQ prices. Fills are next-session day limits, 10 bp through the signal close in ETF terms (the same offset as paper orders), and a limit that the next bar never trades is a miss. The report is the earlier two-thirds of the research window. `python main.py --etf-sealed-oos` is the one look at the final third and refuses to run again after `reports/etf_sealed_oos.json` exists. Neither command changes score weights, the cron command, or Render env, and neither submits orders.
+
 ```bash
 python main.py --backtest
 python main.py --backtest --backtest-bars 250

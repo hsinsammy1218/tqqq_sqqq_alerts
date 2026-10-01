@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from urllib.parse import urljoin
 import requests
 
 from data import alpaca_auth_headers
+from position_reconcile import BrokerSnapshot
 from runtime_logging import log_event
 from strategy_types import AlertDecision, PositionState
 from trade_log import (
@@ -238,8 +240,9 @@ def build_limit_order_payload(
     qty: str,
     limit_price: str,
     time_in_force: str = "day",
+    client_order_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "symbol": intent.symbol,
         "qty": qty,
         "side": intent.side,
@@ -247,6 +250,177 @@ def build_limit_order_payload(
         "time_in_force": time_in_force,
         "limit_price": limit_price,
     }
+    if client_order_id:
+        payload["client_order_id"] = client_order_id
+    return payload
+
+
+_CLIENT_ID_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
+_TERMINAL_ORDER_FAILURES = frozenset(
+    {"rejected", "canceled", "expired", "suspended", "stopped"}
+)
+
+
+def signal_day_from_timestamp(timestamp: str | None) -> str:
+    text = (timestamp or "").strip()
+    if "T" in text:
+        return text.split("T", 1)[0]
+    return text[:10]
+
+
+def make_client_order_id(intent: OrderIntent, *, signal_day: str) -> str:
+    """Stable id for one symbol, side, purpose, and session. Retries reuse it."""
+    day = _CLIENT_ID_UNSAFE.sub("", signal_day)[:16] or "noday"
+    purpose = _CLIENT_ID_UNSAFE.sub("", intent.purpose)[:16] or "order"
+    symbol = _CLIENT_ID_UNSAFE.sub("", intent.symbol.upper())[:8] or "ETF"
+    side = "buy" if intent.side == "buy" else "sell"
+    return f"{purpose}-{symbol}-{side}-{day}"[:48]
+
+
+def order_status_filled(status: str | None) -> bool:
+    return (status or "").strip().lower() == "filled"
+
+
+def _duplicate_client_order(exc: PaperTradingError) -> bool:
+    text = str(exc).lower()
+    return "client_order_id" in text and any(
+        token in text for token in ("unique", "duplicate", "exist", "422")
+    )
+
+
+def fetch_order_by_client_id(
+    client_order_id: str,
+    *,
+    api_key: str,
+    api_secret: str,
+    trading_base_url: str,
+    session: requests.Session | None = None,
+) -> dict[str, Any] | None:
+    """Return the existing order, or None when Alpaca has never seen this id."""
+    url = (
+        trading_base_url.rstrip("/")
+        + "/v2/orders:client_order_id:"
+        + client_order_id
+    )
+    headers = alpaca_auth_headers(api_key, api_secret)
+    client = session or requests
+    try:
+        response = client.get(url, headers=headers, timeout=30)
+    except requests.RequestException as exc:
+        raise PaperTradingError(
+            f"Alpaca client-order lookup failed for {client_order_id}: {exc}"
+        ) from exc
+    if response.status_code == 404:
+        return None
+    body = (response.text or "").strip()
+    if response.status_code >= 400:
+        raise PaperTradingError(
+            f"Alpaca client-order lookup error ({response.status_code}) "
+            f"for {client_order_id}: {body or response.reason}"
+        )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise PaperTradingError(f"Non-JSON client-order payload for {client_order_id}.") from exc
+    if not isinstance(payload, dict):
+        raise PaperTradingError(f"Unexpected client-order payload for {client_order_id}.")
+    return payload
+
+
+def _result_from_existing_order(intent: OrderIntent, order: dict[str, Any]) -> OrderResult:
+    status = str(order.get("status") or "submitted")
+    order_id = str(order.get("id") or "") or None
+    ok = status.lower() not in _TERMINAL_ORDER_FAILURES
+    detail = f"idempotent client_order_id order_id={order_id or 'n/a'} status={status}"
+    return OrderResult(
+        intent=intent,
+        ok=ok,
+        status=status,
+        detail=detail,
+        order_id=order_id,
+        payload=None,
+    )
+
+
+def _qty_float(raw: object) -> float:
+    try:
+        return float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def fetch_broker_snapshot(
+    *,
+    api_key: str,
+    api_secret: str,
+    trading_base_url: str,
+    session: requests.Session | None = None,
+) -> BrokerSnapshot:
+    """Paper TQQQ/SQQQ inventory and the count of open orders in those names."""
+    headers = alpaca_auth_headers(api_key, api_secret)
+    client = session or requests
+    base = trading_base_url.rstrip("/")
+    try:
+        positions = client.get(base + "/v2/positions", headers=headers, timeout=30)
+    except requests.RequestException as exc:
+        raise PaperTradingError(f"Alpaca positions lookup failed: {exc}") from exc
+    if positions.status_code == 404:
+        rows: list[object] = []
+    elif positions.status_code >= 400:
+        body = (positions.text or "").strip()
+        raise PaperTradingError(
+            f"Alpaca positions lookup error ({positions.status_code}): {body or positions.reason}"
+        )
+    else:
+        try:
+            parsed = positions.json()
+        except ValueError as exc:
+            raise PaperTradingError("Alpaca positions lookup returned non-JSON.") from exc
+        if not isinstance(parsed, list):
+            raise PaperTradingError("Alpaca positions lookup returned an unexpected payload.")
+        rows = parsed
+
+    tqqq_qty = 0.0
+    sqqq_qty = 0.0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").upper()
+        qty = _qty_float(row.get("qty"))
+        if symbol == "TQQQ":
+            tqqq_qty = qty
+        elif symbol == "SQQQ":
+            sqqq_qty = qty
+
+    try:
+        orders = client.get(
+            base + "/v2/orders",
+            headers=headers,
+            params={"status": "open", "limit": 100, "symbols": "TQQQ,SQQQ"},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise PaperTradingError(f"Alpaca open-order lookup failed: {exc}") from exc
+    if orders.status_code == 404:
+        open_rows: list[object] = []
+    elif orders.status_code >= 400:
+        body = (orders.text or "").strip()
+        raise PaperTradingError(
+            f"Alpaca open-order lookup error ({orders.status_code}): {body or orders.reason}"
+        )
+    else:
+        try:
+            parsed_orders = orders.json()
+        except ValueError as exc:
+            raise PaperTradingError("Alpaca open-order lookup returned non-JSON.") from exc
+        if not isinstance(parsed_orders, list):
+            raise PaperTradingError("Alpaca open-order lookup returned an unexpected payload.")
+        open_rows = parsed_orders
+    open_count = 0
+    for row in open_rows:
+        if isinstance(row, dict) and str(row.get("symbol") or "").upper() in {"TQQQ", "SQQQ"}:
+            open_count += 1
+    return BrokerSnapshot(tqqq_qty=tqqq_qty, sqqq_qty=sqqq_qty, open_order_count=open_count)
 
 
 def _request_json(
@@ -600,7 +774,43 @@ def execute_paper_orders(
         print(f"[alpaca-paper] Account equity fetch failed (will retry per order): {exc}")
         log_event(log, logging.WARNING, "Alpaca paper equity fetch failed", error=str(exc))
 
+    signal_day = signal_day_from_timestamp(alert.timestamp)
+    prior_flip_exit: OrderResult | None = None
+
+    def _remember(result: OrderResult) -> None:
+        nonlocal prior_flip_exit
+        results.append(result)
+        if result.intent.purpose == "flip_exit":
+            prior_flip_exit = result
+
     for intent in intents:
+        if (
+            intent.purpose == "flip_entry"
+            and prior_flip_exit is not None
+            and not order_status_filled(prior_flip_exit.status)
+        ):
+            detail = (
+                "Flip entry not submitted: first leg status "
+                f"{prior_flip_exit.status} did not fill."
+            )
+            print(f"[alpaca-paper] {detail}")
+            log_event(
+                log,
+                logging.WARNING,
+                "Alpaca paper flip entry blocked",
+                symbol=intent.symbol,
+                first_leg_status=prior_flip_exit.status,
+            )
+            _log_trade(
+                symbol=intent.symbol,
+                side=intent.side,
+                status="blocked",
+                purpose=intent.purpose,
+                detail=detail,
+                error="flip_first_leg_not_filled",
+            )
+            _remember(OrderResult(intent=intent, ok=False, status="blocked", detail=detail))
+            continue
         try:
             if intent.side == "sell":
                 held = fetch_position_qty(
@@ -629,10 +839,41 @@ def execute_paper_orders(
                         detail=detail,
                         error="no_position",
                     )
-                    results.append(
-                        OrderResult(intent=intent, ok=True, status="skipped", detail=detail)
-                    )
+                    _remember(OrderResult(intent=intent, ok=True, status="skipped", detail=detail))
                     continue
+
+            client_id = make_client_order_id(intent, signal_day=signal_day)
+            existing = fetch_order_by_client_id(
+                client_id,
+                api_key=api_key,
+                api_secret=api_secret,
+                trading_base_url=trading_base_url,
+                session=session,
+            )
+            if existing is not None:
+                adopted = _result_from_existing_order(intent, existing)
+                print(f"[alpaca-paper] {adopted.detail}")
+                log_event(
+                    log,
+                    logging.INFO,
+                    "Alpaca paper order already exists",
+                    symbol=intent.symbol,
+                    side=intent.side,
+                    purpose=intent.purpose,
+                    client_order_id=client_id,
+                    status=adopted.status,
+                    order_id=adopted.order_id,
+                )
+                _log_trade(
+                    symbol=intent.symbol,
+                    side=intent.side,
+                    order_id=adopted.order_id,
+                    status=adopted.status,
+                    purpose=intent.purpose,
+                    detail=adopted.detail,
+                )
+                _remember(adopted)
+                continue
 
             qty, ref_price, size_mode = resolve_order_qty(
                 intent,
@@ -656,10 +897,12 @@ def execute_paper_orders(
             limit_price = limit_price_from_trade(
                 ref_price, side=intent.side, offset_bps=limit_offset_bps
             )
-            payload = build_limit_order_payload(intent, qty=qty, limit_price=limit_price)
+            payload = build_limit_order_payload(
+                intent, qty=qty, limit_price=limit_price, client_order_id=client_id
+            )
             print(
                 f"[alpaca-paper] Submitting {intent.side} {intent.symbol} qty={qty} "
-                f"limit={limit_price} ({intent.purpose}, size={size_mode})"
+                f"limit={limit_price} client_order_id={client_id} ({intent.purpose}, size={size_mode})"
             )
             log_event(
                 log,
@@ -671,6 +914,7 @@ def execute_paper_orders(
                 qty=qty,
                 limit_price=limit_price,
                 ref_price=ref_price,
+                client_order_id=client_id,
             )
             order = submit_limit_order(
                 payload,
@@ -708,7 +952,7 @@ def execute_paper_orders(
                 purpose=intent.purpose,
                 detail=detail,
             )
-            results.append(
+            _remember(
                 OrderResult(
                     intent=intent,
                     ok=True,
@@ -719,6 +963,22 @@ def execute_paper_orders(
                 )
             )
         except PaperTradingError as exc:
+            if _duplicate_client_order(exc):
+                try:
+                    existing = fetch_order_by_client_id(
+                        client_id,
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        trading_base_url=trading_base_url,
+                        session=session,
+                    )
+                except PaperTradingError:
+                    existing = None
+                if existing is not None:
+                    adopted = _result_from_existing_order(intent, existing)
+                    print(f"[alpaca-paper] {adopted.detail}")
+                    _remember(adopted)
+                    continue
             print(f"[alpaca-paper] FAILED {intent.side} {intent.symbol}: {exc}")
             log_event(
                 log,
@@ -737,9 +997,7 @@ def execute_paper_orders(
                 error=str(exc),
                 detail=str(exc),
             )
-            results.append(
-                OrderResult(intent=intent, ok=False, status="error", detail=str(exc))
-            )
+            _remember(OrderResult(intent=intent, ok=False, status="error", detail=str(exc)))
         except Exception as exc:  # noqa: BLE001
             print(f"[alpaca-paper] FAILED {intent.side} {intent.symbol}: unexpected {exc}")
             log_event(
@@ -759,8 +1017,6 @@ def execute_paper_orders(
                 error=str(exc),
                 detail=str(exc),
             )
-            results.append(
-                OrderResult(intent=intent, ok=False, status="error", detail=str(exc))
-            )
+            _remember(OrderResult(intent=intent, ok=False, status="error", detail=str(exc)))
 
     return results

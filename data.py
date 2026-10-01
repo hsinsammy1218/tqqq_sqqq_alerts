@@ -286,3 +286,30 @@ def load_candles(
     if len(four_hour) < 5:
         raise DataError("Not enough intraday candles to compute 4h context safely.")
     return CandleData(daily=daily, four_hour=four_hour)
+
+
+def load_daily_bars(
+    ticker: str,
+    *,
+    api_key: str,
+    api_secret: str,
+    data_base_url: str = DEFAULT_DATA_BASE_URL,
+    feed: str = DEFAULT_DATA_FEED,
+    daily_lookback_days: int = 1460,
+    max_daily_bars: int = 1100,
+) -> pd.DataFrame:
+    """Daily bars only. Research path for TQQQ/SQQQ fills; live alerts still use ``load_candles``."""
+    if not api_key or not api_secret:
+        raise DataError("ALPACA_API_KEY and ALPACA_API_SECRET are required to load candles.")
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=max(120, int(daily_lookback_days)))
+    return _fetch_bars(
+        ticker,
+        timeframe="1Day",
+        start=start,
+        api_key=api_key,
+        api_secret=api_secret,
+        data_base_url=data_base_url,
+        feed=feed,
+        max_bars=max(80, int(max_daily_bars)),
+    )
