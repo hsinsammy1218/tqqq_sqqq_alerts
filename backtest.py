@@ -1,1 +1,1 @@
-PLACEHOLDER_LOAD_FROM_/tmp/PUSH_BT_FINAL.json
+$file:/workspace/backtest.py
