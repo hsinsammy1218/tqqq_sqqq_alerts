@@ -16,13 +16,18 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
-# Hourly 10:00–15:00 ET weekdays + near-close 15:30 (7 scans/weekday).
+# Every 30 minutes 10:00–15:30 ET weekdays (12 scans/weekday).
 DEFAULT_SLOTS: tuple[tuple[int, int], ...] = (
     (10, 0),
+    (10, 30),
     (11, 0),
+    (11, 30),
     (12, 0),
+    (12, 30),
     (13, 0),
+    (13, 30),
     (14, 0),
+    (14, 30),
     (15, 0),
     (15, 30),
 )
@@ -124,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Local weekday paper-alert scheduler for trade-learning accumulation. "
             "Runs: python main.py --no-technical --market-hours-only "
-            "hourly 10:00–15:00 plus 15:30 America/New_York on weekdays."
+            "every 30 minutes 10:00–15:30 America/New_York on weekdays."
         )
     )
     mode = p.add_mutually_exclusive_group(required=True)
@@ -142,7 +147,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--slots",
         default=None,
-        help="Comma-separated HH:MM Eastern times (default 10:00,11:00,12:00,13:00,14:00,15:00,15:30).",
+        help=(
+            "Comma-separated HH:MM Eastern times "
+            "(default 10:00,10:30,...,15:00,15:30)."
+        ),
     )
     p.add_argument(
         "--poll-seconds",

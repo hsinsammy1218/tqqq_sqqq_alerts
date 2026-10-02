@@ -4,7 +4,7 @@
 Runs the same entrypoint as Render crons:
   python main.py --no-technical --market-hours-only
 
-Default slots (America/New_York): hourly 10:00–15:00 plus 15:30 on weekdays (Mon–Fri).
+Default slots (America/New_York): every 30 minutes 10:00–15:30 on weekdays (Mon–Fri).
 Appends paper outcomes to logs/trades.jsonl when ALPACA_PAPER_TRADING=true and
 DRY_RUN=false in the local .env (do not commit .env).
 

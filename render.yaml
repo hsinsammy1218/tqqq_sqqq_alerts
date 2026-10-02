@@ -11,7 +11,7 @@
 #   dashboard/supabase/migrations/20260714180000_bot_position_state.sql
 #   dashboard/supabase/migrations/20260930190000_bot_trade_log.sql
 #
-# Cadence: hourly 10:00–15:00 ET + near-close 15:30 (7 scans/weekday).
+# Cadence: every 30 minutes 10:00–15:30 ET weekdays (12 scans/weekday).
 # Schedules below assume Eastern Daylight (EDT = UTC-4).
 # Winter (EST = UTC-5): shift each schedule one hour later, or rely on
 # --market-hours-only and accept occasional skip near the edges.
@@ -30,10 +30,30 @@ services:
       - fromGroup: tqqq-sqqq-alerts
 
   - type: cron
+    name: tqqq-sqqq-alerts-1030
+    runtime: python
+    plan: starter
+    schedule: "30 14 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --no-technical --market-hours-only
+    envVars:
+      - fromGroup: tqqq-sqqq-alerts
+
+  - type: cron
     name: tqqq-sqqq-alerts-1100
     runtime: python
     plan: starter
     schedule: "0 15 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --no-technical --market-hours-only
+    envVars:
+      - fromGroup: tqqq-sqqq-alerts
+
+  - type: cron
+    name: tqqq-sqqq-alerts-1130
+    runtime: python
+    plan: starter
+    schedule: "30 15 * * 1-5"
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py --no-technical --market-hours-only
     envVars:
@@ -50,6 +70,16 @@ services:
       - fromGroup: tqqq-sqqq-alerts
 
   - type: cron
+    name: tqqq-sqqq-alerts-1230
+    runtime: python
+    plan: starter
+    schedule: "30 16 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --no-technical --market-hours-only
+    envVars:
+      - fromGroup: tqqq-sqqq-alerts
+
+  - type: cron
     name: tqqq-sqqq-alerts-1300
     runtime: python
     plan: starter
@@ -60,10 +90,30 @@ services:
       - fromGroup: tqqq-sqqq-alerts
 
   - type: cron
+    name: tqqq-sqqq-alerts-1330
+    runtime: python
+    plan: starter
+    schedule: "30 17 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --no-technical --market-hours-only
+    envVars:
+      - fromGroup: tqqq-sqqq-alerts
+
+  - type: cron
     name: tqqq-sqqq-alerts-1400
     runtime: python
     plan: starter
     schedule: "0 18 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --no-technical --market-hours-only
+    envVars:
+      - fromGroup: tqqq-sqqq-alerts
+
+  - type: cron
+    name: tqqq-sqqq-alerts-1430
+    runtime: python
+    plan: starter
+    schedule: "30 18 * * 1-5"
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py --no-technical --market-hours-only
     envVars:
