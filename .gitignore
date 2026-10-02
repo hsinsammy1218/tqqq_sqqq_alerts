@@ -22,3 +22,4 @@ logs/
 reports/*.csv
 reports/*.json
 reports/*.md
+reports/*.parquet
