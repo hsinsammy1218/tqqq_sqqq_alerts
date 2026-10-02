@@ -430,6 +430,56 @@ def send_discord(
         raise RuntimeError(f"Discord webhook failed: {response.status_code} {response.text}")
 
 
+def send_discord_kill_alert(
+    webhook_url: str,
+    *,
+    reason: str,
+    dry_run: bool,
+    equity: float | None = None,
+    daily_pnl: float | None = None,
+    weekly_pnl: float | None = None,
+) -> None:
+    """Post a conspicuous KILL embed when paper/live loss caps trip. Never raises."""
+    lines = [
+        "**KILL** — paper risk kill switch tripped.",
+        f"Reason: {reason}",
+        "New buys blocked for this run; sells (flatten) still allowed.",
+        "Pause cron / set `ALPACA_PAPER_TRADING=false` if you need a hard stop.",
+    ]
+    if equity is not None:
+        lines.append(f"Equity: ${equity:,.2f}")
+    if daily_pnl is not None:
+        lines.append(f"Daily PnL: ${daily_pnl:,.2f}")
+    if weekly_pnl is not None:
+        lines.append(f"Weekly PnL: ${weekly_pnl:,.2f}")
+    embed = {
+        "title": "KILL — paper risk switch",
+        "description": "\n".join(lines),
+        "color": 0xE74C3C,
+    }
+    payload: dict[str, object] = {
+        "username": "QQQ Swing Alerts",
+        "content": "KILL",
+        "embeds": [embed],
+    }
+    if dry_run:
+        print("[DRY RUN] Discord KILL payload:")
+        print(json.dumps(payload, indent=2))
+        return
+    if not webhook_url:
+        print("[paper-risk] No DISCORD_WEBHOOK_URL — KILL logged to console only.")
+        return
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=15)
+        if response.status_code >= 400:
+            print(
+                f"[paper-risk] Discord KILL webhook failed: "
+                f"{response.status_code} {response.text}"
+            )
+    except requests.RequestException as exc:
+        print(f"[paper-risk] Discord KILL webhook error: {exc}")
+
+
 def _extract_json_object(text: str) -> dict[str, object] | None:
     idx = text.find("{")
     if idx < 0:

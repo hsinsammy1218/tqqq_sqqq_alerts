@@ -92,6 +92,10 @@ Copy `.env.example` to `.env` and fill values:
   - `ALPACA_PAPER_VOL_STOP=stop_pct` — `stop_pct` uses `STOP_LOSS_PCT`; `atr` uses `ALPACA_PAPER_ATR_STOP_MULT` × QQQ ATR / QQQ price
   - `EXIT_MODE=fixed` — `atr_trail` replaces the fixed take-profit exit with an ATR trail (`ATR_TRAIL_MULT`, default 2). `STRETCH_TAKE_PROFIT_PCT` is never an automatic exit
   - `ALPACA_TRADING_BASE_URL` defaults to the paper API; `https://api.alpaca.markets` is rejected at config load
+  - Optional **paper risk controls** (default OFF so current Render soak is unchanged):
+    - `PAPER_MAX_BUY_NOTIONAL=0` — when `> 0`, hard cap on buy notional (e.g. `200` for later live rehearsal)
+    - `PAPER_TQQQ_ONLY=false` — when `true`, block SQQQ buys / flip-entries; sells still flatten
+    - `PAPER_MAX_DAILY_LOSS_USD=0` / `PAPER_MAX_WEEKLY_LOSS_USD=0` — when `> 0`, kill switch trips on sleeve equity drop vs prior close / week-start; blocks new buys, posts Discord `KILL`
   - Separate from any Robinhood setup; see paper-trading notes below
 
 Discord webhook quick setup:
@@ -154,9 +158,11 @@ Default is alerts-only. To rehearse execution on Alpaca **paper** (not live, not
 
 Order mapping: BUY → buy limit; SELL → sell full paper position (skip if flat at broker); FLIP → sell held then buy target. Failures are logged and do not block Discord / journal / bot memory.
 
+Optional risk controls (default **off**): `PAPER_MAX_BUY_NOTIONAL`, `PAPER_TQQQ_ONLY`, `PAPER_MAX_DAILY_LOSS_USD`, `PAPER_MAX_WEEKLY_LOSS_USD` — see `.env.example`. Kill trips block buys, allow sells, and post Discord content `KILL`.
+
 Paper order outcomes append to **`logs/trades.jsonl`** (gitignored; override with `TRADE_LOG_JSONL`) and, when `TRADE_LOG_BACKEND=supabase`, also insert into Supabase `public.bot_trade_log` for durable learning on Render — see `trade_log.py` / `trade_log_store.py`.
 
-Mocked unit tests: `pytest -q tests/test_alpaca_paper.py tests/test_trade_log.py tests/test_trade_log_store.py`.
+Mocked unit tests: `pytest -q tests/test_alpaca_paper.py tests/test_paper_risk.py tests/test_trade_log.py tests/test_trade_log_store.py`.
 
 Optional **stricter flat entries**: require normalized confidence ≥75% (still after `MIN_CONFIDENCE_TO_TRADE`):
 

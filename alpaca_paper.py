@@ -17,6 +17,14 @@ from urllib.parse import urljoin
 import requests
 
 from data import alpaca_auth_headers
+from paper_risk import (
+    KillStatus,
+    PaperRiskLimits,
+    apply_buy_notional_cap,
+    assess_kill_from_broker,
+    filter_intents_for_kill,
+    filter_intents_for_tqqq_only,
+)
 from position_reconcile import BrokerSnapshot
 from runtime_logging import log_event
 from strategy_types import AlertDecision, PositionState
@@ -165,26 +173,31 @@ def select_buy_notional(
     atr: float | None = None,
     atr_price: float | None = None,
     atr_mult: float = 2.0,
+    max_buy_notional: float = 0.0,
 ) -> tuple[float, str]:
     """Return (notional, mode_used).
 
     Volatility sizing is opt-in. When it is off, or equity/ATR inputs are missing,
     the existing fixed-notional or equity-% path is unchanged.
+    When ``max_buy_notional`` > 0, the result is clamped (paper risk cap).
     """
     if not vol_sizing:
-        return (
-            buy_notional_usd(
-                fixed_notional=fixed_notional,
-                equity_pct=equity_pct,
-                equity=equity or 0.0,
-            ),
-            "equity_pct" if equity_pct and equity_pct > 0 else "fixed_notional",
+        notional = buy_notional_usd(
+            fixed_notional=fixed_notional,
+            equity_pct=equity_pct,
+            equity=equity or 0.0,
         )
+        mode = "equity_pct" if equity_pct and equity_pct > 0 else "fixed_notional"
+        capped = apply_buy_notional_cap(notional, max_buy_notional)
+        if capped < notional:
+            return capped, f"{mode}_capped"
+        return capped, mode
     if equity is None or equity <= 0:
-        return (
-            buy_notional_usd(fixed_notional=fixed_notional, equity_pct=0.0, equity=0.0),
-            "fallback_notional",
-        )
+        notional = buy_notional_usd(fixed_notional=fixed_notional, equity_pct=0.0, equity=0.0)
+        capped = apply_buy_notional_cap(notional, max_buy_notional)
+        if capped < notional:
+            return capped, "fallback_notional_capped"
+        return capped, "fallback_notional"
     try:
         distance = stop_distance_pct(
             mode=vol_stop_mode,
@@ -194,19 +207,21 @@ def select_buy_notional(
             atr_mult=atr_mult,
         )
     except PaperTradingError:
-        return (
-            buy_notional_usd(fixed_notional=fixed_notional, equity_pct=0.0, equity=0.0),
-            "fallback_notional",
-        )
-    return (
-        volatility_notional_usd(
-            equity=equity,
-            risk_fraction=risk_fraction,
-            stop_distance=distance,
-            notional_cap=fixed_notional,
-        ),
-        "volatility",
+        notional = buy_notional_usd(fixed_notional=fixed_notional, equity_pct=0.0, equity=0.0)
+        capped = apply_buy_notional_cap(notional, max_buy_notional)
+        if capped < notional:
+            return capped, "fallback_notional_capped"
+        return capped, "fallback_notional"
+    notional = volatility_notional_usd(
+        equity=equity,
+        risk_fraction=risk_fraction,
+        stop_distance=distance,
+        notional_cap=fixed_notional,
     )
+    capped = apply_buy_notional_cap(notional, max_buy_notional)
+    if capped < notional:
+        return capped, "volatility_capped"
+    return capped, "volatility"
 
 
 def qty_for_notional(notional: float, price: float) -> str:
@@ -586,6 +601,7 @@ def resolve_order_qty(
     atr: float | None = None,
     atr_price: float | None = None,
     atr_stop_mult: float = 2.0,
+    max_buy_notional: float = 0.0,
 ) -> tuple[str, float, str]:
     """Return (qty, reference_price)."""
     price = fetch_latest_trade_price(
@@ -635,6 +651,7 @@ def resolve_order_qty(
         atr=atr,
         atr_price=atr_price,
         atr_mult=atr_stop_mult,
+        max_buy_notional=max_buy_notional,
     )
     return qty_for_notional(notional, price), price, size_mode
 
@@ -681,6 +698,11 @@ def execute_paper_orders(
     atr: float | None = None,
     atr_price: float | None = None,
     atr_stop_mult: float = 2.0,
+    max_buy_notional: float = 0.0,
+    tqqq_only: bool = False,
+    max_daily_loss_usd: float = 0.0,
+    max_weekly_loss_usd: float = 0.0,
+    discord_webhook_url: str = "",
     session: requests.Session | None = None,
     trade_log_path: Path | str | None = DEFAULT_TRADE_LOG_PATH,
     trade_log_store: Any | None = None,
@@ -693,6 +715,12 @@ def execute_paper_orders(
     regime = extract_regime(alert.qqq_trend_reason)
     confidence = int(alert.confidence_score) if alert.confidence_score is not None else None
     signal_quality = alert.signal_quality
+    risk_limits = PaperRiskLimits(
+        max_buy_notional=max_buy_notional,
+        tqqq_only=tqqq_only,
+        max_daily_loss_usd=max_daily_loss_usd,
+        max_weekly_loss_usd=max_weekly_loss_usd,
+    )
 
     def _log_trade(**kwargs: Any) -> None:
         if trade_log_store is None and log_path is None:
@@ -773,6 +801,89 @@ def execute_paper_orders(
     except PaperTradingError as exc:
         print(f"[alpaca-paper] Account equity fetch failed (will retry per order): {exc}")
         log_event(log, logging.WARNING, "Alpaca paper equity fetch failed", error=str(exc))
+
+    kill = KillStatus(tripped=False, reason="")
+    if risk_limits.max_daily_loss_usd > 0 or risk_limits.max_weekly_loss_usd > 0:
+        kill = assess_kill_from_broker(
+            api_key=api_key,
+            api_secret=api_secret,
+            trading_base_url=trading_base_url,
+            limits=risk_limits,
+            session=session,
+            logger=log,
+        )
+        if kill.equity is not None:
+            equity = kill.equity
+        if kill.tripped:
+            print(f"[paper-risk] KILL: {kill.reason}")
+            log_event(
+                log,
+                logging.ERROR,
+                "Paper risk kill switch tripped",
+                reason=kill.reason,
+                equity=kill.equity,
+                daily_pnl=kill.daily_pnl,
+                weekly_pnl=kill.weekly_pnl,
+            )
+            try:
+                from alerts import send_discord_kill_alert
+
+                send_discord_kill_alert(
+                    discord_webhook_url,
+                    reason=kill.reason,
+                    dry_run=dry_run,
+                    equity=kill.equity,
+                    daily_pnl=kill.daily_pnl,
+                    weekly_pnl=kill.weekly_pnl,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[paper-risk] Discord KILL notify failed: {exc}")
+                log_event(log, logging.WARNING, "Paper risk Discord KILL failed", error=str(exc))
+
+    intents, kill_skips = filter_intents_for_kill(intents, kill=kill)
+    for detail in kill_skips:
+        print(f"[paper-risk] {detail}")
+        _log_trade(
+            symbol=alert.symbol,
+            side="buy",
+            status="blocked",
+            purpose="kill_switch",
+            error="kill_switch",
+            detail=detail,
+        )
+        results.append(
+            OrderResult(
+                intent=OrderIntent(symbol=str(alert.symbol or "CASH"), side="buy", purpose="kill_switch"),
+                ok=False,
+                status="blocked",
+                detail=detail,
+            )
+        )
+
+    intents, tqqq_skips = filter_intents_for_tqqq_only(intents, tqqq_only=risk_limits.tqqq_only)
+    for detail in tqqq_skips:
+        print(f"[paper-risk] {detail}")
+        _log_trade(
+            symbol="SQQQ",
+            side="buy",
+            status="blocked",
+            purpose="tqqq_only",
+            error="tqqq_only",
+            detail=detail,
+        )
+        results.append(
+            OrderResult(
+                intent=OrderIntent(symbol="SQQQ", side="buy", purpose="tqqq_only"),
+                ok=False,
+                status="blocked",
+                detail=detail,
+            )
+        )
+
+    if not intents:
+        if kill.tripped or tqqq_skips:
+            print("[alpaca-paper] No remaining order intents after paper risk filters.")
+        return results
 
     signal_day = signal_day_from_timestamp(alert.timestamp)
     prior_flip_exit: OrderResult | None = None
@@ -893,6 +1004,7 @@ def execute_paper_orders(
                 atr=atr,
                 atr_price=atr_price,
                 atr_stop_mult=atr_stop_mult,
+                max_buy_notional=risk_limits.max_buy_notional,
             )
             limit_price = limit_price_from_trade(
                 ref_price, side=intent.side, offset_bps=limit_offset_bps

@@ -30,6 +30,11 @@ class Settings:
     alpaca_paper_risk_fraction: float
     alpaca_paper_vol_stop: str
     alpaca_paper_atr_stop_mult: float
+    # Paper-path risk controls (default OFF / 0 — no change to current Render soak).
+    paper_max_buy_notional: float
+    paper_tqqq_only: bool
+    paper_max_daily_loss_usd: float
+    paper_max_weekly_loss_usd: float
     discord_webhook_url: str
     dry_run: bool
     bull_entry_threshold: int
@@ -158,6 +163,17 @@ def load_settings() -> Settings:
     alpaca_paper_atr_stop_mult = float(os.getenv("ALPACA_PAPER_ATR_STOP_MULT", "2"))
     if alpaca_paper_atr_stop_mult <= 0:
         raise ConfigError("ALPACA_PAPER_ATR_STOP_MULT must be positive.")
+    # Ops caps for paper path (and later live rehearsal). 0 / false = off.
+    paper_max_buy_notional = float(os.getenv("PAPER_MAX_BUY_NOTIONAL", "0"))
+    if paper_max_buy_notional < 0:
+        raise ConfigError("PAPER_MAX_BUY_NOTIONAL must be >= 0 (0 = uncapped).")
+    paper_tqqq_only = _to_bool(os.getenv("PAPER_TQQQ_ONLY", "false"), default=False)
+    paper_max_daily_loss_usd = float(os.getenv("PAPER_MAX_DAILY_LOSS_USD", "0"))
+    if paper_max_daily_loss_usd < 0:
+        raise ConfigError("PAPER_MAX_DAILY_LOSS_USD must be >= 0 (0 = kill off).")
+    paper_max_weekly_loss_usd = float(os.getenv("PAPER_MAX_WEEKLY_LOSS_USD", "0"))
+    if paper_max_weekly_loss_usd < 0:
+        raise ConfigError("PAPER_MAX_WEEKLY_LOSS_USD must be >= 0 (0 = kill off).")
     exit_mode = (os.getenv("EXIT_MODE", "fixed").strip().lower() or "fixed")
     if exit_mode not in {"fixed", "atr_trail"}:
         raise ConfigError("EXIT_MODE must be 'fixed' or 'atr_trail'.")
@@ -219,6 +235,10 @@ def load_settings() -> Settings:
         alpaca_paper_risk_fraction=alpaca_paper_risk_fraction,
         alpaca_paper_vol_stop=alpaca_paper_vol_stop,
         alpaca_paper_atr_stop_mult=alpaca_paper_atr_stop_mult,
+        paper_max_buy_notional=paper_max_buy_notional,
+        paper_tqqq_only=paper_tqqq_only,
+        paper_max_daily_loss_usd=paper_max_daily_loss_usd,
+        paper_max_weekly_loss_usd=paper_max_weekly_loss_usd,
         discord_webhook_url=webhook,
         dry_run=dry_run,
         bull_entry_threshold=int(os.getenv("BULL_ENTRY_THRESHOLD", "5")),
