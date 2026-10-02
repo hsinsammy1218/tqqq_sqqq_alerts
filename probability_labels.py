@@ -1,1 +1,1 @@
-__LOAD_FROM__/tmp/pl_content_only.txt
+$file:/workspace/probability_labels.py
