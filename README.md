@@ -346,4 +346,69 @@ python main.py --walk-forward --backtest-bars 250
 python main.py --walk-forward --backtest-bars 250 --walk-forward-csv reports/walk_forward_results.csv
 ```
 
-`--walk-forward-csv` defaults to `reports/walk_forward_results.csv`. Leaving normal `.env` defaults unchanged is intentional until you adopt a recomme
+`--walk-forward-csv` defaults to `reports/walk_forward_results.csv`. Leaving normal `.env` defaults unchanged is intentional until you adopt a recommendation manually.
+
+### Strategy evaluation and small grid (research only)
+
+```bash
+python main.py --strategy-eval
+python main.py --small-grid
+python main.py --strategy-eval --small-grid
+```
+
+`--strategy-eval` scores closed QQQ-proxy trades (not broker fills): trade count (flag under 30), profit factor, compounded net profit, max and average drawdown (flag when max is about 3× average or more), reward/risk = net profit / max drawdown (bar about 3), a PROM-style pessimistic return, and walk-forward efficiency on **equal chronological segments** (default 3; first two IS, last OOS; robust bar about 50–60%). It also compares the current fixed take-profit, a wider fixed target (default 30%, not the 25% stretch), and `EXIT_MODE=atr_trail`. Research P&L applies `BACKTEST_ENTRY_SLIPPAGE_BPS` / `BACKTEST_EXIT_SLIPPAGE_BPS`. JSON goes to `reports/strategy_eval.json` (gitignored) and includes a `paper_gate` block (pass/fail + required capital).
+
+When `--backtest-bars` is left at 180, these two commands expand to about 756 sessions (~3 years) if that much daily history loaded. The loader requests up to ~4 years of daily bars for this path only; the live alert path stays on the shorter default window.
+
+`--small-grid` runs 64 combinations (two levels each) of `MIN_CONFIDENCE_TO_TRADE`, `ENTRY_DOMINANCE_GAP_WEIGHT`, `REGIME_RANGING_THRESHOLD_WEIGHT_ADD`, `FLIP_MIN_HOLD_TRADING_DAYS`, `STOP_LOSS_PCT`, and `TAKE_PROFIT_PCT`. The console and `reports/grid_neighbors.json` report the share of one-step neighbors around the best row that stay profitable (`total_return_pct > 0`). `--backtest-sweep` prints that same neighbor share for whatever grid you configured.
+
+| Env | Parameter |
+|-----|-----------|
+| `WALK_FORWARD_GRID_MIN_CONFIDENCE` | `MIN_CONFIDENCE_TO_TRADE` |
+| `WALK_FORWARD_GRID_DOM_GAP` | `ENTRY_DOMINANCE_GAP_WEIGHT` |
+| `WALK_FORWARD_GRID_RANGE_ADD` | `REGIME_RANGING_THRESHOLD_WEIGHT_ADD` |
+| `WALK_FORWARD_GRID_FLIP_HOLD` | `FLIP_MIN_HOLD_TRADING_DAYS` |
+| `WALK_FORWARD_GRID_FLIP_MARGIN` | `FLIP_MARGIN_WEIGHT` |
+| `WALK_FORWARD_GRID_FLIP_ALLOW_IN_RANGE` | `FLIP_ALLOW_IN_RANGE` (`true`/`false`, comma-separated) |
+
+Example:
+
+```env
+WALK_FORWARD_FOLDS=3
+WALK_FORWARD_GRID_MIN_CONFIDENCE=55,62,70
+WALK_FORWARD_GRID_DOM_GAP=1.0,1.25
+WALK_FORWARD_GRID_RANGE_ADD=0.55,0.65
+WALK_FORWARD_GRID_FLIP_HOLD=3
+WALK_FORWARD_GRID_FLIP_MARGIN=1.25,1.5
+WALK_FORWARD_GRID_FLIP_ALLOW_IN_RANGE=false,true
+```
+
+Backtest report now includes:
+- total trades
+- win rate
+- average return per trade
+- median return per trade (closed legs only)
+- best trade / worst trade
+- max drawdown
+- average hold days
+- FLIP event count
+- CASH no-trade period count
+
+`--backtest-report-csv` exports per-trade rows with:
+`timestamp,action,symbol,entry_price,exit_price,return_pct,hold_days,bull_strength,bear_strength,confidence,regime,reason`
+
+Live Discord alerts:
+
+```bash
+python main.py
+```
+
+After the action line, the bot prints a **technical breakdown**: last bar timestamps, full QQQ daily/4h indicator snapshot, every bull/bear score check that fired, threshold rules, position memory, and (when relevant) hold/exit flags vs stop/TP/max-hold. For a short console log only, use `python main.py --no-technical`.
+
+Tell the bot you have **no brokerage position** (sync bot memory to flat):
+
+```bash
+python main.py --flat
+```
+
+`--flat` and `--set-position` **save bot memory and exit**. They do not fetch data, decide, or send Discord. Use `--flat` once after you’ve closed everything on Robinhood (or on first 
