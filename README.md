@@ -230,4 +230,55 @@ Render Cron containers are **ephemeral** — local `position_state.json` and `lo
 
    Pre-open ticks (9:00/9:15) no-op via market-hours. **Lunch blackout 12:00–1:00 PM ET** (16:00–16:59 UTC in EDT) is enforced in-app (`lunch_blackout_reason`) so the single `*/15` cron can fire at noon without scanning. Useful coverage: ~9:30/9:45–11:45 and 13:00–15:45.
 
-   **Before Manual Sync:** delete old cron services (`tqqq-sqqq-alerts-1000`, `1530`, and any `1030`–`1500` leftovers) so the Blueprint can replace them with `tqqq-sqqq-alerts-daytime` without exceeding the 25-servi
+   **Before Manual Sync:** delete old cron services (`tqqq-sqqq-alerts-1000`, `1530`, and any `1030`–`1500` leftovers) so the Blueprint can replace them with `tqqq-sqqq-alerts-daytime` without exceeding the 25-service cap. Keep env group `tqqq-sqqq-alerts`.
+
+   **API call impact:** each scan historically uses ~18 Alpaca Market Data / trading API calls. ~21 useful weekday slots ≈ **~380 calls/day** (lunch skipped). Same entry rules; paper-only. Do **not** enable live trading.
+
+4. **Seed position** (once) from a machine with the same Supabase env (`POSITION_STATE_BACKEND=supabase` plus URL and service role). These flags **save memory and exit** — they do not fetch data or send Discord:
+
+   ```bash
+   python main.py --set-position TQQQ --entry-price 72.50
+   # or
+   python main.py --flat
+   ```
+
+   Do not add `--set-position` / `--flat` to the Render cron start command (that would skip the alert run). After seeding, weekday crons pick up the row on their own.
+
+5. **Review learning progress** (reads Supabase when `TRADE_LOG_BACKEND=supabase`):
+
+   ```bash
+   python main.py --trade-log-report
+   # Read-only learner digest + gated proposals (no orders; optional --learn-discord)
+   python main.py --learn-from-trades
+   ```
+
+**DST note:** Render cron expressions are UTC. The schedule above assumes Eastern Daylight (UTC−4). In Eastern Standard (UTC−5), shift the UTC hour range +1 (e.g. `*/15 14-20 * * 1-5`; lunch then 17:00–17:59 UTC), or leave the EDT expression and rely on `--market-hours-only` plus the America/New_York lunch guard (jobs may skip or run near the edge of the session).
+
+**Journal CSV / usage JSON** on Render are best-effort only (ephemeral disk). Optional paper orders run first (when armed); Discord is sent **before** position is persisted so a webhook failure can retry on the next cron. Discord remains the durable alert channel. Trade outcomes accumulate in **`public.bot_trade_log`** toward the ≥10 strategy round-trip learning gate — no local `--loop` required for durability.
+
+Optional local backup (same slots; also appends JSONL on disk):
+
+```bash
+# one-time: durable boot autostart (systemd --user or crontab @reboot → tmux loop)
+bash scripts/install_paper_autostart.sh
+
+# leave running (tmux); uses .env paper flags
+python scripts/run_weekday_paper.py --loop
+# or: bash scripts/start_paper_trading.sh
+
+# smoke one slot now
+python scripts/run_weekday_paper.py --once
+
+# print example crontab lines
+python scripts/run_weekday_paper.py --print-cron
+```
+
+### Backtest (optional)
+
+Replays the same scoring and `decide()` rules over recent historical QQQ daily bars (with expanding daily + 4h context). Useful for sanity-checking how often BUY / SELL / FLIP would have fired before trusting live alerts.
+
+**Does not** post Discord, append the CSV journal, or modify `position_state.json`.
+
+**Caveat — QQQ directional proxy only:** reported equity applies QQQ close-to-close moves as a stand-in (long TQQQ ~ positive QQQ return, long SQQQ ~ negative QQQ return). It ignores leveraged ETF mechanics, borrow/fees, spreads, and partial fills. Treat results as rule-frequency / rough regime checks, not predictive performance.
+
+**ETF replay (research only):** `python main.py --etf-backtest` reruns the live `decide()` rules on TQQQ and SQQQ prices. Fills are next-session day limits, 10 bp through the signal close in ETF terms (the same offset as paper orders), and a limit that the next bar never trades is a miss. The report is the earlier two-thirds of the research window. `python main.py --etf-sealed-oos` is the one look at the final third and refuses to run again after `reports/etf_sealed_oos.json` exists. Neither command changes score weights, the cron command, or R
