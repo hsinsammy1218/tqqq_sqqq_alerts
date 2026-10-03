@@ -1,1 +1,1 @@
-$INCLUDE_FROM_FILE
+$file:/tmp/push_contents/tests/test_alpaca_paper.py
