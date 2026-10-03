@@ -411,4 +411,65 @@ Tell the bot you have **no brokerage position** (sync bot memory to flat):
 python main.py --flat
 ```
 
-`--flat` and `--set-position` **save bot memory and exit**. They do not fetch data, decide, or send Discord. Use `--flat` once after you’ve closed everything on Robinhood (or on first 
+`--flat` and `--set-position` **save bot memory and exit**. They do not fetch data, decide, or send Discord. Use `--flat` once after you’ve closed everything on Robinhood (or on first setup). The next **normal** run (`python main.py`) still updates position memory if a BUY signal appears.
+
+Tell the bot you **already hold** TQQQ or SQQQ (e.g. you bought on Robinhood before the bot tracked it):
+
+```bash
+python main.py --set-position TQQQ
+python main.py --set-position TQQQ --entry-price 72.50
+python main.py --set-position SQQQ --entry-price 14.20 --entry-time 2026-05-01T14:30:00Z
+```
+
+Only **which symbol** you hold is required. **`--entry-price`** (your ETF average cost) and **`--entry-time`** are optional: if you skip price, stop/target math uses **QQQ’s daily close** as a stand-in; if you skip time, **max hold** starts from the **first bot run** that finishes after this sync.
+
+Persistent position memory defaults to `position_state.json` (path via `POSITION_STATE_JSON`). On Render (or any ephemeral host), set `POSITION_STATE_BACKEND=supabase` so the same fields live in `public.bot_position_state` (row key `POSITION_STATE_BOT_ID`). The bot writes canonical keys:
+
+| Field | Meaning |
+|-------|---------|
+| `symbol` | `"TQQQ"`, `"SQQQ"`, or `null` when flat |
+| `entry_price` | ETF average cost or `null` (QQQ close proxy for exits) |
+| `entry_time` | ISO timestamp when opened or `null` |
+| `last_signal` | Last alert-side transition (`BUY`, `SELL`, `FLIP`, `CASH`, `MANUAL_SET`, `MANUAL_FLAT`, …) |
+| `updated_at` | UTC ISO8601 when this record was last saved |
+
+Legacy keys `active_symbol` / `entry_timestamp` are still read on load for backward compatibility.
+
+Manual sync examples match [`position_state.example.json`](position_state.example.json):
+
+```json
+{
+  "symbol": "TQQQ",
+  "entry_price": 72.5,
+  "entry_time": "2026-05-01T14:30:00Z",
+  "last_signal": "MANUAL_SET",
+  "updated_at": "2026-05-01T16:00:00Z"
+}
+```
+
+Flat recovery (after closing everything at the broker):
+
+```json
+{
+  "symbol": null,
+  "entry_price": null,
+  "entry_time": null,
+  "last_signal": "MANUAL_FLAT",
+  "updated_at": "2026-05-01T16:00:00Z"
+}
+```
+
+If the **file** backend is missing, unreadable JSON, or has an invalid `symbol`, the bot prints `[position] …` and **starts flat** (never crashes). The **Supabase** backend fail-closes instead: API errors and invalid rows abort the run so a corrupt cloud row cannot be treated as flat. To recover a file: delete `position_state.json`, run `python main.py --flat`, or paste a valid JSON object from the example.
+
+Use `null` for `entry_price` / `entry_time` when you only want the bot to know the side. Prefer `python main.py --flat` / `--set-position` over hand-editing when possible.
+
+## Decision rules
+
+Legacy knobs `BULL_ENTRY_THRESHOLD`, `BEAR_ENTRY_THRESHOLD`, `WEAK_SCORE_THRESHOLD` stay on a **0–8 scale**; internally they map to **weighted-sum targets** (same logic as before when every weight is `1`).
+
+- BUY TQQQ when **weighted bull sum ≥ effective bull target**, **weighted bear sum < effective bear target**, flat, not blocked.
+- BUY SQQQ when **weighted bear sum ≥ effective bear target**, **weighted bull sum < effective bull target**, flat, not blocked.
+- Flat BUY additionally requires **normalized confidence ≥ `MIN_CONFIDENCE_TO_TRADE`** (below → CASH). **`--high-confidence-only`** raises that cutoff to **75%**.
+- **Effective targets** shift by regime (stricter in `range`, slightly easier with the trend in `trend_up` / `trend_down`).
+- FLIP when the opposite side clears its effective threshold **and** flip-suppression rules pass (otherwise HOLD with a note).
+- CASH when mixed/weak/conflicting while flat, or HOLD
