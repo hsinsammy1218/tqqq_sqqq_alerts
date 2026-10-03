@@ -1,0 +1,163 @@
+        try:
+                compare_payload = compare_checklist_variants(
+                    candles,
+                    anchor_date=settings.anchor_date or None,
+                    blocked_dates=blocked_dates,
+                    strategy_params=strategy_params,
+                    bars=eval_bars,
+                    decide_options=research_decide_options,
+                    data_window=data_window,
+                    entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                    exit_slippage_bps=settings.backtest_exit_slippage_bps,
+                )
+            except ValueError as exc:
+                print(f"Checklist compare error: {exc}")
+                return 1
+            print(format_checklist_compare_report(compare_payload))
+            try:
+                write_json(args.checklist_compare_json, compare_payload)
+                print(f"Checklist compare JSON written: {args.checklist_compare_json}")
+            except OSError as exc:
+                print(f"Checklist compare export error: {exc}")
+                return 1
+            if not args.strategy_eval and not args.small_grid:
+                return 0
+        plateau_rows = None
+        if args.small_grid:
+            try:
+                grid = small_research_grid(settings)
+                print(
+                    f"Small grid: {grid.combination_count} combinations on {eval_bars} bars "
+                    f"({data_window['daily_start']} -> {data_window['daily_end']}, "
+                    f"{data_window['daily_bars_loaded']} daily bars loaded)."
+                )
+                plateau_rows = run_parameter_sweep(
+                    candles,
+                    anchor_date=settings.anchor_date or None,
+                    blocked_dates=blocked_dates,
+                    base_params=strategy_params,
+                    bars=eval_bars,
+                    grid=grid,
+                    debug_strategy=args.debug_strategy,
+                    decide_options=research_decide_options,
+                    entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                    exit_slippage_bps=settings.backtest_exit_slippage_bps,
+                )
+            except ValueError as exc:
+                print(f"Small grid error: {exc}")
+                return 1
+            grid_payload = grid_neighbors_payload(
+                plateau_rows,
+                ticker=settings.qqq_ticker,
+                bars=eval_bars,
+                data_window=data_window,
+            )
+            share = grid_payload.get("profitable_neighbor_share")
+            share_txt = "n/a" if share is None else f"{float(share) * 100:.1f}%"
+            print(
+                f"Small grid neighbor share around best row: {share_txt} "
+                f"({grid_payload.get('profitable_neighbors')}/{grid_payload.get('neighbor_count')})."
+            )
+            try:
+                write_json(args.small_grid_json, grid_payload)
+                print(f"Small grid JSON written: {args.small_grid_json}")
+            except OSError as exc:
+                print(f"Small grid export error: {exc}")
+                return 1
+            if not args.strategy_eval:
+                return 0
+        try:
+            eval_payload = run_strategy_evaluation(
+                candles,
+                anchor_date=settings.anchor_date or None,
+                blocked_dates=blocked_dates,
+                strategy_params=strategy_params,
+                bars=eval_bars,
+                decide_options=research_decide_options,
+                plateau_rows=plateau_rows,
+                data_window=data_window,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
+            )
+        except ValueError as exc:
+            print(f"Strategy eval error: {exc}")
+            return 1
+        print(format_strategy_eval_report(eval_payload))
+        try:
+            write_json(args.strategy_eval_json, eval_payload)
+            print(f"Strategy eval JSON written: {args.strategy_eval_json}")
+        except OSError as exc:
+            print(f"Strategy eval export error: {exc}")
+            return 1
+        return 0
+
+    if args.backtest_sweep:
+        try:
+            grid = sweep_grid_from_settings(settings)
+            n_combo = grid.combination_count
+            if n_combo > 400:
+                print(f"Warning: sweep has {n_combo} combinations - expect a long run.")
+            if args.debug_strategy:
+                print("[debug-strategy] Sweep: verbose diagnostics for the first grid combination only.")
+            sweep_rows = run_parameter_sweep(
+                candles,
+                anchor_date=settings.anchor_date or None,
+                blocked_dates=blocked_dates,
+                base_params=strategy_params,
+                bars=args.backtest_bars,
+                grid=grid,
+                debug_strategy=args.debug_strategy,
+                decide_options=research_decide_options,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
+            )
+        except ConfigError as exc:
+            print(f"Sweep config error: {exc}")
+            return 1
+        except ValueError as exc:
+            print(f"Backtest error: {exc}")
+            return 1
+        print(
+            format_sweep_report(
+                sweep_rows,
+                ticker=settings.qqq_ticker,
+                bars=args.backtest_bars,
+                combo_count=n_combo,
+            )
+        )
+        if args.backtest_sweep_csv:
+            try:
+                export_sweep_csv(args.backtest_sweep_csv, sweep_rows)
+                print(f"Backtest sweep CSV written: {args.backtest_sweep_csv}")
+            except OSError as exc:
+                print(f"Backtest sweep export error: {exc}")
+                return 1
+        return 0
+
+    if args.backtest:
+        try:
+            bt = run_backtest(
+                candles,
+                anchor_date=settings.anchor_date or None,
+                blocked_dates=blocked_dates,
+                strategy_params=strategy_params,
+                bars=args.backtest_bars,
+                debug_strategy=args.debug_strategy,
+                decide_options=research_decide_options,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
+            )
+        except ValueError as exc:
+            print(f"Backtest error: {exc}")
+            return 1
+        print(format_backtest_report(bt, settings.qqq_ticker))
+        if args.backtest_report_csv:
+            try:
+                export_backtest_trades_csv(args.backtest_report_csv, bt.trade_rows)
+                print(f"Backtest trade CSV written: {args.backtest_report_csv}")
+            except OSError as exc:
+                print(f"Backtest report export error: {exc}")
+                return 1
+        return 0
+
+    tr
