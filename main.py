@@ -574,3 +574,90 @@ def run() -> int:
                 logger=logger,
             )
         except Exception as notify_exc:  # noqa: BLE001
+            print(f"API quota Discord notice failed: {notify_exc}")
+            log_event(logger, logging.ERROR, "API quota Discord notice failed", error=str(notify_exc))
+        return 1
+    except DataError as exc:
+        print(f"Data error: {exc}")
+        _log_cli_usage(settings, logger)
+        log_event(
+            logger,
+            logging.ERROR,
+            "Data fetch failed",
+            error=str(exc),
+            alpaca_api_calls=cli_calls_attempted(),
+        )
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        print(f"Unexpected data/indicator failure: {exc}")
+        log_event(logger, logging.ERROR, "Unexpected data failure", error=str(exc))
+        return 1
+
+    now_utc = datetime.now(timezone.utc)
+    blocked_dates, risk_notes = load_merged_blackout_dates(
+        settings.events_json,
+        risk_avoidance=settings.event_risk_avoidance,
+        risk_calendar_url=settings.event_risk_calendar_url or None,
+    )
+    for msg in risk_notes:
+        print(f"[events] {msg}")
+    log_event(
+        logger,
+        logging.INFO,
+        "Event risk evaluated",
+        risk_avoidance=settings.event_risk_avoidance,
+        blocked_dates_count=len(blocked_dates),
+        risk_notes=risk_notes,
+    )
+    if args.debug_strategy and not is_research:
+        print(
+            "[debug-strategy] Ignored unless combined with --backtest, --backtest-sweep, "
+            "--walk-forward, --strategy-eval, --small-grid, or --checklist-compare."
+        )
+
+    research_decide_options = DecideOptions(
+        debug_sanity_dominate=args.debug_strategy_sanity,
+        high_confidence_only=args.high_confidence_only,
+    )
+
+    if args.etf_backtest or args.etf_sealed_oos:
+        window = research_window or ResearchWindow()
+        try:
+            tqqq_daily = load_daily_bars(
+                "TQQQ",
+                api_key=settings.alpaca_api_key,
+                api_secret=settings.alpaca_api_secret,
+                data_base_url=settings.alpaca_data_base_url,
+                feed=settings.alpaca_data_feed,
+                daily_lookback_days=window.daily_lookback_days,
+                max_daily_bars=window.max_daily_bars,
+            )
+            sqqq_daily = load_daily_bars(
+                "SQQQ",
+                api_key=settings.alpaca_api_key,
+                api_secret=settings.alpaca_api_secret,
+                data_base_url=settings.alpaca_data_base_url,
+                feed=settings.alpaca_data_feed,
+                daily_lookback_days=window.daily_lookback_days,
+                max_daily_bars=window.max_daily_bars,
+            )
+            etf_kwargs = dict(
+                strategy_params=strategy_params,
+                blocked_dates=blocked_dates,
+                anchor_date=settings.anchor_date or None,
+                requested_bars=args.backtest_bars,
+                expand_default=True,
+                cost_bps=float(settings.alpaca_paper_limit_offset_bps),
+                decide_options=research_decide_options,
+            )
+            if args.etf_sealed_oos:
+                if SEAL_PATH.exists():
+                    print(
+                        f"Sealed ETF window already recorded at {SEAL_PATH}. "
+                        "Refusing a second look."
+                    )
+                    return 1
+                evaluation = evaluate_sealed(candles, tqqq_daily, sqqq_daily, **etf_kwargs)
+                print(format_phase_report(evaluation))
+                write_seal(SEAL_PATH, evaluation)
+                print(f"Sealed look recorded: {SEAL_PATH}")
