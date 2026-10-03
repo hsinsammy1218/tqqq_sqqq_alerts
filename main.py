@@ -483,3 +483,29 @@ def run() -> int:
         log_event(
             logger,
             logging.INFO,
+            "Learner digest written",
+            digest_path=args.learn_digest_json,
+            proposals_path=args.learn_proposals_md,
+            source_path=digest.get("source_path"),
+            row_count=digest.get("row_count"),
+            enough_data=digest.get("enough_data"),
+            learn_discord=bool(args.learn_discord),
+        )
+        return 0
+
+    is_research = any(research_flags)
+    webhook_err = _missing_live_webhook_message(settings)
+    if webhook_err and not is_research:
+        print(f"Config error: {webhook_err}")
+        log_event(logger, logging.ERROR, "Live Discord webhook missing", error=webhook_err)
+        return 1
+    if args.market_hours_only and not is_research:
+        skip_reason = cron_skip_reason()
+        if skip_reason is not None:
+            # Lunch blackout is a scan policy (session still open); market-closed covers the rest.
+            if "lunch" in skip_reason:
+                print(f"Skipped: {skip_reason}.")
+                usage_reason = "lunch blackout"
+                log_label = "Lunch blackout skip"
+            else:
+                print(f"Skipped: US equity market is closed ({skip_reason}).")
