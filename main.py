@@ -390,3 +390,52 @@ def run() -> int:
                     entry_timestamp=entry_ts_str,
                     last_signal="MANUAL_SET",
                     updated_at=stamp,
+                )
+            )
+        except PositionStoreError as exc:
+            print(f"Position store error: {exc}")
+            log_event(logger, logging.ERROR, "Manual position set failed", error=str(exc))
+            return 1
+        extra = []
+        if entry_price_f is not None:
+            extra.append(f"@ {entry_price_f}")
+        else:
+            extra.append("entry price unset (exit levels use QQQ daily close as proxy)")
+        if entry_ts_str:
+            extra.append(f"opened {entry_ts_str}")
+        else:
+            extra.append("entry time unset (max hold counts from first successful bot run)")
+        print(f"Position set: {args.set_position} - " + "; ".join(extra) + ".")
+        log_event(
+            logger,
+            logging.INFO,
+            "Manual position set",
+            position_state_path=position_state_label,
+            position_after={
+                "symbol": args.set_position,
+                "entry_price": entry_price_f,
+                "entry_time": entry_ts_str,
+                "last_signal": "MANUAL_SET",
+                "updated_at": stamp,
+            },
+        )
+        return 0
+
+    if args.health_check:
+        return run_health_check(settings, settings.dry_run, logger)
+
+    if args.discord_test:
+        return _run_discord_test(settings, logger)
+
+    if args.trade_log_report:
+        research_dd = load_research_max_dd_pct()
+        try:
+            trade_log_store = trade_log_store_from_settings(settings)
+            payload = run_trade_log_report(
+                trade_log_path=settings.trade_log_jsonl,
+                report_path=args.trade_log_report_json,
+                research_max_dd_pct=research_dd,
+                trade_log_store=trade_log_store,
+            )
+        except (OSError, TradeLogStoreError, ConfigError) as exc:
+            print(f"Trade log report error: {exc}")
