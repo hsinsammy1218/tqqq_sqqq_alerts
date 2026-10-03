@@ -313,3 +313,14 @@ def run() -> int:
         settings = load_settings()
         if args.dry_run:
             settings = settings.__class__(**{**settings.__dict__, "dry_run": True})
+        strategy_params = strategy_params_from_settings(settings)
+        log_event(
+            logger,
+            logging.INFO,
+            "Settings loaded",
+            qqq_ticker=settings.qqq_ticker,
+            position_state_backend=settings.position_state_backend,
+            position_state_json=str(settings.position_state_json),
+            position_state_bot_id=settings.position_state_bot_id,
+            events_json=str(settings.events_json),
+            dry_run=settings.dry_run,
