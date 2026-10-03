@@ -1015,3 +1015,104 @@ def run() -> int:
         latest_h4_candle=h4_label,
     )
 
+    if not args.no_technical:
+        print()
+        print(format_technical_breakdown(snapshot, alert, position, tech_meta, today_iso))
+
+    if submit_orders and block_new_orders:
+        paper_results = []
+        print(f"[alpaca-paper] Orders suppressed after reconcile: {reconcile_reason}")
+        log_event(
+            logger,
+            logging.WARNING,
+            "Alpaca paper orders suppressed",
+            reason=reconcile_reason,
+        )
+    else:
+        paper_results = execute_paper_orders(
+            alert,
+            position,
+            paper_trading=settings.alpaca_paper_trading,
+            dry_run=settings.dry_run,
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            trading_base_url=settings.alpaca_trading_base_url,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
+            fixed_notional=settings.alpaca_paper_notional,
+            equity_pct=settings.alpaca_paper_equity_pct,
+            limit_offset_bps=settings.alpaca_paper_limit_offset_bps,
+            vol_sizing=settings.alpaca_paper_vol_sizing,
+            risk_fraction=settings.alpaca_paper_risk_fraction,
+            vol_stop_mode=settings.alpaca_paper_vol_stop,
+            stop_loss_pct=settings.stop_loss_pct,
+            atr=float(snapshot.daily_atr14),
+            atr_price=float(snapshot.daily_close),
+            atr_stop_mult=settings.alpaca_paper_atr_stop_mult,
+            max_buy_notional=settings.paper_max_buy_notional,
+            tqqq_only=settings.paper_tqqq_only,
+            max_daily_loss_usd=settings.paper_max_daily_loss_usd,
+            max_weekly_loss_usd=settings.paper_max_weekly_loss_usd,
+            discord_webhook_url=settings.discord_webhook_url,
+            logger=logger,
+            trade_log_path=settings.trade_log_jsonl,
+            trade_log_store=trade_log_store_from_settings(settings),
+            source="strategy",
+        )
+    if paper_results:
+        log_event(
+            logger,
+            logging.INFO,
+            "Alpaca paper trading finished",
+            results=[
+                {
+                    "symbol": r.intent.symbol,
+                    "side": r.intent.side,
+                    "purpose": r.intent.purpose,
+                    "ok": r.ok,
+                    "status": r.status,
+                    "order_id": r.order_id,
+                    "detail": r.detail,
+                }
+                for r in paper_results
+            ],
+        )
+
+    broker_check_failed = False
+    if submit_orders:
+        if block_new_orders:
+            print("[position] Not advancing PositionState; reconcile blocked this run.")
+            log_event(
+                logger,
+                logging.INFO,
+                "Position state left unchanged",
+                reason=reconcile_reason,
+            )
+        else:
+            try:
+                broker_after = fetch_broker_snapshot(
+                    api_key=settings.alpaca_api_key,
+                    api_secret=settings.alpaca_api_secret,
+                    trading_base_url=settings.alpaca_trading_base_url,
+                )
+            except PaperTradingError as exc:
+                broker_check_failed = True
+                print(f"[position] Not advancing PositionState; broker check failed: {exc}")
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "Position save skipped; broker check failed",
+                    error=str(exc),
+                )
+            else:
+                matched = state_to_save(new_position, broker_after)
+                if matched is None:
+                    print(
+                        "[position] Not advancing PositionState; "
+                        f"decision={new_position.active_symbol!r} "
+                        f"broker={broker_after.held_symbol()!r}."
+                    )
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "Position state left unchanged",
