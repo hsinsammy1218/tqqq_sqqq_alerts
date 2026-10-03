@@ -439,3 +439,47 @@ def run() -> int:
             )
         except (OSError, TradeLogStoreError, ConfigError) as exc:
             print(f"Trade log report error: {exc}")
+            log_event(logger, logging.ERROR, "Trade log report failed", error=str(exc))
+            return 1
+        print(format_trade_log_report_summary(payload))
+        print(f"Trade log report JSON written: {args.trade_log_report_json}")
+        print(f"Trade log source: {payload.get('source_path')}")
+        log_event(
+            logger,
+            logging.INFO,
+            "Trade log report written",
+            report_path=args.trade_log_report_json,
+            source_path=payload.get("source_path"),
+            row_count=payload.get("row_count"),
+            enough_data_for_rule_changes=payload.get("enough_data_for_rule_changes"),
+        )
+        return 0
+
+    if args.learn_from_trades:
+        research_dd = load_research_max_dd_pct()
+        try:
+            trade_log_store = trade_log_store_from_settings(settings)
+            result = run_learn_from_trades(
+                trade_log_path=settings.trade_log_jsonl,
+                digest_path=args.learn_digest_json,
+                proposals_path=args.learn_proposals_md,
+                research_max_dd_pct=research_dd,
+                trade_log_store=trade_log_store,
+                send_discord=bool(args.learn_discord),
+                discord_webhook_url=settings.discord_webhook_url or "",
+                discord_dry_run=bool(settings.dry_run),
+            )
+        except (OSError, TradeLogStoreError, ConfigError, RuntimeError) as exc:
+            print(f"Learner error: {exc}")
+            log_event(logger, logging.ERROR, "Learner failed", error=str(exc))
+            return 1
+        digest = result["digest"]
+        print(format_learner_summary(digest, result["proposals"]))
+        print(f"Learner digest JSON written: {args.learn_digest_json}")
+        print(f"Learner proposals written: {args.learn_proposals_md}")
+        print(f"Learner source: {digest.get('source_path')}")
+        if args.learn_discord:
+            print("Learner Discord summary requested (--learn-discord).")
+        log_event(
+            logger,
+            logging.INFO,
