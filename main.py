@@ -226,4 +226,56 @@ def run() -> int:
         args.backtest
         or args.backtest_sweep
         or args.strategy_eval
-        or args.small_
+        or args.small_grid
+        or args.checklist_compare
+        or args.trade_log_report
+        or args.learn_from_trades
+    ):
+        print(
+            "Config error: --walk-forward cannot be combined with --backtest, "
+            "--backtest-sweep, --strategy-eval, --small-grid, --checklist-compare, "
+            "--trade-log-report, or --learn-from-trades."
+        )
+        return 1
+    if sum(1 for flag in (args.backtest, args.backtest_sweep) if flag) and (
+        args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.trade_log_report
+        or args.learn_from_trades
+    ):
+        print(
+            "Config error: --strategy-eval / --small-grid / --checklist-compare / "
+            "--trade-log-report / --learn-from-trades cannot be combined with "
+            "--backtest or --backtest-sweep."
+        )
+        return 1
+    if args.trade_log_report and (
+        args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.health_check
+        or args.learn_from_trades
+    ):
+        print(
+            "Config error: --trade-log-report cannot be combined with "
+            "--strategy-eval, --small-grid, --checklist-compare, --health-check, "
+            "or --learn-from-trades."
+        )
+        return 1
+    if args.learn_from_trades and (
+        args.strategy_eval or args.small_grid or args.checklist_compare or args.health_check
+    ):
+        print(
+            "Config error: --learn-from-trades cannot be combined with "
+            "--strategy-eval, --small-grid, --checklist-compare, or --health-check."
+        )
+        return 1
+    if args.learn_discord and not args.learn_from_trades:
+        print("Config error: --learn-discord requires --learn-from-trades.")
+        return 1
+    if args.debug_strategy_sanity and not args.debug_strategy:
+        print("Config error: --debug-strategy-sanity requires --debug-strategy.")
+        return 1
+    logger = setup_logger(args.log_level)
+    run_ts = format_utc_z(datetime.now(timezone.utc))
