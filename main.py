@@ -509,3 +509,61 @@ def run() -> int:
                 log_label = "Lunch blackout skip"
             else:
                 print(f"Skipped: US equity market is closed ({skip_reason}).")
+                usage_reason = "market closed"
+                log_label = "Market hours skip"
+            print(format_cli_usage_line(reason=usage_reason))
+            log_event(logger, logging.INFO, log_label, reason=skip_reason, alpaca_api_calls=0)
+            return 0
+
+    long_research = bool(
+        args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.etf_backtest
+        or args.etf_sealed_oos
+    )
+    research_window = ResearchWindow() if long_research else None
+    try:
+        candle_kwargs: dict[str, int] = {}
+        if research_window is not None:
+            candle_kwargs = {
+                "daily_lookback_days": research_window.daily_lookback_days,
+                "max_daily_bars": research_window.max_daily_bars,
+                "hourly_lookback_days": research_window.hourly_lookback_days,
+                "max_hourly_bars": research_window.max_hourly_bars,
+            }
+        candles = load_candles(
+            ticker=settings.qqq_ticker,
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
+            **candle_kwargs,
+        )
+        last_daily = candles.daily.index[-1]
+        last_h4 = candles.four_hour.index[-1]
+        daily_fetch_label = last_daily.isoformat() if hasattr(last_daily, "isoformat") else str(last_daily)
+        h4_fetch_label = last_h4.isoformat() if hasattr(last_h4, "isoformat") else str(last_h4)
+        log_event(
+            logger,
+            logging.INFO,
+            "Data fetch succeeded",
+            qqq_ticker=settings.qqq_ticker,
+            latest_daily_candle=daily_fetch_label,
+            latest_h4_candle=h4_fetch_label,
+            alpaca_api_calls=cli_calls_attempted(),
+        )
+        _log_cli_usage(settings, logger)
+    except MarketDataQuotaError as exc:
+        print(f"Data error: {exc}")
+        _log_cli_usage(settings, logger, quota_error_detail=str(exc))
+        log_event(
+            logger,
+            logging.ERROR,
+            "Data fetch failed",
+            error=str(exc),
+            quota_exhausted=True,
+            alpaca_api_calls=cli_calls_attempted(),
+        )
+        try:
+            maybe_notify_quota_reached(
