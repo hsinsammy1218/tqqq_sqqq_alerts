@@ -409,3 +409,103 @@ def run() -> int:
         log_event(
             logger,
             logging.INFO,
+            "Manual position set",
+            position_state_path=position_state_label,
+            position_after={
+                "symbol": args.set_position,
+                "entry_price": entry_price_f,
+                "entry_time": entry_ts_str,
+                "last_signal": "MANUAL_SET",
+                "updated_at": stamp,
+            },
+        )
+        return 0
+
+    if args.health_check:
+        return run_health_check(settings, settings.dry_run, logger)
+
+    if args.discord_test:
+        return _run_discord_test(settings, logger)
+
+    if args.trade_log_report:
+        research_dd = load_research_max_dd_pct()
+        try:
+            trade_log_store = trade_log_store_from_settings(settings)
+            payload = run_trade_log_report(
+                trade_log_path=settings.trade_log_jsonl,
+                report_path=args.trade_log_report_json,
+                research_max_dd_pct=research_dd,
+                trade_log_store=trade_log_store,
+            )
+        except (OSError, TradeLogStoreError, ConfigError) as exc:
+            print(f"Trade log report error: {exc}")
+            log_event(logger, logging.ERROR, "Trade log report failed", error=str(exc))
+            return 1
+        print(format_trade_log_report_summary(payload))
+        print(f"Trade log report JSON written: {args.trade_log_report_json}")
+        print(f"Trade log source: {payload.get('source_path')}")
+        log_event(
+            logger,
+            logging.INFO,
+            "Trade log report written",
+            report_path=args.trade_log_report_json,
+            source_path=payload.get("source_path"),
+            row_count=payload.get("row_count"),
+            enough_data_for_rule_changes=payload.get("enough_data_for_rule_changes"),
+        )
+        return 0
+
+    if args.learn_from_trades:
+        research_dd = load_research_max_dd_pct()
+        try:
+            trade_log_store = trade_log_store_from_settings(settings)
+            result = run_learn_from_trades(
+                trade_log_path=settings.trade_log_jsonl,
+                digest_path=args.learn_digest_json,
+                proposals_path=args.learn_proposals_md,
+                research_max_dd_pct=research_dd,
+                trade_log_store=trade_log_store,
+                send_discord=bool(args.learn_discord),
+                discord_webhook_url=settings.discord_webhook_url or "",
+                discord_dry_run=bool(settings.dry_run),
+            )
+        except (OSError, TradeLogStoreError, ConfigError, RuntimeError) as exc:
+            print(f"Learner error: {exc}")
+            log_event(logger, logging.ERROR, "Learner failed", error=str(exc))
+            return 1
+        digest = result["digest"]
+        print(format_learner_summary(digest, result["proposals"]))
+        print(f"Learner digest JSON written: {args.learn_digest_json}")
+        print(f"Learner proposals written: {args.learn_proposals_md}")
+        print(f"Learner source: {digest.get('source_path')}")
+        if args.learn_discord:
+            print("Learner Discord summary requested (--learn-discord).")
+        log_event(
+            logger,
+            logging.INFO,
+            "Learner digest written",
+            digest_path=args.learn_digest_json,
+            proposals_path=args.learn_proposals_md,
+            source_path=digest.get("source_path"),
+            row_count=digest.get("row_count"),
+            enough_data=digest.get("enough_data"),
+            learn_discord=bool(args.learn_discord),
+        )
+        return 0
+
+    is_research = any(research_flags)
+    webhook_err = _missing_live_webhook_message(settings)
+    if webhook_err and not is_research:
+        print(f"Config error: {webhook_err}")
+        log_event(logger, logging.ERROR, "Live Discord webhook missing", error=webhook_err)
+        return 1
+    if args.market_hours_only and not is_research:
+        skip_reason = cron_skip_reason()
+        if skip_reason is not None:
+            # Lunch blackout is a scan policy (session still open); market-closed covers the rest.
+            if "lunch" in skip_reason:
+                print(f"Skipped: {skip_reason}.")
+                usage_reason = "lunch blackout"
+                log_label = "Lunch blackout skip"
+            else:
+                print(f"Skipped: US equity market is closed ({skip_reason}).")
