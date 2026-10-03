@@ -1,0 +1,118 @@
+ false or no risk data is present, behavior matches manual `blocked_dates` only. Missing `events.json` is still OK (no blackout dates).
+
+Optional strategy tuning (baseline **5/5** entry, **3 weak** with trend-tilted checklist weights; chop/range and flip behavior tuned via rows below):
+
+| Variable | Meaning |
+|----------|---------|
+| `SCORE_WEIGHTS` | Eight comma-separated weights for the checklist items (daily→4h→VWAP→volume order); empty = trend-tilted default `1.5,1.5,0.5,1,1.5,1.5,1,0.5` |
+| `REGIME_SEP_ATR_MULT` | \|(EMA20−EMA50)\|/ATR threshold for trending vs chop |
+| `REGIME_SLOPE_ATR_MULT` | Daily EMA20 one-bar slope / ATR threshold |
+| `REGIME_RANGING_THRESHOLD_WEIGHT_ADD` | Extra weighted hurdle for **both** sides in `range` regime |
+| `REGIME_TREND_FAVORABLE_DELTA` | Weight-units easier/harder entry along vs against the trend |
+| `FLIP_MIN_HOLD_TRADING_DAYS` | Full weekdays after entry before an opposite flip is allowed without extra margin |
+| `FLIP_MARGIN_WEIGHT` | Opposite stack must exceed its threshold by this many weight-units to flip early |
+| `ENTRY_DOMINANCE_GAP_WEIGHT` | Minimum weighted bull−bear separation for dominance fallback entry after strict gates fail (`0` disables) |
+| `FLIP_ALLOW_IN_RANGE` | When `false` (default), **no FLIP on reversal** during `range` chop — exit via weaken / stop / TP / max hold only; set `true` to allow reversal flips in range |
+| `MIN_CONFIDENCE_TO_TRADE` | Minimum normalized confidence (0–100) for **flat** BUY TQQQ/SQQQ; weaker dominance → **CASH** (`0` disables). Repo default **62** matches walk-forward rank 1 (`reports/walk_forward_results.csv`). |
+
+## Run
+
+Dry-run:
+
+```bash
+python main.py --dry-run
+```
+
+Dry-run never submits Alpaca paper orders (`ALPACA_PAPER_TRADING` is ignored while `DRY_RUN=true` / `--dry-run`).
+
+Preview a live Discord embed (posts one message; **no** market fetch, **no** paper orders, **no** position change) from the latest journal row, or a sample BUY if the journal is empty:
+
+```bash
+python main.py --discord-test
+```
+
+### Optional Alpaca paper orders
+
+Default is alerts-only. To rehearse execution on Alpaca **paper** (not live, not Robinhood):
+
+1. Use a paper key pair in `.env` (same keys as market data).
+2. Set `ALPACA_PAPER_TRADING=true` and `DRY_RUN=false` (webhook still required by `main` when not dry-run).
+3. Optionally lower size: `ALPACA_PAPER_NOTIONAL=200` or `ALPACA_PAPER_EQUITY_PCT=0.02`.
+4. Run `python main.py --no-technical` and check `[alpaca-paper]` log lines + the Alpaca paper Orders UI.
+5. Turn off with `ALPACA_PAPER_TRADING=false`.
+
+Order mapping: BUY → buy limit; SELL → sell full paper position (skip if flat at broker); FLIP → sell held then buy target. Failures are logged and do not block Discord / journal / bot memory.
+
+Optional risk controls (default **off**): `PAPER_MAX_BUY_NOTIONAL`, `PAPER_TQQQ_ONLY`, `PAPER_MAX_DAILY_LOSS_USD`, `PAPER_MAX_WEEKLY_LOSS_USD` — see `.env.example`. Kill trips block buys, allow sells, and post Discord content `KILL`.
+
+Paper order outcomes append to **`logs/trades.jsonl`** (gitignored; override with `TRADE_LOG_JSONL`) and, when `TRADE_LOG_BACKEND=supabase`, also insert into Supabase `public.bot_trade_log` for durable learning on Render — see `trade_log.py` / `trade_log_store.py`.
+
+Mocked unit tests: `pytest -q tests/test_alpaca_paper.py tests/test_paper_risk.py tests/test_trade_log.py tests/test_trade_log_store.py`.
+
+Optional **stricter flat entries**: require normalized confidence ≥75% (still after `MIN_CONFIDENCE_TO_TRADE`):
+
+```bash
+python main.py --dry-run --high-confidence-only
+```
+
+Same flag applies to `--backtest`, `--backtest-sweep`, and `--walk-forward` research runs.
+
+Set logging verbosity (default `INFO`):
+
+```bash
+python main.py --log-level DEBUG --dry-run
+```
+
+Run non-destructive environment checks:
+
+```bash
+python main.py --health-check --dry-run
+```
+
+Health check verifies:
+- Alpaca API key + secret are configured
+- Market data fetch success (and latest daily/4h bar timestamps)
+- `position_state.json` loadability (or safe recovery to flat with warnings)
+- `events.json` readability if present
+- Discord webhook configuration when not in dry-run mode
+
+## Deploy on Render
+
+Render Cron containers are **ephemeral** — local `position_state.json` and `logs/trades.jsonl` do not survive between runs. Use **Supabase** for position memory **and** the trade learning journal.
+
+1. **Run the migrations** in your Supabase SQL editor (same project as the dashboard), in order:
+
+   - [`dashboard/supabase/migrations/20260714180000_bot_position_state.sql`](./dashboard/supabase/migrations/20260714180000_bot_position_state.sql)
+   - [`dashboard/supabase/migrations/20260930190000_bot_trade_log.sql`](./dashboard/supabase/migrations/20260930190000_bot_trade_log.sql)
+
+2. **Create an Environment Group** in Render named `tqqq-sqqq-alerts` (matches [`render.yaml`](./render.yaml)) with at least:
+
+   | Key | Value |
+   |-----|--------|
+   | `ALPACA_API_KEY` | Alpaca **paper** key id |
+   | `ALPACA_API_SECRET` | Alpaca **paper** secret |
+   | `DISCORD_WEBHOOK_URL` | webhook URL |
+   | `DRY_RUN` | `false` |
+   | `ALPACA_PAPER_TRADING` | `true` (paper latch; live trading host remains blocked in app config) |
+   | `ALPACA_TRADING_BASE_URL` | `https://paper-api.alpaca.markets` (do **not** use the live host) |
+   | `TRADE_LOG_JSONL` | `logs/trades.jsonl` (also written locally each run; ephemeral on Render) |
+   | `TRADE_LOG_BACKEND` | `supabase` (durable `bot_trade_log` inserts) |
+   | `TRADE_LOG_BOT_ID` | `default` (optional; defaults to `POSITION_STATE_BOT_ID`) |
+   | `POSITION_STATE_BACKEND` | `supabase` |
+   | `POSITION_STATE_BOT_ID` | `default` (or another id if you run multiple bots) |
+   | `SUPABASE_URL` | project URL |
+   | `SUPABASE_SERVICE_ROLE_KEY` | service role key |
+
+   Copy any other strategy knobs from your local `.env` as needed. Secrets stay in the Dashboard — never commit `.env`. Live Alpaca host stays blocked; **do not wire Robinhood**.
+
+3. **Deploy the Blueprint**: Dashboard → New → Blueprint → this repo (`render.yaml`). That creates **one** weekday cron — every **15 minutes** during the US equity day — so the workspace stays under Render’s **25-service** limit (was 12 half-hour crons, then briefly 2 swing slots):
+
+   | Service | Local Eastern (EDT) | UTC cron |
+   |---------|---------------------|----------|
+   | `tqqq-sqqq-alerts-daytime` | every 15m 9:00–15:45 ET | `*/15 13-19 * * 1-5` |
+
+   Start command: `python main.py --no-technical --market-hours-only`.
+
+   Pre-open ticks (9:00/9:15) no-op via market-hours. **Lunch blackout 12:00–1:00 PM ET** (16:00–16:59 UTC in EDT) is enforced in-app (`lunch_blackout_reason`) so the single `*/15` cron can fire at noon without scanning. Useful coverage: ~9:30/9:45–11:45 and 13:00–15:45.
+
+   **Before Manual Sync:** delete old cron services (`tqqq-sqqq-alerts-1000`, `1530`, and any `1030`–`1500` leftovers) so the Blueprint can replace them with `tqqq-sqqq-alerts-daytime` without exceeding the 25-servi
