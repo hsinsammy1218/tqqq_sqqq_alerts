@@ -226,4 +226,6 @@ def run() -> int:
         args.backtest
         or args.backtest_sweep
         or args.strategy_eval
-        or args.small_
+        or args.small_grid
+        or args.checklist_compare
+        or args.trade_log_report
