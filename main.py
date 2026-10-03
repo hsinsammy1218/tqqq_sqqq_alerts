@@ -330,3 +330,10 @@ def run() -> int:
         )
     except ConfigError as exc:
         print(f"Config error: {exc}")
+        log_event(logger, logging.ERROR, "Config load failed", error=str(exc))
+        return 1
+
+    try:
+        position_store = position_store_from_settings(settings)
+    except ConfigError as exc:
+        print(f"Config error: {exc}")
