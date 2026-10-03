@@ -1,1 +1,1 @@
-PLACEHOLDER_LOAD_FROM_/tmp/push_contents/tests/test_alpaca_paper.py
+$file:/tmp/push_contents/tests/test_alpaca_paper.py
