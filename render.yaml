@@ -1,4 +1,4 @@
-# Render Blueprint: weekday paper-learning alert crons (US Eastern / EDT = UTC-4).
+# Render Blueprint: weekday paper-learning alert cron (US Eastern / EDT = UTC-4).
 # After apply: fill secret values for the tqqq-sqqq-alerts env group in the Dashboard.
 # Requires POSITION_STATE_BACKEND=supabase and TRADE_LOG_BACKEND=supabase so position
 # and the learning journal survive ephemeral disks.
@@ -11,30 +11,26 @@
 #   dashboard/supabase/migrations/20260714180000_bot_position_state.sql
 #   dashboard/supabase/migrations/20260930190000_bot_trade_log.sql
 #
-# Cadence: 2 swing-slot scans/weekday — 10:00 and 15:30 ET only.
-# (Was 12 half-hour crons; shrunk to stay under Render's 25-service workspace limit.)
-# Schedules below assume Eastern Daylight (EDT = UTC-4).
-# Winter (EST = UTC-5): shift each schedule one hour later, or rely on
-# --market-hours-only and accept occasional skip near the edges.
+# Cadence: ONE cron service, every 15 minutes during the US equity day.
+# Schedule (EDT = UTC-4): */15 13-19 * * 1-5 → 9:00–15:45 ET weekdays.
+# --market-hours-only no-ops pre-open (9:00/9:15) and enforces lunch blackout
+# 12:00–12:59 ET (16:00–16:59 UTC in EDT) via lunch_blackout_reason in market_hours.py.
+# First useful slots include 9:30/9:45 through 11:45, then 13:00 through afternoon.
+# One service stays under Render's 25-service workspace limit (was 12 half-hour crons).
 #
-# Docs: README.md → "Deploy on Render"; store docs/trade-learning-log.md
+# Winter (EST = UTC-5): shift the UTC hour range one hour later
+# (e.g. */15 14-20 * * 1-5); lunch then falls at 17:00–17:59 UTC. Or leave the
+# EDT expression and rely on --market-hours-only / lunch guard (America/New_York
+# wall-clock) for occasional skip / edge-of-session runs near DST boundaries.
+#
+# Docs: README.md → "Deploy on Render"; store docs/cloud-setup-supabase-render.md
 
 services:
   - type: cron
-    name: tqqq-sqqq-alerts-1000
+    name: tqqq-sqqq-alerts-daytime
     runtime: python
     plan: starter
-    schedule: "0 14 * * 1-5"
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py --no-technical --market-hours-only
-    envVars:
-      - fromGroup: tqqq-sqqq-alerts
-
-  - type: cron
-    name: tqqq-sqqq-alerts-1530
-    runtime: python
-    plan: starter
-    schedule: "30 19 * * 1-5"
+    schedule: "*/15 13-19 * * 1-5"
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py --no-technical --market-hours-only
     envVars:
