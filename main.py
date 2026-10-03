@@ -324,3 +324,9 @@ def run() -> int:
             position_state_bot_id=settings.position_state_bot_id,
             events_json=str(settings.events_json),
             dry_run=settings.dry_run,
+            alpaca_paper_trading=settings.alpaca_paper_trading,
+            alpaca_trading_base_url=settings.alpaca_trading_base_url,
+            log_level=args.log_level,
+        )
+    except ConfigError as exc:
+        print(f"Config error: {exc}")
