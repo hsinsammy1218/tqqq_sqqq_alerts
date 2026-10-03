@@ -374,4 +374,206 @@ def format_alert_message(
     action = _action_line(alert, position_before=position_before, technical_meta=technical_meta)
     summary = _summary_line(alert, position_before=position_before, technical_meta=technical_meta)
     sq_line = f"Signal quality: {alert.signal_quality}\n" if alert.signal_quality else ""
-  
+    levels = ""
+    if _show_trade_levels(alert):
+        levels = (
+            f"Entry zone (QQQ): {alert.entry_zone_low:.2f} - {alert.entry_zone_high:.2f}\n"
+            f"Stop loss: {alert.stop_loss:.2f}\n"
+            f"Take profit: {alert.take_profit:.2f}\n"
+            f"Stretch target: {alert.stretch_take_profit:.2f}\n"
+            f"Max hold date: {alert.max_hold_date or 'N/A'}\n"
+        )
+    return (
+        f"{action}\n"
+        f"{summary}\n"
+        f"(You trade manually - alerts only, no broker execution.)\n"
+        f"\n"
+        f"Alert: {alert.alert_type}\n"
+        f"Symbol: {_display_symbol(alert.symbol)}\n"
+        f"QQQ trend: {alert.qqq_trend_reason}\n"
+        f"Bullish strength: {alert.bullish_score}/100 (weighted checklist)\n"
+        f"Bearish strength: {alert.bearish_score}/100 (weighted checklist)\n"
+        f"Stack dominance: {alert.confidence_score}%\n"
+        f"{sq_line}"
+        f"{levels}"
+        f"Timestamp: {alert.timestamp}\n"
+        f"Why: {alert.notes}"
+    )
+
+
+def send_discord(
+    webhook_url: str,
+    alert: AlertDecision,
+    dry_run: bool,
+    *,
+    snapshot: IndicatorSnapshot | None = None,
+    position_before: PositionState | None = None,
+    technical_meta: RunTechnicalMeta | None = None,
+    today_iso: str | None = None,
+    paper_results: Sequence[Any] | None = None,
+    preview: bool = False,
+) -> None:
+    embed = build_discord_embed(
+        alert,
+        snapshot=snapshot,
+        position_before=position_before,
+        technical_meta=technical_meta,
+        today_iso=today_iso,
+        paper_results=paper_results,
+        preview=preview,
+    )
+    payload: dict[str, object] = {
+        "username": "QQQ Swing Alerts",
+        "embeds": [embed],
+    }
+
+    if dry_run:
+        print("[DRY RUN] Discord payload:")
+        print(json.dumps(payload, indent=2))
+        return
+    if not webhook_url:
+        print("[Live] No DISCORD_WEBHOOK_URL - skipping Discord (journal + console only).")
+        return
+
+    response = requests.post(webhook_url, json=payload, timeout=15)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Discord webhook failed: {response.status_code} {response.text}")
+
+
+def send_discord_kill_alert(
+    webhook_url: str,
+    *,
+    reason: str,
+    dry_run: bool,
+    equity: float | None = None,
+    daily_pnl: float | None = None,
+    weekly_pnl: float | None = None,
+) -> None:
+    """Post a conspicuous KILL embed when paper/live loss caps trip. Never raises."""
+    lines = [
+        "**KILL** — paper risk kill switch tripped.",
+        f"Reason: {reason}",
+        "New buys blocked for this run; sells (flatten) still allowed.",
+        "Pause cron / set `ALPACA_PAPER_TRADING=false` if you need a hard stop.",
+    ]
+    if equity is not None:
+        lines.append(f"Equity: ${equity:,.2f}")
+    if daily_pnl is not None:
+        lines.append(f"Daily PnL: ${daily_pnl:,.2f}")
+    if weekly_pnl is not None:
+        lines.append(f"Weekly PnL: ${weekly_pnl:,.2f}")
+    embed = {
+        "title": "KILL — paper risk switch",
+        "description": "\n".join(lines),
+        "color": 0xE74C3C,
+    }
+    payload: dict[str, object] = {
+        "username": "QQQ Swing Alerts",
+        "content": "KILL",
+        "embeds": [embed],
+    }
+    if dry_run:
+        print("[DRY RUN] Discord KILL payload:")
+        print(json.dumps(payload, indent=2))
+        return
+    if not webhook_url:
+        print("[paper-risk] No DISCORD_WEBHOOK_URL — KILL logged to console only.")
+        return
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=15)
+        if response.status_code >= 400:
+            print(
+                f"[paper-risk] Discord KILL webhook failed: "
+                f"{response.status_code} {response.text}"
+            )
+    except requests.RequestException as exc:
+        print(f"[paper-risk] Discord KILL webhook error: {exc}")
+
+
+def _extract_json_object(text: str) -> dict[str, object] | None:
+    idx = text.find("{")
+    if idx < 0:
+        return None
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(text[idx:])
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _parse_api_quota_detail(detail: str) -> dict[str, str | int | None]:
+    parsed: dict[str, str | int | None] = {
+        "message": "Monthly API usage limit reached.",
+        "monthly_limit": None,
+        "total_hits": None,
+        "error_code": None,
+    }
+    payload = _extract_json_object(detail)
+    if payload:
+        code = payload.get("error_code")
+        if isinstance(code, str) and code:
+            parsed["error_code"] = code
+        for key in ("stderr", "stdout", "message"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                parsed["message"] = value.strip()
+                break
+        data = payload.get("data")
+        if isinstance(data, dict):
+            for src, dst in (("monthly_limit", "monthly_limit"), ("total_hits", "total_hits")):
+                raw = data.get(src)
+                if isinstance(raw, int):
+                    parsed[dst] = raw
+                elif isinstance(raw, str) and raw.isdigit():
+                    parsed[dst] = int(raw)
+    else:
+        for line in detail.splitlines():
+            clean = line.strip()
+            if clean and not clean.startswith("HTTPError:") and not clean.startswith("Endpoint:"):
+                parsed["message"] = clean
+                break
+    return parsed
+
+
+parse_api_quota_detail = _parse_api_quota_detail
+
+
+def _usage_meter(used: int, limit: int) -> str:
+    if limit <= 0:
+        return f"**{used}** calls used"
+    pct = min(100, round(100 * used / limit))
+    filled = pct // 10
+    bar = "\u2588" * filled + "\u2591" * (10 - filled)
+    return f"`{bar}`  **{used:,}** / **{limit:,}**  ({pct}%)"
+
+
+def build_api_quota_discord_embed(detail: str, timestamp: str) -> dict[str, object]:
+    info = _parse_api_quota_detail(detail)
+    limit = info["monthly_limit"]
+    hits = info["total_hits"]
+    message = str(info["message"] or "Monthly API usage limit reached.")
+
+    description_lines = [
+        "**Data feed paused** — Alpaca market-data rate/quota limit is blocking fetches.",
+        "",
+        "Scheduled runs can't pull fresh QQQ bars until the limit clears. "
+        "Bot memory and your journal are unchanged; only new alerts are blocked.",
+    ]
+
+    fields: list[dict[str, object]] = []
+    if isinstance(limit, int) and isinstance(hits, int):
+        fields.append(
+            {
+                "name": "API usage this month",
+                "value": _usage_meter(hits, limit),
+                "inline": False,
+            }
+        )
+    else:
+        fields.append({"name": "Status", "value": _truncate(message, 256), "inline": False})
+
+    fields.extend(
+        [
+            {
+                "name": "Quota resets",
+                "value": "When Alpaca rate limits clear (or next calendar month for soft budgets)",
