@@ -577,3 +577,171 @@ def build_api_quota_discord_embed(detail: str, timestamp: str) -> dict[str, obje
             {
                 "name": "Quota resets",
                 "value": "When Alpaca rate limits clear (or next calendar month for soft budgets)",
+                "inline": True,
+            },
+            {
+                "name": "Alerts",
+                "value": "Paused until data fetch succeeds",
+                "inline": True,
+            },
+            {
+                "name": "What you can do",
+                "value": (
+                    "\u2022 Wait for the rate limit to clear, or review your Alpaca data plan\n"
+                    "\u2022 Trade manually from your broker if you still hold TQQQ/SQQQ\n"
+                    "\u2022 Re-run after reset: `python main.py --health-check`"
+                ),
+                "inline": False,
+            },
+        ]
+    )
+
+    if info["error_code"]:
+        fields.append(
+            {
+                "name": "Error code",
+                "value": f"`{info['error_code']}`",
+                "inline": True,
+            }
+        )
+
+    fields.append(
+        {
+            "name": "Technical detail",
+            "value": _truncate(detail.replace("`", "'"), 900),
+            "inline": False,
+        }
+    )
+
+    embed: dict[str, object] = {
+        "title": "Alpaca market data limit reached",
+        "description": "\n".join(description_lines),
+        "color": 0xE67E22,
+        "fields": fields,
+        "footer": {"text": "QQQ swing alerts \u00b7 data provider notice"},
+    }
+    if timestamp:
+        embed["timestamp"] = timestamp
+    return embed
+
+
+def send_discord_api_quota_alert(
+    webhook_url: str,
+    *,
+    detail: str,
+    timestamp: str,
+    dry_run: bool,
+) -> None:
+    embed = build_api_quota_discord_embed(detail, timestamp)
+
+    payload: dict[str, object] = {
+        "username": "QQQ Swing Alerts",
+        "embeds": [embed],
+    }
+
+    if dry_run:
+        print("[DRY RUN] Discord API quota payload:")
+        print(json.dumps(payload, indent=2))
+        return
+    if not webhook_url:
+        print("[Live] No DISCORD_WEBHOOK_URL - skipping API quota Discord notice.")
+        return
+
+    response = requests.post(webhook_url, json=payload, timeout=15)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Discord webhook failed: {response.status_code} {response.text}")
+
+
+def build_api_usage_warning_embed(
+    *,
+    total_calls: int,
+    monthly_limit: int,
+    warn_threshold: int,
+    timestamp: str,
+) -> dict[str, object]:
+    remaining = max(0, monthly_limit - total_calls)
+    pct = min(100, round(100 * total_calls / monthly_limit)) if monthly_limit else 0
+
+    description_lines = [
+        "**Heads up** — you're approaching the local Alpaca API soft budget.",
+        "",
+        "This count is tracked by the bot from runs on this machine "
+        "(scheduled jobs, manual runs, health checks). "
+        "Other Alpaca API use may not be included.",
+    ]
+
+    fields: list[dict[str, object]] = [
+        {
+            "name": "API usage this month",
+            "value": _usage_meter(total_calls, monthly_limit),
+            "inline": False,
+        },
+        {
+            "name": "Warning level",
+            "value": (
+                f"**{warn_threshold:,}** calls "
+                f"({round(100 * warn_threshold / monthly_limit)}% of limit)"
+                if monthly_limit
+                else f"**{warn_threshold:,}** calls"
+            ),
+            "inline": True,
+        },
+        {
+            "name": "Remaining",
+            "value": f"**~{remaining:,}** calls",
+            "inline": True,
+        },
+        {
+            "name": "What you can do",
+            "value": (
+                "\u2022 Avoid extra manual runs and health checks until reset\n"
+                "\u2022 Skip `publish_technical_dashboard.py` if you use it\n"
+                "\u2022 Review your Alpaca data plan if you need more headroom"
+            ),
+            "inline": False,
+        },
+    ]
+
+    embed: dict[str, object] = {
+        "title": "Alpaca usage warning",
+        "description": "\n".join(description_lines),
+        "color": 0xF1C40F,
+        "fields": fields,
+        "footer": {"text": "QQQ swing alerts \u00b7 data provider notice"},
+    }
+    if timestamp:
+        embed["timestamp"] = timestamp
+    return embed
+
+
+def send_discord_api_usage_warning(
+    webhook_url: str,
+    *,
+    total_calls: int,
+    monthly_limit: int,
+    warn_threshold: int,
+    timestamp: str,
+    dry_run: bool,
+) -> None:
+    embed = build_api_usage_warning_embed(
+        total_calls=total_calls,
+        monthly_limit=monthly_limit,
+        warn_threshold=warn_threshold,
+        timestamp=timestamp,
+    )
+    payload: dict[str, object] = {
+        "username": "QQQ Swing Alerts",
+        "embeds": [embed],
+    }
+
+    if dry_run:
+        print("[DRY RUN] Discord API usage warning payload:")
+        print(json.dumps(payload, indent=2))
+        return
+    if not webhook_url:
+        print("[Live] No DISCORD_WEBHOOK_URL - skipping API usage warning.")
+        return
+
+    response = requests.post(webhook_url, json=payload, timeout=15)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Discord webhook failed: {response.status_code} {response.text}")
