@@ -220,26 +220,16 @@ Render Cron containers are **ephemeral** — local `position_state.json` and `lo
 
    Copy any other strategy knobs from your local `.env` as needed. Secrets stay in the Dashboard — never commit `.env`. Live Alpaca host stays blocked; **do not wire Robinhood**.
 
-3. **Deploy the Blueprint**: Dashboard → New → Blueprint → this repo (`render.yaml`). That creates **twelve** weekday crons — every 30 minutes 10:00–15:30 ET (EDT / UTC−4):
+3. **Deploy the Blueprint**: Dashboard → New → Blueprint → this repo (`render.yaml`). That creates **two** weekday crons — swing slots **10:00** and **15:30** ET (EDT / UTC−4). Shrunk from 12 half-hour crons so the workspace stays under Render’s **25-service** limit:
 
    | Service | Local Eastern | UTC cron |
    |---------|---------------|----------|
    | `tqqq-sqqq-alerts-1000` | 10:00 | `0 14 * * 1-5` |
-   | `tqqq-sqqq-alerts-1030` | 10:30 | `30 14 * * 1-5` |
-   | `tqqq-sqqq-alerts-1100` | 11:00 | `0 15 * * 1-5` |
-   | `tqqq-sqqq-alerts-1130` | 11:30 | `30 15 * * 1-5` |
-   | `tqqq-sqqq-alerts-1200` | 12:00 | `0 16 * * 1-5` |
-   | `tqqq-sqqq-alerts-1230` | 12:30 | `30 16 * * 1-5` |
-   | `tqqq-sqqq-alerts-1300` | 13:00 | `0 17 * * 1-5` |
-   | `tqqq-sqqq-alerts-1330` | 13:30 | `30 17 * * 1-5` |
-   | `tqqq-sqqq-alerts-1400` | 14:00 | `0 18 * * 1-5` |
-   | `tqqq-sqqq-alerts-1430` | 14:30 | `30 18 * * 1-5` |
-   | `tqqq-sqqq-alerts-1500` | 15:00 | `0 19 * * 1-5` |
    | `tqqq-sqqq-alerts-1530` | 15:30 | `30 19 * * 1-5` |
 
    Start command: `python main.py --no-technical --market-hours-only`.
 
-   **API call impact:** each scan historically uses ~18 Alpaca Market Data / trading API calls. Twelve weekday scans ≈ **~220 calls/day** (was ~130 at 7 scans). This is intentional “more scans, same entry rules” — do **not** drop to every-minute cadence (that would be thousands of calls/day and risk Alpaca rate limits).
+   **API call impact:** each scan historically uses ~18 Alpaca Market Data / trading API calls. Two weekday scans ≈ **~36 calls/day**. Same entry rules; paper-only. Do **not** enable live trading.
 
 4. **Seed position** (once) from a machine with the same Supabase env (`POSITION_STATE_BACKEND=supabase` plus URL and service role). These flags **save memory and exit** — they do not fetch data or send Discord:
 
