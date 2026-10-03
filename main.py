@@ -682,3 +682,161 @@ def run() -> int:
                 candles,
                 anchor_date=settings.anchor_date or None,
                 blocked_dates=blocked_dates,
+                base_params=strategy_params,
+                bars=args.backtest_bars,
+                grid=wf_grid,
+                n_folds=wf_folds,
+                debug_strategy=args.debug_strategy,
+                decide_options=research_decide_options,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
+            )
+        except ConfigError as exc:
+            print(f"Walk-forward config error: {exc}")
+            return 1
+        except ValueError as exc:
+            print(f"Walk-forward error: {exc}")
+            return 1
+        print(
+            format_walk_forward_report(
+                wf_rows,
+                ticker=settings.qqq_ticker,
+                bars=args.backtest_bars,
+                combo_count=n_wf,
+                n_folds=wf_folds,
+            )
+        )
+        try:
+            export_walk_forward_csv(args.walk_forward_csv, wf_rows)
+            print(f"Walk-forward CSV written: {args.walk_forward_csv}")
+        except OSError as exc:
+            print(f"Walk-forward export error: {exc}")
+            return 1
+        return 0
+
+    if args.strategy_eval or args.small_grid or args.checklist_compare:
+        eval_bars = resolve_research_bars(
+            args.backtest_bars,
+            len(candles.daily),
+            expand_default=True,
+        )
+        data_window = {
+            "daily_bars_loaded": len(candles.daily),
+            "daily_start": candles.daily.index[0].isoformat() if len(candles.daily) else None,
+            "daily_end": candles.daily.index[-1].isoformat() if len(candles.daily) else None,
+            "four_hour_bars_loaded": len(candles.four_hour),
+            "bars_requested": eval_bars,
+            "cli_backtest_bars": args.backtest_bars,
+            "lookback_days_requested": research_window.daily_lookback_days if research_window else None,
+            "note": (
+                "QQQ directional proxy. Live loads stay on the shorter default window. "
+                "Older dates may use a daily-derived 4h fallback when hourly history is shorter. "
+                "Stretch take-profit is not an exit."
+            ),
+        }
+        if args.checklist_compare:
+            try:
+                compare_payload = compare_checklist_variants(
+                    candles,
+                    anchor_date=settings.anchor_date or None,
+                    blocked_dates=blocked_dates,
+                    strategy_params=strategy_params,
+                    bars=eval_bars,
+                    decide_options=research_decide_options,
+                    data_window=data_window,
+                    entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                    exit_slippage_bps=settings.backtest_exit_slippage_bps,
+                )
+            except ValueError as exc:
+                print(f"Checklist compare error: {exc}")
+                return 1
+            print(format_checklist_compare_report(compare_payload))
+            try:
+                write_json(args.checklist_compare_json, compare_payload)
+                print(f"Checklist compare JSON written: {args.checklist_compare_json}")
+            except OSError as exc:
+                print(f"Checklist compare export error: {exc}")
+                return 1
+            if not args.strategy_eval and not args.small_grid:
+                return 0
+        plateau_rows = None
+        if args.small_grid:
+            try:
+                grid = small_research_grid(settings)
+                print(
+                    f"Small grid: {grid.combination_count} combinations on {eval_bars} bars "
+                    f"({data_window['daily_start']} -> {data_window['daily_end']}, "
+                    f"{data_window['daily_bars_loaded']} daily bars loaded)."
+                )
+                plateau_rows = run_parameter_sweep(
+                    candles,
+                    anchor_date=settings.anchor_date or None,
+                    blocked_dates=blocked_dates,
+                    base_params=strategy_params,
+                    bars=eval_bars,
+                    grid=grid,
+                    debug_strategy=args.debug_strategy,
+                    decide_options=research_decide_options,
+                    entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                    exit_slippage_bps=settings.backtest_exit_slippage_bps,
+                )
+            except ValueError as exc:
+                print(f"Small grid error: {exc}")
+                return 1
+            grid_payload = grid_neighbors_payload(
+                plateau_rows,
+                ticker=settings.qqq_ticker,
+                bars=eval_bars,
+                data_window=data_window,
+            )
+            share = grid_payload.get("profitable_neighbor_share")
+            share_txt = "n/a" if share is None else f"{float(share) * 100:.1f}%"
+            print(
+                f"Small grid neighbor share around best row: {share_txt} "
+                f"({grid_payload.get('profitable_neighbors')}/{grid_payload.get('neighbor_count')})."
+            )
+            try:
+                write_json(args.small_grid_json, grid_payload)
+                print(f"Small grid JSON written: {args.small_grid_json}")
+            except OSError as exc:
+                print(f"Small grid export error: {exc}")
+                return 1
+            if not args.strategy_eval:
+                return 0
+        try:
+            eval_payload = run_strategy_evaluation(
+                candles,
+                anchor_date=settings.anchor_date or None,
+                blocked_dates=blocked_dates,
+                strategy_params=strategy_params,
+                bars=eval_bars,
+                decide_options=research_decide_options,
+                plateau_rows=plateau_rows,
+                data_window=data_window,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
+            )
+        except ValueError as exc:
+            print(f"Strategy eval error: {exc}")
+            return 1
+        print(format_strategy_eval_report(eval_payload))
+        try:
+            write_json(args.strategy_eval_json, eval_payload)
+            print(f"Strategy eval JSON written: {args.strategy_eval_json}")
+        except OSError as exc:
+            print(f"Strategy eval export error: {exc}")
+            return 1
+        return 0
+
+    if args.backtest_sweep:
+        try:
+            grid = sweep_grid_from_settings(settings)
+            n_combo = grid.combination_count
+            if n_combo > 400:
+                print(f"Warning: sweep has {n_combo} combinations - expect a long run.")
+            if args.debug_strategy:
+                print("[debug-strategy] Sweep: verbose diagnostics for the first grid combination only.")
+            sweep_rows = run_parameter_sweep(
+                candles,
+                anchor_date=settings.anchor_date or None,
+                blocked_dates=blocked_dates,
