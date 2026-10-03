@@ -1,0 +1,44 @@
+ messaging while in a position without exit/flip.
+- SELL when weak vs weighted threshold, stop/TP, max hold, etc.
+
+Mutual exclusivity is enforced: never hold TQQQ and SQQQ simultaneously.
+
+## Sample Discord alert
+
+Embed shape (colors: green BUY, red SELL, amber FLIP, blue HOLD, gray/orange CASH):
+
+```text
+Title: BUY TQQQ
+Description:
+  BUY TQQQ — consider opening a position
+  QQQ looks bullish (checklist 75/25, dominance 78%) (HIGH).
+  Manual trade · not broker advice
+
+Fields:
+  Symbol        TQQQ
+  Confidence    78% · HIGH
+  Regime        trend_up
+  Strength      Bull 75 · Bear 25
+  Levels (QQQ)  Entry 432.10–439.70 / Stop / TP / Stretch / Max hold
+  Reason        Bullish QQQ setup.
+  Checklist     top bull (or bear) reasons when technical context is available
+  Paper         optional — only when Alpaca paper trading submitted orders
+```
+
+Console text output still includes the longer breakdown. Flat **BUY** alerts include **Signal quality**: **HIGH** when normalized confidence ≥75%, **MEDIUM** when ≥`MIN_CONFIDENCE_TO_TRADE` and below 75%. Non-BUY alerts omit the line.
+
+## Sample CSV journal format
+
+```csv
+timestamp_utc,alert_type,execution_symbol,qqq_trend_reason,bull_score,bear_score,confidence,entry_zone_low,entry_zone_high,stop_price,take_profit_price,take_profit_stretch_price,max_hold_date,notes,signal_quality
+2026-05-01T14:20:00Z,BUY,TQQQ,"daily close > EMA20; daily EMA20 > EMA50 | regime=trend_up",75,25,78,432.1,439.7,400.65,502.13,545.79,2026-05-15,Bullish QQQ setup.,HIGH
+```
+
+Older journal files without the `signal_quality` column may misalign if appended after upgrading; rotate or archive the CSV if needed.
+
+## Notes
+
+- 4h candles are synthesized from Alpaca `1Hour` bars.
+- Data is pulled via Alpaca Market Data (`/v2/stocks/{symbol}/bars` for `1Day` and `1Hour`).
+- Real-time quality depends on your Alpaca data feed (`iex` vs `sip`) and your run cadence.
+- Educational use only. Not financial advice.
