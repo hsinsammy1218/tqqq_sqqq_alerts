@@ -661,3 +661,84 @@ def run() -> int:
                 print(format_phase_report(evaluation))
                 write_seal(SEAL_PATH, evaluation)
                 print(f"Sealed look recorded: {SEAL_PATH}")
+            else:
+                evaluation = evaluate_development(candles, tqqq_daily, sqqq_daily, **etf_kwargs)
+                print(format_phase_report(evaluation))
+        except (ValueError, DataError) as exc:
+            print(f"ETF backtest error: {exc}")
+            return 1
+        return 0
+
+    if args.walk_forward:
+        try:
+            wf_grid = walk_forward_grid_from_settings(settings)
+            wf_folds = walk_forward_fold_count()
+            n_wf = wf_grid.combination_count
+            if n_wf > 200:
+                print(f"Warning: walk-forward grid has {n_wf} combinations - expect a long run.")
+            if args.debug_strategy:
+                print("[debug-strategy] Walk-forward: verbose diagnostics for the first fold of the first grid combination only.")
+            wf_rows = run_walk_forward(
+                candles,
+                anchor_date=settings.anchor_date or None,
+                blocked_dates=blocked_dates,
+                base_params=strategy_params,
+                bars=args.backtest_bars,
+                grid=wf_grid,
+                n_folds=wf_folds,
+                debug_strategy=args.debug_strategy,
+                decide_options=research_decide_options,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
+            )
+        except ConfigError as exc:
+            print(f"Walk-forward config error: {exc}")
+            return 1
+        except ValueError as exc:
+            print(f"Walk-forward error: {exc}")
+            return 1
+        print(
+            format_walk_forward_report(
+                wf_rows,
+                ticker=settings.qqq_ticker,
+                bars=args.backtest_bars,
+                combo_count=n_wf,
+                n_folds=wf_folds,
+            )
+        )
+        try:
+            export_walk_forward_csv(args.walk_forward_csv, wf_rows)
+            print(f"Walk-forward CSV written: {args.walk_forward_csv}")
+        except OSError as exc:
+            print(f"Walk-forward export error: {exc}")
+            return 1
+        return 0
+
+    if args.strategy_eval or args.small_grid or args.checklist_compare:
+        eval_bars = resolve_research_bars(
+            args.backtest_bars,
+            len(candles.daily),
+            expand_default=True,
+        )
+        data_window = {
+            "daily_bars_loaded": len(candles.daily),
+            "daily_start": candles.daily.index[0].isoformat() if len(candles.daily) else None,
+            "daily_end": candles.daily.index[-1].isoformat() if len(candles.daily) else None,
+            "four_hour_bars_loaded": len(candles.four_hour),
+            "bars_requested": eval_bars,
+            "cli_backtest_bars": args.backtest_bars,
+            "lookback_days_requested": research_window.daily_lookback_days if research_window else None,
+            "note": (
+                "QQQ directional proxy. Live loads stay on the shorter default window. "
+                "Older dates may use a daily-derived 4h fallback when hourly history is shorter. "
+                "Stretch take-profit is not an exit."
+            ),
+        }
+        if args.checklist_compare:
+            try:
+                compare_payload = compare_checklist_variants(
+                    candles,
+                    anchor_date=settings.anchor_date or None,
+                    blocked_dates=blocked_dates,
+                    strategy_params=strategy_params,
+                    bars=eval_bars,
