@@ -279,3 +279,62 @@ def run() -> int:
         return 1
     logger = setup_logger(args.log_level)
     run_ts = format_utc_z(datetime.now(timezone.utc))
+    log_event(
+        logger,
+        logging.INFO,
+        "Run started",
+        run_timestamp=run_ts,
+        dry_run_arg=bool(args.dry_run),
+        health_check=bool(args.health_check),
+        no_technical=bool(args.no_technical),
+        backtest_report_csv=args.backtest_report_csv,
+        backtest_sweep=args.backtest_sweep,
+        backtest_sweep_csv=args.backtest_sweep_csv,
+        walk_forward=args.walk_forward,
+        walk_forward_csv=args.walk_forward_csv,
+        strategy_eval=args.strategy_eval,
+        small_grid=args.small_grid,
+        checklist_compare=args.checklist_compare,
+        trade_log_report=args.trade_log_report,
+        learn_from_trades=args.learn_from_trades,
+        learn_discord=args.learn_discord,
+        debug_strategy=args.debug_strategy,
+        debug_strategy_sanity=args.debug_strategy_sanity,
+        high_confidence_only=args.high_confidence_only,
+        market_hours_only=bool(args.market_hours_only),
+    )
+
+    if args.set_position is not None and args.entry_price is not None and args.entry_price <= 0:
+        print("Config error: --entry-price must be positive when provided.")
+        log_event(logger, logging.ERROR, "Invalid CLI args", error="entry-price must be positive")
+        return 1
+
+    try:
+        settings = load_settings()
+        if args.dry_run:
+            settings = settings.__class__(**{**settings.__dict__, "dry_run": True})
+        strategy_params = strategy_params_from_settings(settings)
+        log_event(
+            logger,
+            logging.INFO,
+            "Settings loaded",
+            qqq_ticker=settings.qqq_ticker,
+            position_state_backend=settings.position_state_backend,
+            position_state_json=str(settings.position_state_json),
+            position_state_bot_id=settings.position_state_bot_id,
+            events_json=str(settings.events_json),
+            dry_run=settings.dry_run,
+            alpaca_paper_trading=settings.alpaca_paper_trading,
+            alpaca_trading_base_url=settings.alpaca_trading_base_url,
+            log_level=args.log_level,
+        )
+    except ConfigError as exc:
+        print(f"Config error: {exc}")
+        log_event(logger, logging.ERROR, "Config load failed", error=str(exc))
+        return 1
+
+    try:
+        position_store = position_store_from_settings(settings)
+    except ConfigError as exc:
+        print(f"Config error: {exc}")
+        log_event(logger, logging.ERROR, "Position store init failed", error=str(exc))
