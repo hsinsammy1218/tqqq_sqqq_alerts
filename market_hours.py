@@ -23,6 +23,11 @@ US_EASTERN = ZoneInfo("America/New_York")
 MARKET_OPEN = time(9, 30)
 REGULAR_CLOSE = time(16, 0)
 EARLY_CLOSE = time(13, 0)
+# Cron / scan policy: skip 12:00–12:59 ET (lunch). Not a market-closed state —
+# the session is open; we simply do not want scans in this window.
+# EDT = UTC-4 → 16:00–16:59 UTC; winter EST = UTC-5 → 17:00–17:59 UTC.
+LUNCH_BLACKOUT_START = time(12, 0)
+LUNCH_BLACKOUT_END = time(13, 0)
 
 
 class NYSEHolidayCalendar(AbstractHolidayCalendar):
@@ -103,3 +108,31 @@ def market_closed_reason(now: datetime | None = None) -> str | None:
 
 def is_us_equity_market_open(now: datetime | None = None) -> bool:
     return market_closed_reason(now) is None
+
+
+def lunch_blackout_reason(now: datetime | None = None) -> str | None:
+    """Return a skip reason when ``now`` falls in the 12:00–12:59 ET lunch window.
+
+    Used by the ``--market-hours-only`` cron start path so a single
+    ``*/15 13-19 * * 1-5`` Render cron can no-op at noon without a second service.
+    Wall-clock is always America/New_York (handles EDT/EST automatically).
+    """
+    if now is None:
+        now = datetime.now(US_EASTERN)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=US_EASTERN)
+    else:
+        now = now.astimezone(US_EASTERN)
+
+    t = now.time()
+    if LUNCH_BLACKOUT_START <= t < LUNCH_BLACKOUT_END:
+        return "lunch blackout (12:00–1:00 PM ET)"
+    return None
+
+
+def cron_skip_reason(now: datetime | None = None) -> str | None:
+    """Combined skip for cron runs: market closed, then lunch blackout."""
+    closed = market_closed_reason(now)
+    if closed is not None:
+        return closed
+    return lunch_blackout_reason(now)
