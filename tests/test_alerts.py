@@ -118,6 +118,8 @@ def test_format_alert_message_uses_configured_min_confidence():
     message = format_alert_message(alert, technical_meta=_meta(min_confidence_to_trade=70))
     assert "need >=70%" in message
     assert "below minimum 70%" in message
+    assert "Symbol: No position" in message
+    assert "Alert: CASH" in message
 
 
 def test_action_line_high_confidence_skip_uses_constant():
@@ -208,7 +210,7 @@ def test_blocked_embed_title():
         notes="Entry blocked by event calendar (manual blackout + optional CPI/FOMC/earnings risk dates).",
         notes_kind="blocked",
     )
-    assert _embed_title(alert) == "CASH · Calendar"
+    assert _embed_title(alert) == "No position · Calendar"
 
 
 def test_flat_cash_hides_trade_levels():
@@ -250,7 +252,11 @@ def test_discord_embed_no_zero_levels_for_skipped_entry():
     assert "Symbol" in names
     assert "Regime" in names
     assert "Strength" in names
-    assert _embed_title(alert) == "CASH · Weak TQQQ"
+    assert _embed_title(alert) == "No position · Weak TQQQ"
+    symbol = next(f for f in embed["fields"] if f["name"] == "Symbol")  # type: ignore[index]
+    assert symbol["value"] == "No position (lean TQQQ)"
+    assert alert.alert_type == "CASH"
+    assert alert.symbol == "CASH"
     assert "Manual trade" in embed["description"]  # type: ignore[operator]
     assert "QQQ trend (detail)" not in names
     assert "Rules (reference)" not in names
@@ -286,7 +292,7 @@ def test_discord_embed_action_colors():
     assert _embed_title(hold) == "HOLD TQQQ"
     plain = _cash_alert(notes_kind="other", notes="No high-confidence setup.", confidence_score=0)
     assert _embed_color(plain) == _COLOR_CASH
-    assert _embed_title(plain) == "CASH"
+    assert _embed_title(plain) == "No position"
 
 
 def test_discord_embed_paper_and_preview():
