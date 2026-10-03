@@ -19,6 +19,16 @@ _COLOR_CASH = 0x6B7280
 _COLOR_SKIP = 0xB45309
 _COLOR_BLOCKED = 0x9CA3AF
 
+# Internal decision/symbol id stays "CASH"; this is display-only for Discord/console.
+_NO_POSITION_LABEL = "No position"
+
+
+def _display_symbol(symbol: str | None) -> str:
+    """Map internal CASH id to the user-facing No position label."""
+    if symbol is None or symbol == "" or symbol == "CASH":
+        return _NO_POSITION_LABEL
+    return symbol
+
 
 def _truncate(text: str, max_len: int) -> str:
     text = text.strip()
@@ -73,7 +83,7 @@ def _action_line(
             f"NO TRADE — dominance {alert.confidence_score}% is below "
             f"high-confidence mode (need >={HIGH_SIGNAL_QUALITY_THRESHOLD}%)"
         )
-    return "NO TRADE — stay in cash (no clear entry)"
+    return "NO TRADE — no position (no clear entry)"
 
 
 def _embed_title(alert: AlertDecision) -> str:
@@ -85,15 +95,15 @@ def _embed_title(alert: AlertDecision) -> str:
     if alert.alert_type == "SELL":
         return f"SELL {alert.symbol}"
     if kind == "blocked":
-        return "CASH · Calendar"
+        return f"{_NO_POSITION_LABEL} · Calendar"
     if kind == "holding":
         return f"HOLD {alert.symbol}"
     if kind in ("entry_skipped_confidence", "entry_skipped_high_conf"):
         lead = _leading_etf(alert)
         if lead:
-            return f"CASH · Weak {lead}"
-        return "CASH · Low confidence"
-    return "CASH"
+            return f"{_NO_POSITION_LABEL} · Weak {lead}"
+        return f"{_NO_POSITION_LABEL} · Low confidence"
+    return _NO_POSITION_LABEL
 
 
 def _embed_color(alert: AlertDecision) -> int:
@@ -201,8 +211,8 @@ def _symbol_field(alert: AlertDecision) -> str:
         return alert.symbol
     lead = _leading_etf(alert)
     if lead:
-        return f"CASH (lean {lead})"
-    return "CASH"
+        return f"{_NO_POSITION_LABEL} (lean {lead})"
+    return _NO_POSITION_LABEL
 
 
 def _reason_field(alert: AlertDecision) -> str:
@@ -379,7 +389,7 @@ def format_alert_message(
         f"(You trade manually - alerts only, no broker execution.)\n"
         f"\n"
         f"Alert: {alert.alert_type}\n"
-        f"Symbol: {alert.symbol}\n"
+        f"Symbol: {_display_symbol(alert.symbol)}\n"
         f"QQQ trend: {alert.qqq_trend_reason}\n"
         f"Bullish strength: {alert.bullish_score}/100 (weighted checklist)\n"
         f"Bearish strength: {alert.bearish_score}/100 (weighted checklist)\n"
