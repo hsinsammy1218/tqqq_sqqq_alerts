@@ -188,4 +188,190 @@ def _trade_levels_value(alert: AlertDecision) -> str:
     )
 
 
-def _confidence_field(alert: Aler
+def _confidence_field(alert: AlertDecision, technical_meta: RunTechnicalMeta | None) -> str:
+    min_c = technical_meta.min_confidence_to_trade if technical_meta else None
+    base = f"{alert.confidence_score}%"
+    if alert.signal_quality:
+        base = f"{base} · {alert.signal_quality}"
+    if min_c is not None and alert.alert_type == "CASH" and alert.notes_kind.startswith("entry_skipped"):
+        return f"{base}\n(need ≥{min_c}% to buy)"
+    return base
+
+
+def _regime_label(alert: AlertDecision, technical_meta: RunTechnicalMeta | None) -> str:
+    if technical_meta is not None and technical_meta.regime:
+        return technical_meta.regime
+    return _regime_from_trend(alert.qqq_trend_reason)
+
+
+def _symbol_field(alert: AlertDecision) -> str:
+    if alert.alert_type in ("BUY", "SELL", "FLIP"):
+        return alert.symbol
+    if alert.notes_kind == "holding" and alert.symbol not in ("CASH", ""):
+        return alert.symbol
+    lead = _leading_etf(alert)
+    if lead:
+        return f"{_NO_POSITION_LABEL} (lean {lead})"
+    return _NO_POSITION_LABEL
+
+
+def _reason_field(alert: AlertDecision) -> str:
+    notes = (alert.notes or "").strip()
+    if not notes:
+        return "—"
+    # Prefer a single short sentence; strip redundant "Exit:" prefix already familiar from title.
+    cleaned = notes.removeprefix("Exit: ").strip()
+    return _truncate(cleaned, 280)
+
+
+def format_paper_results_summary(paper_results: Sequence[Any] | None) -> str | None:
+    """Compact one/two-line paper-order outcome for Discord (None if nothing to show)."""
+    if not paper_results:
+        return None
+    parts: list[str] = []
+    for result in paper_results:
+        intent = getattr(result, "intent", None)
+        symbol = getattr(intent, "symbol", "?") if intent is not None else "?"
+        side = getattr(intent, "side", "?") if intent is not None else "?"
+        purpose = getattr(intent, "purpose", "") if intent is not None else ""
+        ok = bool(getattr(result, "ok", False))
+        status = str(getattr(result, "status", "") or ("ok" if ok else "failed"))
+        order_id = getattr(result, "order_id", None)
+        mark = "ok" if ok else "fail"
+        bit = f"{mark}: {side.upper()} {symbol}"
+        if purpose:
+            bit += f" ({purpose})"
+        bit += f" · {status}"
+        if order_id:
+            bit += f" · `{order_id}`"
+        parts.append(bit)
+    return _truncate("\n".join(parts), 500)
+
+
+def build_discord_embed(
+    alert: AlertDecision,
+    *,
+    snapshot: IndicatorSnapshot | None = None,
+    position_before: PositionState | None = None,
+    technical_meta: RunTechnicalMeta | None = None,
+    today_iso: str | None = None,
+    paper_results: Sequence[Any] | None = None,
+    preview: bool = False,
+) -> dict[str, object]:
+    action = _action_line(alert, position_before=position_before, technical_meta=technical_meta)
+    summary = _summary_line(alert, position_before=position_before, technical_meta=technical_meta)
+    regime = _regime_label(alert, technical_meta)
+
+    description_lines = [
+        f"**{action}**",
+        "",
+        summary,
+        "",
+        "_Manual trade · not broker advice_",
+    ]
+    if preview:
+        description_lines.append("_Preview — no new paper orders_")
+
+    fields: list[dict[str, object]] = [
+        {"name": "Symbol", "value": _symbol_field(alert), "inline": True},
+        {"name": "Confidence", "value": _confidence_field(alert, technical_meta), "inline": True},
+        {"name": "Regime", "value": regime, "inline": True},
+        {
+            "name": "Strength",
+            "value": f"Bull {alert.bullish_score} · Bear {alert.bearish_score}",
+            "inline": True,
+        },
+    ]
+
+    if _show_trade_levels(alert):
+        fields.append(
+            {
+                "name": "Levels (QQQ)",
+                "value": _truncate(_trade_levels_value(alert), 1024),
+                "inline": False,
+            }
+        )
+
+    fields.append({"name": "Reason", "value": _reason_field(alert), "inline": False})
+
+    enriched = (
+        snapshot is not None
+        and technical_meta is not None
+        and position_before is not None
+        and today_iso is not None
+    )
+    if enriched:
+        _bull, _bear, bull_reasons, bear_reasons = score_signals(snapshot, technical_meta.score_weights)
+        lead = _leading_etf(alert)
+        if lead == "TQQQ" or (lead is None and alert.bullish_score >= alert.bearish_score):
+            checklist_name = "Checklist (bull)"
+            checklist_value = _checklist_summary(bull_reasons)
+        else:
+            checklist_name = "Checklist (bear)"
+            checklist_value = _checklist_summary(bear_reasons)
+        fields.append({"name": checklist_name, "value": checklist_value, "inline": False})
+
+        qqq_line = (
+            f"D {snapshot.daily_close:.2f} · EMA20 {snapshot.daily_ema20:.2f} / "
+            f"{snapshot.daily_ema50:.2f} · RSI {snapshot.daily_rsi14:.1f}"
+        )
+        fields.append({"name": "QQQ", "value": _truncate(qqq_line, 256), "inline": False})
+
+        if position_before.active_symbol:
+            mem = position_before.active_symbol
+            if position_before.entry_price is not None:
+                mem += f" @ {position_before.entry_price:g}"
+            fields.append({"name": "Bot memory", "value": _truncate(mem, 256), "inline": True})
+
+        exit_line = hold_exit_summary_line(snapshot, alert, position_before, technical_meta, today_iso)
+        if exit_line:
+            fields.append(
+                {
+                    "name": "Exit flags",
+                    "value": _truncate(
+                        exit_line.replace("weaken=", "weakened=").replace("_hit=", " "),
+                        400,
+                    ),
+                    "inline": False,
+                }
+            )
+
+    paper_line = format_paper_results_summary(paper_results)
+    if paper_line:
+        fields.append({"name": "Paper", "value": paper_line, "inline": False})
+
+    footer_text = "QQQ swing alerts · TQQQ / SQQQ"
+    if preview:
+        footer_text += " · preview"
+    else:
+        footer_text += " · not financial advice"
+
+    embed: dict[str, object] = {
+        "title": _embed_title(alert),
+        "description": "\n".join(description_lines),
+        "color": _embed_color(alert),
+        "fields": fields,
+        "footer": {"text": footer_text},
+    }
+
+    if alert.timestamp:
+        embed["timestamp"] = alert.timestamp
+
+    return embed
+
+
+def _regime_from_trend(trend: str) -> str:
+    m = re.search(r"regime=(\w+)", trend)
+    return m.group(1) if m else "—"
+
+
+def format_alert_message(
+    alert: AlertDecision,
+    *,
+    position_before: PositionState | None = None,
+    technical_meta: RunTechnicalMeta | None = None,
+) -> str:
+    action = _action_line(alert, position_before=position_before, technical_meta=technical_meta)
+    summary = _summary_line(alert, position_before=position_before, technical_meta=technical_meta)
+    sq_line = f"Signal quality: {alert.signal_quality}\n" if alert.signal_quality else ""
+  
