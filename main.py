@@ -840,3 +840,110 @@ def run() -> int:
                 candles,
                 anchor_date=settings.anchor_date or None,
                 blocked_dates=blocked_dates,
+                base_params=strategy_params,
+                bars=args.backtest_bars,
+                grid=grid,
+                debug_strategy=args.debug_strategy,
+                decide_options=research_decide_options,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
+            )
+        except ConfigError as exc:
+            print(f"Sweep config error: {exc}")
+            return 1
+        except ValueError as exc:
+            print(f"Backtest error: {exc}")
+            return 1
+        print(
+            format_sweep_report(
+                sweep_rows,
+                ticker=settings.qqq_ticker,
+                bars=args.backtest_bars,
+                combo_count=n_combo,
+            )
+        )
+        if args.backtest_sweep_csv:
+            try:
+                export_sweep_csv(args.backtest_sweep_csv, sweep_rows)
+                print(f"Backtest sweep CSV written: {args.backtest_sweep_csv}")
+            except OSError as exc:
+                print(f"Backtest sweep export error: {exc}")
+                return 1
+        return 0
+
+    if args.backtest:
+        try:
+            bt = run_backtest(
+                candles,
+                anchor_date=settings.anchor_date or None,
+                blocked_dates=blocked_dates,
+                strategy_params=strategy_params,
+                bars=args.backtest_bars,
+                debug_strategy=args.debug_strategy,
+                decide_options=research_decide_options,
+                entry_slippage_bps=settings.backtest_entry_slippage_bps,
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
+            )
+        except ValueError as exc:
+            print(f"Backtest error: {exc}")
+            return 1
+        print(format_backtest_report(bt, settings.qqq_ticker))
+        if args.backtest_report_csv:
+            try:
+                export_backtest_trades_csv(args.backtest_report_csv, bt.trade_rows)
+                print(f"Backtest trade CSV written: {args.backtest_report_csv}")
+            except OSError as exc:
+                print(f"Backtest report export error: {exc}")
+                return 1
+        return 0
+
+    try:
+        snapshot = build_snapshot(candles.daily, candles.four_hour, settings.anchor_date or None)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Unexpected indicator failure: {exc}")
+        log_event(logger, logging.ERROR, "Indicator build failed", error=str(exc))
+        return 1
+
+    try:
+        position, position_warnings = position_store.load()
+    except PositionStoreError as exc:
+        print(f"Position store error: {exc}")
+        log_event(logger, logging.ERROR, "Position state load failed", error=str(exc))
+        return 1
+    for msg in position_warnings:
+        print(f"[position] {msg}")
+    log_event(
+        logger,
+        logging.WARNING if position_warnings else logging.INFO,
+        "Position state loaded",
+        position_state_path=position_state_label,
+        warnings=position_warnings,
+        position_before=_position_to_dict(position),
+    )
+    submit_orders = should_submit_paper_orders(
+        paper_trading=settings.alpaca_paper_trading,
+        dry_run=settings.dry_run,
+    )
+    block_new_orders = False
+    reconcile_reason = ""
+    if submit_orders:
+        try:
+            broker_before = fetch_broker_snapshot(
+                api_key=settings.alpaca_api_key,
+                api_secret=settings.alpaca_api_secret,
+                trading_base_url=settings.alpaca_trading_base_url,
+            )
+        except PaperTradingError as exc:
+            block_new_orders = True
+            reconcile_reason = f"broker snapshot failed; not submitting orders ({exc})"
+        else:
+            rec = reconcile_at_start(position, broker_before)
+            position = rec.position_for_decide
+            block_new_orders = rec.block_new_orders
+            reconcile_reason = rec.reason
+        print(f"[position] {reconcile_reason}")
+        log_event(
+            logger,
+            logging.WARNING if block_new_orders else logging.INFO,
+            "Position reconciled",
+            reason=reconcile_reason,
