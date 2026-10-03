@@ -16,11 +16,16 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
-# Swing slots only: 10:00 and 15:30 ET weekdays (2 scans/weekday).
-# Matches render.yaml (shrunk from 12 half-hour crons for Render service limits).
-DEFAULT_SLOTS: tuple[tuple[int, int], ...] = (
-    (10, 0),
-    (15, 30),
+# Every 15 minutes: morning 9:45–11:45 ET, afternoon 13:00–15:45 ET (lunch skipped).
+# Matches Render Blueprint cron `*/15 13-19 * * 1-5` (EDT = UTC-4 → 9:00–15:45 ET);
+# --market-hours-only no-ops pre-open and enforces 12:00–12:59 ET lunch blackout.
+# One cron service stays under Render's 25-service limit (was 12, then 2 swing slots).
+# Winter EST (UTC-5): shift UTC hours +1, or rely on America/New_York guards.
+DEFAULT_SLOTS: tuple[tuple[int, int], ...] = tuple(
+    (h, m)
+    for h in range(9, 16)
+    for m in (0, 15, 30, 45)
+    if ((h, m) >= (9, 45) and (h, m) < (12, 0)) or ((h, m) >= (13, 0) and (h, m) <= (15, 45))
 )
 
 
@@ -112,6 +117,9 @@ def print_cron_lines(slots: tuple[Slot, ...], repo: Path) -> None:
             f">> logs/weekday_paper_cron.log 2>&1"
         )
     print()
+    print("# Render Blueprint (single service; EDT = UTC-4):")
+    print("#   */15 13-19 * * 1-5  → tqqq-sqqq-alerts-daytime")
+    print("# Lunch 12:00–12:59 ET is skipped in-app (lunch_blackout_reason), not by cron.")
     print("# EST winter (UTC-5) — shift hours +1 vs EDT lines above, or use --loop.")
 
 
@@ -120,7 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Local weekday paper-alert scheduler for trade-learning accumulation. "
             "Runs: python main.py --no-technical --market-hours-only "
-            "at 10:00 and 15:30 America/New_York on weekdays."
+            "every 15 minutes 9:45–11:45 and 13:00–15:45 America/New_York on weekdays "
+            "(lunch 12:00–1:00 PM ET skipped)."
         )
     )
     mode = p.add_mutually_exclusive_group(required=True)
@@ -140,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Comma-separated HH:MM Eastern times "
-            "(default 10:00,15:30)."
+            "(default 9:45–11:45 and 13:00–15:45 every 15m; lunch skipped)."
         ),
     )
     p.add_argument(
