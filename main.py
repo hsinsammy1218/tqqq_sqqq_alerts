@@ -1,1 +1,1 @@
-$file:/tmp/rh-agent-ready/main.py
+IGNORE
