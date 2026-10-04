@@ -152,6 +152,11 @@ def load_settings() -> Settings:
         raise ConfigError("ALPACA_PAPER_NOTIONAL must be >= 0.")
     if alpaca_paper_equity_pct < 0:
         raise ConfigError("ALPACA_PAPER_EQUITY_PCT must be >= 0.")
+    if alpaca_paper_equity_pct > 1:
+        raise ConfigError(
+            "ALPACA_PAPER_EQUITY_PCT is a fraction of paper equity "
+            "(0.15 = 15%), not a whole percent. Values above 1 are rejected."
+        )
     if alpaca_paper_limit_offset_bps < 0:
         raise ConfigError("ALPACA_PAPER_LIMIT_OFFSET_BPS must be >= 0.")
     alpaca_paper_vol_sizing = _to_bool(os.getenv("ALPACA_PAPER_VOL_SIZING", "false"), default=False)

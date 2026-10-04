@@ -1,7 +1,8 @@
 # Render Blueprint: weekday paper-learning alert cron (US Eastern / EDT = UTC-4).
 # After apply / Manual Sync: fill secrets in the tqqq-sqqq-alerts env group and
-# confirm paper risk keys (USD, gates ON): PAPER_MAX_BUY_NOTIONAL=300,
-# PAPER_MAX_DAILY_LOSS_USD=25, PAPER_MAX_WEEKLY_LOSS_USD=60, PAPER_TQQQ_ONLY=false.
+# confirm paper risk keys: ALPACA_PAPER_EQUITY_PCT=0.15 (fraction, 15% of equity —
+# NOT 15), PAPER_MAX_BUY_NOTIONAL=300 (USD hard cap), PAPER_MAX_DAILY_LOSS_USD=25,
+# PAPER_MAX_WEEKLY_LOSS_USD=60, PAPER_TQQQ_ONLY=false.
 # Requires POSITION_STATE_BACKEND=supabase and TRADE_LOG_BACKEND=supabase so position
 # and the learning journal survive ephemeral disks.
 #
@@ -58,12 +59,17 @@ envVarGroups:
         value: https://paper-api.alpaca.markets
       - key: TRADE_LOG_JSONL
         value: logs/trades.jsonl
-      # Paper risk box (Path B only). Units are USD dollars, not percents.
-      # 0 / empty / false = gate OFF in code. These defaults turn the gates ON.
-      # Sized for a ~$1,000 paper sleeve: daily ~2.5%, weekly ~6%.
-      # PAPER_MAX_BUY_NOTIONAL is a hard USD cap per buy (clamps ALPACA_PAPER_NOTIONAL).
+      # Paper risk box (Path B only). Still paper-api; never live Alpaca.
+      # Buy size = paper equity × ALPACA_PAPER_EQUITY_PCT (fraction: 0.15 = 15%).
+      # Do NOT paste 15 — that would mean 15× equity. Code rejects values > 1.
+      # PAPER_MAX_BUY_NOTIONAL is a hard USD cap per buy (clamps equity-% and
+      # ALPACA_PAPER_NOTIONAL fallback). ALPACA_PAPER_NOTIONAL stays the fallback
+      # when equity fetch fails (config default 500, then clamped to this cap).
+      # Kill keys are USD dollars, not percents. 0 / empty / false = that gate OFF.
       # Do not set PAPER_TQQQ_ONLY=true — one book trades both TQQQ and SQQQ.
       # Never set ALPACA_TRADING_BASE_URL to https://api.alpaca.markets.
+      - key: ALPACA_PAPER_EQUITY_PCT
+        value: "0.15"
       - key: PAPER_MAX_BUY_NOTIONAL
         value: "300"
       - key: PAPER_MAX_DAILY_LOSS_USD

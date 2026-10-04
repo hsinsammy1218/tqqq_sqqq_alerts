@@ -65,6 +65,44 @@ def test_select_buy_notional_respects_cap():
     assert mode == "fixed_notional_capped"
 
 
+def test_select_buy_notional_equity_pct_is_fraction_then_usd_cap():
+    """ALPACA_PAPER_EQUITY_PCT is a fraction (0.15 = 15%), then PAPER_MAX_BUY_NOTIONAL clamps."""
+    under, under_mode = select_buy_notional(
+        vol_sizing=False,
+        fixed_notional=500,
+        equity_pct=0.15,
+        equity=1_000,
+        max_buy_notional=300,
+    )
+    assert under == pytest.approx(150)
+    assert under_mode == "equity_pct"
+
+    capped, capped_mode = select_buy_notional(
+        vol_sizing=False,
+        fixed_notional=500,
+        equity_pct=0.15,
+        equity=10_000,
+        max_buy_notional=300,
+    )
+    assert capped == 300
+    assert capped_mode == "equity_pct_capped"
+
+
+def test_select_buy_notional_vol_fallback_notional_still_used():
+    """ALPACA_PAPER_NOTIONAL remains the fallback when vol-sizing cannot read equity."""
+    fallback, fallback_mode = select_buy_notional(
+        vol_sizing=True,
+        fixed_notional=500,
+        equity_pct=0.15,
+        equity=None,
+        risk_fraction=0.01,
+        stop_loss_pct=0.08,
+        max_buy_notional=300,
+    )
+    assert fallback == 300
+    assert fallback_mode == "fallback_notional_capped"
+
+
 def test_filter_tqqq_only_blocks_sqqq_buys_keeps_sells():
     intents = [
         OrderIntent(symbol="TQQQ", side="sell", purpose="flip_exit"),
@@ -156,6 +194,18 @@ def test_load_settings_paper_risk_defaults_off(monkeypatch: pytest.MonkeyPatch):
     assert settings.paper_tqqq_only is False
     assert settings.paper_max_daily_loss_usd == 0
     assert settings.paper_max_weekly_loss_usd == 0
+
+
+def test_load_settings_equity_pct_is_fraction_not_whole_percent(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "test-secret")
+    monkeypatch.setenv("ALPACA_PAPER_EQUITY_PCT", "0.15")
+    settings = load_settings()
+    assert settings.alpaca_paper_equity_pct == pytest.approx(0.15)
+
+    monkeypatch.setenv("ALPACA_PAPER_EQUITY_PCT", "15")
+    with pytest.raises(ConfigError, match="fraction"):
+        load_settings()
 
 
 def test_load_settings_paper_risk_rejects_negative(monkeypatch: pytest.MonkeyPatch):
