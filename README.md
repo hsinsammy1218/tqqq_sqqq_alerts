@@ -19,10 +19,12 @@ Symbol, direction, entry zone, stop loss, take profit / stretch target, confiden
 
 ### Non-goals (never part of this project)
 
-- No Robinhood or other **broker integration**
-- No broker trading APIs or authenticated trading sessions
+- No Robinhood login, password, or order placement from this process
+- No broker trading APIs or authenticated trading sessions inside this repo
 - No **automated order execution** or **automated position sizing that places orders**
 - No real-money trade placement by the bot
+
+`python main.py --rh-preview` only prints a review-only playbook for Robinhood’s official Trading MCP (`https://agent.robinhood.com/mcp/trading`) on a dedicated agentic account. It does not call Robinhood and does not need Alpaca keys. Keep Trade approvals ON. Default sleeve is TQQQ-only and $200 notional (`RH_AGENT_TQQQ_ONLY`, `RH_AGENT_MAX_NOTIONAL`).
 
 Backtests and sweeps are **research simulations** on QQQ history only; they do not connect to a brokerage.
 
@@ -43,7 +45,8 @@ Backtests and sweeps are **research simulations** on QQQ history only; they do n
 - Discord **rich embeds** are mobile-first: strong BUY/SELL/FLIP/HOLD/CASH title, symbol/confidence/regime/strength, levels when relevant, short reason + leading checklist summary, optional paper-order outcome; full technical dump stays on the console (`--no-technical` to hide)
 - Alpaca Market Data API backend (daily + 1h → synthetic 4h)
 - Cloud scheduling via Render weekday crons; local durable learning via `scripts/run_weekday_paper.py` (autostart once with `bash scripts/install_paper_autostart.sh`)
-- Read-only learner: `python main.py --learn-from-trades` (digest + gated proposals; no auto-apply)
+- Read-only learner: `python main.py --learn-from-trades` (digest + gated proposals; no auto-apply). Surfaces IEX deeper-cut priors (range / short holds / low confidence) as blocked research notes.
+- Offline research cut (frozen weights, no sealed OOS): `python scripts/learning_deeper_cuts.py` → `reports/learning_deeper_cuts.*`
 
 ## File layout
 

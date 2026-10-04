@@ -140,6 +140,44 @@ def _confidence_outcome_hint(trips: list[dict[str, Any]]) -> dict[str, Any] | No
     }
 
 
+def _hold_calendar_days(trip: dict[str, Any]) -> int | None:
+    """Whole calendar days between entry and exit timestamps when parseable."""
+    entry_raw = trip.get("entry_timestamp")
+    exit_raw = trip.get("exit_timestamp")
+    if not entry_raw or not exit_raw:
+        return None
+    try:
+        entry = datetime.fromisoformat(str(entry_raw).replace("Z", "+00:00"))
+        exit_ = datetime.fromisoformat(str(exit_raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0, (exit_.date() - entry.date()).days)
+
+
+def _hold_pnl_buckets(trips: list[dict[str, Any]]) -> dict[str, dict[str, float | int]]:
+    """Split strategy trips into short (≤10d) vs longer holds for proposal hints."""
+    buckets: dict[str, dict[str, float | int]] = {
+        "short_le_10d": {"count": 0, "sum_pnl_pct": 0.0},
+        "long_11d_plus": {"count": 0, "sum_pnl_pct": 0.0},
+    }
+    for trip in trips:
+        if str(trip.get("entry_source") or "") != "strategy" and str(trip.get("exit_source") or "") != "strategy":
+            continue
+        pnl = trip.get("pnl_pct")
+        hold = _hold_calendar_days(trip)
+        if pnl is None or hold is None:
+            continue
+        key = "short_le_10d" if hold <= 10 else "long_11d_plus"
+        slot = buckets[key]
+        slot["count"] = int(slot["count"]) + 1
+        slot["sum_pnl_pct"] = float(slot["sum_pnl_pct"]) + float(pnl)
+    for slot in buckets.values():
+        count = int(slot["count"])
+        slot["avg_pnl_pct"] = round(float(slot["sum_pnl_pct"]) / count, 4) if count else 0.0
+        slot["sum_pnl_pct"] = round(float(slot["sum_pnl_pct"]), 4)
+    return buckets
+
+
 def build_proposals(
     digest: dict[str, Any],
     *,
@@ -174,6 +212,7 @@ def build_proposals(
     trips = list((digest.get("realized_pnl") or {}).get("round_trips") or [])
     regime_pnl = _regime_pnl_buckets(trips)
     conf_hint = _confidence_outcome_hint(trips)
+    hold_pnl = _hold_pnl_buckets(trips)
 
     proposals: list[dict[str, Any]] = []
 
@@ -201,6 +240,36 @@ def build_proposals(
                 "auto_apply": False,
             }
         )
+
+    # Always surface IEX deeper-cut priors (learning only; never actionable).
+    _add(
+        proposal_id="research_prior_iex_deeper_cuts",
+        title="IEX pre-seal priors: range / short holds / low confidence",
+        hypothesis=(
+            "Offline IEX deeper cuts (2020→pre-seal, frozen weights) showed range "
+            "regimes, holds ≤10d, and low exit-row confidence as the weak slices. "
+            "Watch paper fills for the same patterns; do not retune "
+            "DEFAULT_SCORE_WEIGHTS or reopen sealed OOS."
+        ),
+        proposed_knobs={
+            "research_flags": [
+                "soft_gate_range_confidence_add",
+                "min_confidence_to_trade",
+                "flip_min_hold_trading_days",
+            ],
+            "watch_slices": ["range", "hold_le_10d", "confidence_lt_62_exit_row"],
+            "note": "Priors only. Run scripts/learning_deeper_cuts.py for a fresh offline cut.",
+        },
+        confidence="medium",
+        evidence=(
+            "IEX deeper cuts: range ~11% wins / large in-group drag; holds ≤10d mostly "
+            "losers; exit-row conf <62 weak vs 80+. TQQQ-only counterfactual is diagnostic only."
+        ),
+        validation=(
+            "Keep Path B paper soak. After the trip gate, test only via "
+            "`--checklist-compare` / `--strategy-eval`. Never auto-apply; never reopen sealed OOS."
+        ),
+    )
 
     # Always include a meta proposal about the gate / process.
     if not enough:
@@ -338,6 +407,35 @@ def build_proposals(
                 validation="python main.py --strategy-eval --small-grid (plateau + WFE must hold)",
             )
 
+    short_bucket = hold_pnl.get("short_le_10d") or {}
+    long_bucket = hold_pnl.get("long_11d_plus") or {}
+    if (
+        int(short_bucket.get("count") or 0) >= 2
+        and float(short_bucket.get("sum_pnl_pct") or 0) < 0
+        and (
+            int(long_bucket.get("count") or 0) == 0
+            or float(short_bucket.get("avg_pnl_pct") or 0)
+            < float(long_bucket.get("avg_pnl_pct") or 0) - 1.0
+        )
+    ):
+        _add(
+            proposal_id="short_hold_drag",
+            title="Short-hold paper trips underperform",
+            hypothesis=(
+                "Strategy round-trips held ≤10 calendar days show negative summed P&L "
+                "(matches IEX deeper-cut priors). Research min-hold / flip patience — "
+                "do not loosen stops to 'make room' for losers."
+            ),
+            proposed_knobs={
+                "research_flags": ["flip_min_hold_trading_days", "max_hold_trading_days"],
+                "env_candidates": ["FLIP_MIN_HOLD_TRADING_DAYS"],
+                "avoid": ["widening STOP_LOSS_PCT to extend losers"],
+            },
+            confidence="medium" if enough else "low",
+            evidence=f"hold buckets={hold_pnl}",
+            validation="python main.py --checklist-compare && python main.py --strategy-eval --small-grid",
+        )
+
     errors = int(by_status.get("error") or 0) + int(by_status.get("rejected") or 0) + int(by_status.get("refused") or 0)
     if errors > 0:
         _add(
@@ -358,6 +456,12 @@ def build_proposals(
         if not enough:
             proposal["actionable"] = False
             proposal["blocked_reason"] = gate_note
+        if proposal.get("id") == "research_prior_iex_deeper_cuts":
+            proposal["actionable"] = False
+            proposal["blocked_reason"] = (
+                "research prior from IEX deeper cuts (not paper evidence); "
+                "never auto-apply; do not retune DEFAULT_SCORE_WEIGHTS or reopen sealed OOS"
+            )
         proposal["auto_apply"] = False
 
     return proposals

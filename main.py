@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from alerts import format_alert_message, send_discord
+from rh_agent import build_rh_playbook, format_rh_playbook
 from alpaca_paper import (
     PaperTradingError,
     execute_paper_orders,
@@ -100,6 +102,48 @@ def _sample_discord_preview_alert() -> AlertDecision:
         notes_kind="buy_bull",
         signal_quality="HIGH",
     )
+
+
+def _run_rh_preview(logger: logging.Logger) -> int:
+    """Print a review-only Robinhood agent playbook. Never calls Robinhood.
+
+    Does not load Alpaca settings. A missing market-data key must not block this.
+    """
+    from dotenv import find_dotenv, load_dotenv
+
+    load_dotenv(find_dotenv(usecwd=True) or None)
+    journal_alert = load_last_journal_alert(Path(os.getenv("JOURNAL_CSV", "alerts_journal.csv")))
+    if journal_alert is not None:
+        alert = journal_alert
+        source = "journal"
+    else:
+        alert = _sample_discord_preview_alert()
+        source = "sample"
+    tqqq_only = os.getenv("RH_AGENT_TQQQ_ONLY", "true").strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        max_notional = float(os.getenv("RH_AGENT_MAX_NOTIONAL", "200"))
+    except ValueError:
+        print("Config error: RH_AGENT_MAX_NOTIONAL must be a number.")
+        return 1
+    playbook = build_rh_playbook(
+        alert,
+        max_notional_usd=max_notional,
+        tqqq_only=tqqq_only,
+        allow_place=False,
+    )
+    print(f"Robinhood agent preview from {source}: {alert.alert_type} {alert.symbol}")
+    print(format_rh_playbook(playbook))
+    print("Review only — no Robinhood call, no paper order, no position change.")
+    log_event(
+        logger,
+        logging.INFO,
+        "Robinhood agent preview",
+        alert_type=alert.alert_type,
+        symbol=alert.symbol,
+        source=source,
+        status=playbook["status"],
+    )
+    return 0
 
 
 def _run_discord_test(settings: Settings, logger: logging.Logger) -> int:
@@ -308,6 +352,9 @@ def run() -> int:
         print("Config error: --entry-price must be positive when provided.")
         log_event(logger, logging.ERROR, "Invalid CLI args", error="entry-price must be positive")
         return 1
+
+    if args.rh_preview:
+        return _run_rh_preview(logger)
 
     try:
         settings = load_settings()

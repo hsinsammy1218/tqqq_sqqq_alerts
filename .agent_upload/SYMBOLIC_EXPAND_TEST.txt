@@ -1,0 +1,1 @@
+$file:/tmp/rh_symlink_test.txt

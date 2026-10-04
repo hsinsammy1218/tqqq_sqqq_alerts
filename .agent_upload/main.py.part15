@@ -1,0 +1,78 @@
+iled",
+                    error=str(exc),
+                )
+            else:
+                matched = state_to_save(new_position, broker_after)
+                if matched is None:
+                    print(
+                        "[position] Not advancing PositionState; "
+                        f"decision={new_position.active_symbol!r} "
+                        f"broker={broker_after.held_symbol()!r}."
+                    )
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "Position state left unchanged",
+                        decision_symbol=new_position.active_symbol,
+                        broker_symbol=broker_after.held_symbol(),
+                    )
+                else:
+                    try:
+                        position_store.save(matched)
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "Position state saved",
+                            position_state_path=position_state_label,
+                            position_after=_position_to_dict(matched),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"Position store error: {exc}")
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "Position state save failed",
+                            error=str(exc),
+                        )
+                        return 1
+
+    try:
+        send_discord(
+            settings.discord_webhook_url,
+            alert,
+            settings.dry_run,
+            snapshot=snapshot,
+            position_before=position,
+            technical_meta=tech_meta,
+            today_iso=today_iso,
+            paper_results=paper_results or None,
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "Discord send completed",
+            dry_run=settings.dry_run,
+            webhook_configured=bool(settings.discord_webhook_url),
+            alert_type=alert.alert_type,
+            symbol=alert.symbol,
+            paper_result_count=len(paper_results),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Output error: {exc}")
+        log_event(logger, logging.ERROR, "Discord send failed", error=str(exc))
+        return 1
+
+    if not submit_orders:
+        try:
+            position_store.save(new_position)
+            log_event(
+                logger,
+                logging.INFO,
+                "Position state saved",
+                position_state_path=position_state_label,
+                position_after=_position_to_dict(new_position),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"Position store error (Discord already sent): {exc}")
+            log_event(logger, logging.ERROR, "Position state save failed after Discord", error=str(exc))
+         
