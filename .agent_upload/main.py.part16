@@ -1,0 +1,23 @@
+   return 1
+    try:
+        append_journal(settings.journal_csv, alert)
+        log_event(
+            logger,
+            logging.INFO,
+            "Journal append succeeded",
+            journal_path=str(settings.journal_csv),
+            alert_type=alert.alert_type,
+            symbol=alert.symbol,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Journal warning (alert already sent): {exc}")
+        log_event(logger, logging.WARNING, "Journal append failed after alert", error=str(exc))
+    if broker_check_failed:
+        log_event(logger, logging.ERROR, "Run completed with broker check failure", exit_code=1)
+        return 1
+    log_event(logger, logging.INFO, "Run completed", exit_code=0)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())
