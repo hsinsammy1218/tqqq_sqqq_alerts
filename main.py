@@ -929,4 +929,151 @@ def run() -> int:
                 debug_strategy=args.debug_strategy,
                 decide_options=research_decide_options,
                 entry_slippage_bps=settings.backtest_entry_slippage_bps,
-  
+                exit_slippage_bps=settings.backtest_exit_slippage_bps,
+            )
+        except ValueError as exc:
+            print(f"Backtest error: {exc}")
+            return 1
+        print(format_backtest_report(bt, settings.qqq_ticker))
+        if args.backtest_report_csv:
+            try:
+                export_backtest_trades_csv(args.backtest_report_csv, bt.trade_rows)
+                print(f"Backtest trade CSV written: {args.backtest_report_csv}")
+            except OSError as exc:
+                print(f"Backtest report export error: {exc}")
+                return 1
+        return 0
+
+    try:
+        snapshot = build_snapshot(candles.daily, candles.four_hour, settings.anchor_date or None)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Unexpected indicator failure: {exc}")
+        log_event(logger, logging.ERROR, "Indicator build failed", error=str(exc))
+        return 1
+
+    try:
+        position, position_warnings = position_store.load()
+    except PositionStoreError as exc:
+        print(f"Position store error: {exc}")
+        log_event(logger, logging.ERROR, "Position state load failed", error=str(exc))
+        return 1
+    for msg in position_warnings:
+        print(f"[position] {msg}")
+    log_event(
+        logger,
+        logging.WARNING if position_warnings else logging.INFO,
+        "Position state loaded",
+        position_state_path=position_state_label,
+        warnings=position_warnings,
+        position_before=_position_to_dict(position),
+    )
+    submit_orders = should_submit_paper_orders(
+        paper_trading=settings.alpaca_paper_trading,
+        dry_run=settings.dry_run,
+    )
+    block_new_orders = False
+    reconcile_reason = ""
+    if submit_orders:
+        try:
+            broker_before = fetch_broker_snapshot(
+                api_key=settings.alpaca_api_key,
+                api_secret=settings.alpaca_api_secret,
+                trading_base_url=settings.alpaca_trading_base_url,
+            )
+        except PaperTradingError as exc:
+            block_new_orders = True
+            reconcile_reason = f"broker snapshot failed; not submitting orders ({exc})"
+        else:
+            rec = reconcile_at_start(position, broker_before)
+            position = rec.position_for_decide
+            block_new_orders = rec.block_new_orders
+            reconcile_reason = rec.reason
+        print(f"[position] {reconcile_reason}")
+        log_event(
+            logger,
+            logging.WARNING if block_new_orders else logging.INFO,
+            "Position reconciled",
+            reason=reconcile_reason,
+            block_new_orders=block_new_orders,
+            position_for_decide=_position_to_dict(position),
+        )
+    alert, new_position, dbg = decide(
+        snapshot=snapshot,
+        position=position,
+        blocked_dates=blocked_dates,
+        now_utc=now_utc,
+        params=strategy_params,
+        decide_options=research_decide_options,
+    )
+
+    last_daily = candles.daily.index[-1]
+    last_h4 = candles.four_hour.index[-1]
+    daily_label = last_daily.isoformat() if hasattr(last_daily, "isoformat") else str(last_daily)
+    h4_label = last_h4.isoformat() if hasattr(last_h4, "isoformat") else str(last_h4)
+    year = getattr(last_daily, "year", None)
+    anchor_label = settings.anchor_date if settings.anchor_date else f"January 1 ({year})" if year else "January 1 (year of last daily bar)"
+    today_iso = now_utc.date().isoformat()
+    tech_meta = RunTechnicalMeta(
+        qqq_ticker=settings.qqq_ticker,
+        run_utc_iso=now_utc.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        daily_bar_end=daily_label,
+        h4_bar_end=h4_label,
+        blocked_today=today_iso in blocked_dates,
+        regime=dbg.regime,
+        base_bull_entry_threshold=settings.bull_entry_threshold,
+        base_bear_entry_threshold=settings.bear_entry_threshold,
+        base_weak_threshold=settings.weak_score_threshold,
+        effective_bull_entry=dbg.effective_bull_entry,
+        effective_bear_entry=dbg.effective_bear_entry,
+        effective_weak=dbg.effective_weak,
+        score_weights=strategy_params.score_weights,
+        weighted_bull=dbg.weighted_bull,
+        weighted_bear=dbg.weighted_bear,
+        stop_loss_pct=settings.stop_loss_pct,
+        take_profit_pct=settings.take_profit_pct,
+        stretch_take_profit_pct=settings.stretch_take_profit_pct,
+        max_hold_days=settings.max_hold_trading_days,
+        entry_atr_multiplier=settings.entry_atr_multiplier,
+        anchor_date_label=anchor_label,
+        flip_in_range_regime=strategy_params.flip_in_range_regime,
+        min_confidence_to_trade=strategy_params.min_confidence_to_trade,
+        high_confidence_only=args.high_confidence_only,
+    )
+
+    message = format_alert_message(alert, position_before=position, technical_meta=tech_meta)
+    print(message)
+    log_event(
+        logger,
+        logging.INFO,
+        "Signal decided",
+        decision={
+            "alert_type": alert.alert_type,
+            "symbol": alert.symbol,
+            "notes": alert.notes,
+            "confidence": alert.confidence_score,
+            "signal_quality": alert.signal_quality,
+            "bull_score": alert.bullish_score,
+            "bear_score": alert.bearish_score,
+            "timestamp": alert.timestamp,
+        },
+        position_before=_position_to_dict(position),
+        position_after=_position_to_dict(new_position),
+        latest_daily_candle=daily_label,
+        latest_h4_candle=h4_label,
+    )
+
+    if not args.no_technical:
+        print()
+        print(format_technical_breakdown(snapshot, alert, position, tech_meta, today_iso))
+
+    if submit_orders and block_new_orders:
+        paper_results = []
+        print(f"[alpaca-paper] Orders suppressed after reconcile: {reconcile_reason}")
+        log_event(
+            logger,
+            logging.WARNING,
+            "Alpaca paper orders suppressed",
+            reason=reconcile_reason,
+        )
+    else:
+        paper_results = execu
