@@ -34,10 +34,18 @@ def _row(**kwargs):
     return build_trade_record(**base)
 
 
-def _strategy_round_trip(i: int, *, pnl_up: bool = True, regime: str = "bull", confidence: int = 80):
+def _strategy_round_trip(
+    i: int,
+    *,
+    pnl_up: bool = True,
+    regime: str = "bull",
+    confidence: int = 80,
+    hold_days: int = 0,
+):
     entry = 100.0 + i
     exit_px = entry * (1.05 if pnl_up else 0.95)
     day = 1 + i
+    exit_day = min(28, day + max(0, hold_days))
     return [
         _row(
             side="buy",
@@ -59,7 +67,7 @@ def _strategy_round_trip(i: int, *, pnl_up: bool = True, regime: str = "bull", c
             confidence=confidence,
             fill_price=str(round(exit_px, 4)),
             purpose="exit",
-            timestamp=f"2026-09-{day:02d}T15:00:00Z",
+            timestamp=f"2026-09-{exit_day:02d}T15:00:00Z",
             order_id=f"sell-{i}",
         ),
     ]
@@ -154,10 +162,10 @@ def test_proposals_blocked_under_gate():
     assert all(p["actionable"] is False for p in proposals)
     assert all(p["auto_apply"] is False for p in proposals)
     assert any(p["id"] == "accumulate_strategy_round_trips" for p in proposals)
-    blocked = [p for p in proposals if p.get("blocked_reason")]
-    assert blocked
-    assert "blocked until" in blocked[0]["blocked_reason"]
-    assert "strategy round-trip" in blocked[0]["blocked_reason"]
+    assert any(p["id"] == "research_prior_iex_deeper_cuts" for p in proposals)
+    gate = next(p for p in proposals if p["id"] == "accumulate_strategy_round_trips")
+    assert "blocked until" in (gate.get("blocked_reason") or "")
+    assert "strategy round-trip" in (gate.get("blocked_reason") or "")
 
 
 def test_proposals_actionable_when_gate_cleared():
@@ -177,9 +185,33 @@ def test_proposals_actionable_when_gate_cleared():
     proposals = build_proposals(digest)
     assert proposals
     assert any(p["id"] == "gate_cleared_research_only" for p in proposals)
-    assert all(p["actionable"] is True for p in proposals if p["id"] != "ops_errors_in_journal")
+    never_actionable = {"ops_errors_in_journal", "research_prior_iex_deeper_cuts"}
+    assert all(p["actionable"] is True for p in proposals if p["id"] not in never_actionable)
+    prior = next(p for p in proposals if p["id"] == "research_prior_iex_deeper_cuts")
+    assert prior["actionable"] is False
+    assert "sealed OOS" in (prior.get("blocked_reason") or "")
     # DD ratio vs research 5% should be elevated with losers present.
     assert any("strategy-eval" in (p.get("validation_required") or "") for p in proposals)
+
+
+def test_short_hold_drag_proposal():
+    rows: list[dict] = []
+    for i in range(3):
+        rows.extend(
+            _strategy_round_trip(
+                i + 1,
+                pnl_up=False,
+                regime="bull",
+                confidence=70,
+                hold_days=3 + i,
+            )
+        )
+    digest = build_learner_digest(rows, research_max_dd_pct=19.06, source_path="mem")
+    proposals = build_proposals(digest)
+    assert any(p["id"] == "short_hold_drag" for p in proposals)
+    short = next(p for p in proposals if p["id"] == "short_hold_drag")
+    assert short["auto_apply"] is False
+    assert short["actionable"] is False
 
 
 def test_run_learn_from_trades_writes_outputs(tmp_path: Path):
