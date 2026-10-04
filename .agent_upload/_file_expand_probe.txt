@@ -1,1 +1,0 @@
-@/home/ubuntu/.cursor/projects/workspace/agent-tools/COUF_42000_READY.json

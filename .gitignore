@@ -18,6 +18,9 @@ logs/
 # Local Cursor config (MCP, agent rules) — not part of this repo
 .cursor/
 
+# Accidental agent staging uploads — never commit
+.agent_upload/
+
 # Local research outputs (backtest/sweep/walk-forward CSVs, eval JSON, learner digests).
 reports/*.csv
 reports/*.json
