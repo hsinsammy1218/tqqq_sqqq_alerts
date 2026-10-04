@@ -233,4 +233,104 @@ def main() -> int:
     t0 = time.time()
     print(f"[fetch] lookback_days={lookback_days} feed={settings.alpaca_data_feed}", flush=True)
     try:
-     
+        qqq = load_candles(
+            settings.qqq_ticker,
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
+            daily_lookback_days=lookback_days,
+            max_daily_bars=4000,
+            hourly_lookback_days=lookback_days,
+            max_hourly_bars=20000,
+        )
+        tqqq = load_daily_bars(
+            "TQQQ",
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
+            daily_lookback_days=lookback_days,
+            max_daily_bars=4000,
+        )
+        sqqq = load_daily_bars(
+            "SQQQ",
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
+            daily_lookback_days=lookback_days,
+            max_daily_bars=4000,
+        )
+    except (DataError, MarketDataQuotaError) as exc:
+        print(f"FETCH ERROR: {exc}")
+        OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
+        OUT_JSON.write_text(json.dumps({"error": str(exc), "api": _api}, indent=2))
+        return 1
+
+    aligned = align_etf_data(qqq, tqqq, sqqq)
+    idx = aligned.qqq.daily.index
+    sealed_lo = int(idx.searchsorted(SEALED_START, side="left"))
+    pre_seal_hi = sealed_lo
+    warmup_lo = 60
+    print(
+        f"[align] {idx[0].date()}→{idx[-1].date()} pre_seal_hi={pre_seal_hi} "
+        f"calls≈{_api['calls']} wall={time.time()-t0:.1f}s",
+        flush=True,
+    )
+
+    blocked, _ = load_merged_blackout_dates(
+        settings.events_json,
+        risk_avoidance=bool(settings.event_risk_avoidance),
+        risk_calendar_url=settings.event_risk_calendar_url or None,
+    )
+    common = dict(
+        strategy_params=params,
+        blocked_dates=blocked,
+        anchor_date=settings.anchor_date or None,
+        cost_bps=float(settings.alpaca_paper_limit_offset_bps),
+        decide_options=DecideOptions(),
+    )
+
+    print("[score] full_pre_seal baseline", flush=True)
+    baseline = run_etf_backtest(
+        aligned, loop_start_idx=warmup_lo, loop_end_idx_exclusive=pre_seal_hi, **common
+    )
+    rows = list(baseline.trade_rows)
+
+    by_regime: dict[str, list] = defaultdict(list)
+    by_conf: dict[str, list] = defaultdict(list)
+    by_hold: dict[str, list] = defaultdict(list)
+    by_action: dict[str, list] = defaultdict(list)
+    by_year: dict[str, list] = defaultdict(list)
+    by_sym_regime: dict[str, list] = defaultdict(list)
+    for t in rows:
+        by_regime[str(t.regime or "unknown")].append(t)
+        by_conf[_bucket_conf(int(t.confidence))].append(t)
+        by_hold[_hold_bucket(int(t.hold_days))].append(t)
+        by_action[str(t.action)].append(t)
+        by_year[str(pd.Timestamp(t.timestamp).year)].append(t)
+        by_sym_regime[f"{t.symbol}|{t.regime}"].append(t)
+
+    rets = [float(t.return_pct) for t in rows]
+    loss_flags = [r < 0 for r in rets]
+    win_flags = [r >= 0 for r in rets]
+    curve = _equity_curve(rets)
+    peak = curve[0]
+    max_dd = 0.0
+    for e in curve:
+        peak = max(peak, e)
+        max_dd = max(max_dd, (peak - e) / peak * 100.0 if peak else 0.0)
+
+    # Worst 10 trades
+    worst = sorted(rows, key=lambda t: float(t.return_pct))[:10]
+    best = sorted(rows, key=lambda t: float(t.return_pct), reverse=True)[:10]
+
+    print("[score] rolling 6m / 12m", flush=True)
+    roll_6 = _rolling_window_scores(aligned, common, idx, warmup_lo, pre_seal_hi, 6)
+    roll_12 = _rolling_window_scores(aligned, common, idx, warmup_lo, pre_seal_hi, 12)
+
+    print("[score] TQQQ-only counterfactual", flush=True)
+    tqqq_only = _tqqq_only_counterfactual(aligned, common, warmup_lo, pre_seal_hi)
+
+    seal_after = hashlib.sha256(SEAL_PATH.read_bytes()).hexdigest() if SEAL_PATH.exists() else
