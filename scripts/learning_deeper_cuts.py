@@ -64,4 +64,123 @@ def _paced_fetch(*args, **kwargs):
 import data as data_mod  # noqa: E402
 
 _ORIG_FETCH = data_mod._fetch_bars
-data_mo
+data_mod._fetch_bars = _paced_fetch  # type: ignore[assignment]
+
+
+def _compound(returns: list[float]) -> float:
+    eq = 1.0
+    for r in returns:
+        eq *= 1.0 + r / 100.0
+    return (eq - 1.0) * 100.0
+
+
+def _bucket_conf(c: int) -> str:
+    if c < 62:
+        return "<62"
+    if c < 70:
+        return "62-69"
+    if c < 80:
+        return "70-79"
+    return "80+"
+
+
+def _hold_bucket(d: int) -> str:
+    if d <= 2:
+        return "1-2d"
+    if d <= 5:
+        return "3-5d"
+    if d <= 10:
+        return "6-10d"
+    return "11d+"
+
+
+def _group_stats(rows: list) -> dict:
+    rets = [float(r.return_pct) for r in rows]
+    if not rets:
+        return {"trades": 0}
+    wins = sum(1 for r in rets if r >= 0)
+    return {
+        "trades": len(rets),
+        "win_rate_pct": round(100.0 * wins / len(rets), 1),
+        "compounded_return_pct": round(_compound(rets), 2),
+        "avg_return_pct": round(sum(rets) / len(rets), 2),
+        "median_return_pct": round(float(pd.Series(rets).median()), 2),
+        "best_pct": round(max(rets), 2),
+        "worst_pct": round(min(rets), 2),
+    }
+
+
+def _max_streak(flags: list[bool]) -> int:
+    best = cur = 0
+    for f in flags:
+        if f:
+            cur += 1
+            best = max(best, cur)
+        else:
+            cur = 0
+    return best
+
+
+def _equity_curve(rets: list[float]) -> list[float]:
+    eq = 1.0
+    out = [1.0]
+    for r in rets:
+        eq *= 1.0 + r / 100.0
+        out.append(eq)
+    return out
+
+
+def _rolling_window_scores(aligned, common, idx, warmup_lo: int, pre_seal_hi: int, months: int) -> list[dict]:
+    """Non-overlapping calendar chunks of ``months`` length inside pre-seal."""
+    out: list[dict] = []
+    start = idx[warmup_lo]
+    cursor = pd.Timestamp(year=start.year, month=start.month, day=1, tz="UTC")
+    while cursor < SEALED_START:
+        end = cursor + pd.DateOffset(months=months) - pd.Timedelta(days=1)
+        lo = max(warmup_lo, int(idx.searchsorted(cursor, side="left")))
+        hi = min(pre_seal_hi, int(idx.searchsorted(end, side="right")))
+        if hi - lo >= 20:
+            result = run_etf_backtest(
+                aligned, loop_start_idx=lo, loop_end_idx_exclusive=hi, **common
+            )
+            out.append(
+                {
+                    "label": f"{cursor.date()}→{idx[hi - 1].date()}",
+                    "months": months,
+                    "sessions": hi - lo,
+                    "closed_trades": result.closed_trades,
+                    "compounded_return_pct": round(float(result.total_return_pct), 2),
+                    "win_rate_pct": round(float(result.win_rate_pct), 1),
+                    "closed_max_dd_pct": round(float(result.max_drawdown_pct), 2),
+                    "bh_qqq_pct": round(buy_and_hold_close_to_close(aligned.qqq.daily, lo, hi), 2),
+                    "trades_by_symbol": dict(Counter(t.symbol for t in result.trade_rows)),
+                }
+            )
+        cursor = cursor + pd.DateOffset(months=months)
+    return out
+
+
+def _tqqq_only_counterfactual(aligned, common, lo: int, hi: int) -> dict:
+    """Learning counterfactual: drop SQQQ BUY/FLIP entries (stay flat / exit only).
+
+    Uses decide_fn so SQQQ entries become CASH; FLIP TQQQ→SQQQ becomes SELL TQQQ.
+    Not a proposed live change.
+    """
+    from dataclasses import replace
+
+    real_decide = decide
+
+    def decide_tqqq_only(snapshot, position, *args, **kwargs):
+        alert, new_pos, dbg = real_decide(snapshot, position, *args, **kwargs)
+        if alert.alert_type in ("BUY", "FLIP") and alert.symbol == "SQQQ":
+            flat = PositionState()
+            if alert.alert_type == "FLIP" and position.active_symbol == "TQQQ":
+                sell = replace(
+                    alert,
+                    alert_type="SELL",
+                    symbol="TQQQ",
+                    notes="Learning counterfactual: flip→exit TQQQ only.",
+                    notes_kind="exit",
+                    signal_quality=None,
+                )
+                return sell, fla
