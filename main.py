@@ -359,4 +359,78 @@ def run() -> int:
     try:
         settings = load_settings()
         if args.dry_run:
-            settings =
+            settings = settings.__class__(**{**settings.__dict__, "dry_run": True})
+        strategy_params = strategy_params_from_settings(settings)
+        log_event(
+            logger,
+            logging.INFO,
+            "Settings loaded",
+            qqq_ticker=settings.qqq_ticker,
+            position_state_backend=settings.position_state_backend,
+            position_state_json=str(settings.position_state_json),
+            position_state_bot_id=settings.position_state_bot_id,
+            events_json=str(settings.events_json),
+            dry_run=settings.dry_run,
+            alpaca_paper_trading=settings.alpaca_paper_trading,
+            alpaca_trading_base_url=settings.alpaca_trading_base_url,
+            log_level=args.log_level,
+        )
+    except ConfigError as exc:
+        print(f"Config error: {exc}")
+        log_event(logger, logging.ERROR, "Config load failed", error=str(exc))
+        return 1
+
+    try:
+        position_store = position_store_from_settings(settings)
+    except ConfigError as exc:
+        print(f"Config error: {exc}")
+        log_event(logger, logging.ERROR, "Position store init failed", error=str(exc))
+        return 1
+    position_state_label = position_store.describe()
+
+    stamp = format_utc_z(datetime.now(timezone.utc))
+    if args.flat:
+        try:
+            position_store.save(
+                PositionState(
+                    active_symbol=None,
+                    entry_price=None,
+                    entry_timestamp=None,
+                    last_signal="MANUAL_FLAT",
+                    updated_at=stamp,
+                )
+            )
+        except PositionStoreError as exc:
+            print(f"Position store error: {exc}")
+            log_event(logger, logging.ERROR, "Manual flat save failed", error=str(exc))
+            return 1
+        print("Position reset: flat (no active TQQQ/SQQQ in bot memory).")
+        log_event(
+            logger,
+            logging.INFO,
+            "Manual flat applied",
+            position_state_path=position_state_label,
+            position_after={
+                "symbol": None,
+                "entry_price": None,
+                "entry_time": None,
+                "last_signal": "MANUAL_FLAT",
+                "updated_at": stamp,
+            },
+        )
+        return 0
+    elif args.set_position is not None:
+        entry_price_f = float(args.entry_price) if args.entry_price is not None else None
+        entry_ts_str: str | None = None
+        if args.entry_time:
+            try:
+                entry_ts_str = format_utc_z(_parse_entry_time_arg(args.entry_time))
+            except ValueError:
+                print("Config error: --entry-time must be valid ISO8601 (e.g. 2026-05-01T16:00:00Z).")
+                log_event(logger, logging.ERROR, "Invalid entry time argument", entry_time=args.entry_time)
+                return 1
+        try:
+            position_store.save(
+                PositionState(
+                    active_symbol=args.set_position,
+                    entr
