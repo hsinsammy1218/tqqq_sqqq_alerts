@@ -1076,4 +1076,175 @@ def run() -> int:
             reason=reconcile_reason,
         )
     else:
-        paper_results = execu
+        paper_results = execute_paper_orders(
+            alert,
+            position,
+            paper_trading=settings.alpaca_paper_trading,
+            dry_run=settings.dry_run,
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            trading_base_url=settings.alpaca_trading_base_url,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
+            fixed_notional=settings.alpaca_paper_notional,
+            equity_pct=settings.alpaca_paper_equity_pct,
+            limit_offset_bps=settings.alpaca_paper_limit_offset_bps,
+            vol_sizing=settings.alpaca_paper_vol_sizing,
+            risk_fraction=settings.alpaca_paper_risk_fraction,
+            vol_stop_mode=settings.alpaca_paper_vol_stop,
+            stop_loss_pct=settings.stop_loss_pct,
+            atr=float(snapshot.daily_atr14),
+            atr_price=float(snapshot.daily_close),
+            atr_stop_mult=settings.alpaca_paper_atr_stop_mult,
+            max_buy_notional=settings.paper_max_buy_notional,
+            tqqq_only=settings.paper_tqqq_only,
+            max_daily_loss_usd=settings.paper_max_daily_loss_usd,
+            max_weekly_loss_usd=settings.paper_max_weekly_loss_usd,
+            discord_webhook_url=settings.discord_webhook_url,
+            logger=logger,
+            trade_log_path=settings.trade_log_jsonl,
+            trade_log_store=trade_log_store_from_settings(settings),
+            source="strategy",
+        )
+    if paper_results:
+        log_event(
+            logger,
+            logging.INFO,
+            "Alpaca paper trading finished",
+            results=[
+                {
+                    "symbol": r.intent.symbol,
+                    "side": r.intent.side,
+                    "purpose": r.intent.purpose,
+                    "ok": r.ok,
+                    "status": r.status,
+                    "order_id": r.order_id,
+                    "detail": r.detail,
+                }
+                for r in paper_results
+            ],
+        )
+
+    broker_check_failed = False
+    if submit_orders:
+        if block_new_orders:
+            print("[position] Not advancing PositionState; reconcile blocked this run.")
+            log_event(
+                logger,
+                logging.INFO,
+                "Position state left unchanged",
+                reason=reconcile_reason,
+            )
+        else:
+            try:
+                broker_after = fetch_broker_snapshot(
+                    api_key=settings.alpaca_api_key,
+                    api_secret=settings.alpaca_api_secret,
+                    trading_base_url=settings.alpaca_trading_base_url,
+                )
+            except PaperTradingError as exc:
+                broker_check_failed = True
+                print(f"[position] Not advancing PositionState; broker check failed: {exc}")
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "Position save skipped; broker check failed",
+                    error=str(exc),
+                )
+            else:
+                matched = state_to_save(new_position, broker_after)
+                if matched is None:
+                    print(
+                        "[position] Not advancing PositionState; "
+                        f"decision={new_position.active_symbol!r} "
+                        f"broker={broker_after.held_symbol()!r}."
+                    )
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "Position state left unchanged",
+                        decision_symbol=new_position.active_symbol,
+                        broker_symbol=broker_after.held_symbol(),
+                    )
+                else:
+                    try:
+                        position_store.save(matched)
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "Position state saved",
+                            position_state_path=position_state_label,
+                            position_after=_position_to_dict(matched),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"Position store error: {exc}")
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "Position state save failed",
+                            error=str(exc),
+                        )
+                        return 1
+
+    try:
+        send_discord(
+            settings.discord_webhook_url,
+            alert,
+            settings.dry_run,
+            snapshot=snapshot,
+            position_before=position,
+            technical_meta=tech_meta,
+            today_iso=today_iso,
+            paper_results=paper_results or None,
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "Discord send completed",
+            dry_run=settings.dry_run,
+            webhook_configured=bool(settings.discord_webhook_url),
+            alert_type=alert.alert_type,
+            symbol=alert.symbol,
+            paper_result_count=len(paper_results),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Output error: {exc}")
+        log_event(logger, logging.ERROR, "Discord send failed", error=str(exc))
+        return 1
+
+    if not submit_orders:
+        try:
+            position_store.save(new_position)
+            log_event(
+                logger,
+                logging.INFO,
+                "Position state saved",
+                position_state_path=position_state_label,
+                position_after=_position_to_dict(new_position),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"Position store error (Discord already sent): {exc}")
+            log_event(logger, logging.ERROR, "Position state save failed after Discord", error=str(exc))
+            return 1
+    try:
+        append_journal(settings.journal_csv, alert)
+        log_event(
+            logger,
+            logging.INFO,
+            "Journal append succeeded",
+            journal_path=str(settings.journal_csv),
+            alert_type=alert.alert_type,
+            symbol=alert.symbol,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Journal warning (alert already sent): {exc}")
+        log_event(logger, logging.WARNING, "Journal append failed after alert", error=str(exc))
+    if broker_check_failed:
+        log_event(logger, logging.ERROR, "Run completed with broker check failure", exit_code=1)
+        return 1
+    log_event(logger, logging.INFO, "Run completed", exit_code=0)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())
