@@ -21,6 +21,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--rh-preview",
+        action="store_true",
+        help=(
+            "Print a Robinhood Trading MCP review-only playbook for the latest journal "
+            "alert (or a sample BUY), then exit. Does not call Robinhood, fetch market "
+            "data, update position, or place any order. Alpaca keys are not required."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
