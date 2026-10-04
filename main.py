@@ -282,3 +282,155 @@ def run() -> int:
         )
         return 1
     if sum(1 for flag in (args.backtest, args.backtest_sweep) if flag) and (
+        args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.trade_log_report
+        or args.learn_from_trades
+    ):
+        print(
+            "Config error: --strategy-eval / --small-grid / --checklist-compare / "
+            "--trade-log-report / --learn-from-trades cannot be combined with "
+            "--backtest or --backtest-sweep."
+        )
+        return 1
+    if args.trade_log_report and (
+        args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.health_check
+        or args.learn_from_trades
+    ):
+        print(
+            "Config error: --trade-log-report cannot be combined with "
+            "--strategy-eval, --small-grid, --checklist-compare, --health-check, "
+            "or --learn-from-trades."
+        )
+        return 1
+    if args.learn_from_trades and (
+        args.strategy_eval or args.small_grid or args.checklist_compare or args.health_check
+    ):
+        print(
+            "Config error: --learn-from-trades cannot be combined with "
+            "--strategy-eval, --small-grid, --checklist-compare, or --health-check."
+        )
+        return 1
+    if args.learn_discord and not args.learn_from_trades:
+        print("Config error: --learn-discord requires --learn-from-trades.")
+        return 1
+    if args.debug_strategy_sanity and not args.debug_strategy:
+        print("Config error: --debug-strategy-sanity requires --debug-strategy.")
+        return 1
+    logger = setup_logger(args.log_level)
+    run_ts = format_utc_z(datetime.now(timezone.utc))
+    log_event(
+        logger,
+        logging.INFO,
+        "Run started",
+        run_timestamp=run_ts,
+        dry_run_arg=bool(args.dry_run),
+        health_check=bool(args.health_check),
+        no_technical=bool(args.no_technical),
+        backtest_report_csv=args.backtest_report_csv,
+        backtest_sweep=args.backtest_sweep,
+        backtest_sweep_csv=args.backtest_sweep_csv,
+        walk_forward=args.walk_forward,
+        walk_forward_csv=args.walk_forward_csv,
+        strategy_eval=args.strategy_eval,
+        small_grid=args.small_grid,
+        checklist_compare=args.checklist_compare,
+        trade_log_report=args.trade_log_report,
+        learn_from_trades=args.learn_from_trades,
+        learn_discord=args.learn_discord,
+        debug_strategy=args.debug_strategy,
+        debug_strategy_sanity=args.debug_strategy_sanity,
+        high_confidence_only=args.high_confidence_only,
+        market_hours_only=bool(args.market_hours_only),
+    )
+
+    if args.set_position is not None and args.entry_price is not None and args.entry_price <= 0:
+        print("Config error: --entry-price must be positive when provided.")
+        log_event(logger, logging.ERROR, "Invalid CLI args", error="entry-price must be positive")
+        return 1
+
+    if args.rh_preview:
+        return _run_rh_preview(logger)
+
+    try:
+        settings = load_settings()
+        if args.dry_run:
+            settings = settings.__class__(**{**settings.__dict__, "dry_run": True})
+        strategy_params = strategy_params_from_settings(settings)
+        log_event(
+            logger,
+            logging.INFO,
+            "Settings loaded",
+            qqq_ticker=settings.qqq_ticker,
+            position_state_backend=settings.position_state_backend,
+            position_state_json=str(settings.position_state_json),
+            position_state_bot_id=settings.position_state_bot_id,
+            events_json=str(settings.events_json),
+            dry_run=settings.dry_run,
+            alpaca_paper_trading=settings.alpaca_paper_trading,
+            alpaca_trading_base_url=settings.alpaca_trading_base_url,
+            log_level=args.log_level,
+        )
+    except ConfigError as exc:
+        print(f"Config error: {exc}")
+        log_event(logger, logging.ERROR, "Config load failed", error=str(exc))
+        return 1
+
+    try:
+        position_store = position_store_from_settings(settings)
+    except ConfigError as exc:
+        print(f"Config error: {exc}")
+        log_event(logger, logging.ERROR, "Position store init failed", error=str(exc))
+        return 1
+    position_state_label = position_store.describe()
+
+    stamp = format_utc_z(datetime.now(timezone.utc))
+    if args.flat:
+        try:
+            position_store.save(
+                PositionState(
+                    active_symbol=None,
+                    entry_price=None,
+                    entry_timestamp=None,
+                    last_signal="MANUAL_FLAT",
+                    updated_at=stamp,
+                )
+            )
+        except PositionStoreError as exc:
+            print(f"Position store error: {exc}")
+            log_event(logger, logging.ERROR, "Manual flat save failed", error=str(exc))
+            return 1
+        print("Position reset: flat (no active TQQQ/SQQQ in bot memory).")
+        log_event(
+            logger,
+            logging.INFO,
+            "Manual flat applied",
+            position_state_path=position_state_label,
+            position_after={
+                "symbol": None,
+                "entry_price": None,
+                "entry_time": None,
+                "last_signal": "MANUAL_FLAT",
+                "updated_at": stamp,
+            },
+        )
+        return 0
+    elif args.set_position is not None:
+        entry_price_f = float(args.entry_price) if args.entry_price is not None else None
+        entry_ts_str: str | None = None
+        if args.entry_time:
+            try:
+                entry_ts_str = format_utc_z(_parse_entry_time_arg(args.entry_time))
+            except ValueError:
+                print("Config error: --entry-time must be valid ISO8601 (e.g. 2026-05-01T16:00:00Z).")
+                log_event(logger, logging.ERROR, "Invalid entry time argument", entry_time=args.entry_time)
+                return 1
+        try:
+            position_store.save(
+                PositionState(
+                    active_symbol=args.set_position,
+                    entr
