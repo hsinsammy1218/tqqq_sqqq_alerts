@@ -1,5 +1,7 @@
 # Render Blueprint: weekday paper-learning alert cron (US Eastern / EDT = UTC-4).
-# After apply: fill secret values for the tqqq-sqqq-alerts env group in the Dashboard.
+# After apply / Manual Sync: fill secrets in the tqqq-sqqq-alerts env group and
+# confirm paper risk keys (USD, gates ON): PAPER_MAX_BUY_NOTIONAL=300,
+# PAPER_MAX_DAILY_LOSS_USD=25, PAPER_MAX_WEEKLY_LOSS_USD=60, PAPER_TQQQ_ONLY=false.
 # Requires POSITION_STATE_BACKEND=supabase and TRADE_LOG_BACKEND=supabase so position
 # and the learning journal survive ephemeral disks.
 #
@@ -56,6 +58,20 @@ envVarGroups:
         value: https://paper-api.alpaca.markets
       - key: TRADE_LOG_JSONL
         value: logs/trades.jsonl
+      # Paper risk box (Path B only). Units are USD dollars, not percents.
+      # 0 / empty / false = gate OFF in code. These defaults turn the gates ON.
+      # Sized for a ~$1,000 paper sleeve: daily ~2.5%, weekly ~6%.
+      # PAPER_MAX_BUY_NOTIONAL is a hard USD cap per buy (clamps ALPACA_PAPER_NOTIONAL).
+      # Do not set PAPER_TQQQ_ONLY=true — one book trades both TQQQ and SQQQ.
+      # Never set ALPACA_TRADING_BASE_URL to https://api.alpaca.markets.
+      - key: PAPER_MAX_BUY_NOTIONAL
+        value: "300"
+      - key: PAPER_MAX_DAILY_LOSS_USD
+        value: "25"
+      - key: PAPER_MAX_WEEKLY_LOSS_USD
+        value: "60"
+      - key: PAPER_TQQQ_ONLY
+        value: "false"
       # Secrets — set once in Dashboard env group (never commit).
       - key: ALPACA_API_KEY
         sync: false
