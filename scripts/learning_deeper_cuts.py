@@ -393,4 +393,157 @@ def main() -> int:
         ],
         "rolling_6m": roll_6,
         "rolling_12m": roll_12,
-        "tqqq_only_counterfactual": tq
+        "tqqq_only_counterfactual": tqqq_only,
+    }
+    OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    OUT_JSON.write_text(json.dumps(payload, indent=2))
+    _write_doc(payload)
+    print(f"[ok] wrote {OUT_JSON}")
+    print(f"[ok] wrote {OUT_DOC}")
+    return 0
+
+
+def _write_doc(p: dict) -> None:
+    b = p["baseline_full_pre_seal"]
+    lines = [
+        "# Learning deeper cuts (IEX 2020→pre-seal)",
+        "",
+        "**Learning only.** Frozen `DEFAULT_SCORE_WEIGHTS`. No sealed OOS re-run. No weight/filter changes.",
+        "",
+        f"Generated `{p['generated_at_utc']}` · seal unchanged `{p['seal_unchanged']}` · API calls ≈ `{p['api']['calls']}` · 429s `{p['api']['http_429s']}`.",
+        "",
+        "## Baseline check (full pre-seal)",
+        "",
+        "| Metric | Value |",
+        "| --- | ---: |",
+        f"| Window | {b['start'][:10]} → {b['end'][:10]} |",
+        f"| Closed trades | {b['closed_trades']} |",
+        f"| Compounded return | **{b['compounded_return_pct']}%** |",
+        f"| Win rate | {b['win_rate_pct']}% |",
+        f"| Closed max DD | {b['closed_max_dd_pct']}% |",
+        f"| MTM max DD | {b['mtm_max_dd_pct']}% |",
+        f"| Exposure | {b['exposure_pct']}% |",
+        f"| Avg hold | {b['avg_hold_days']}d |",
+        f"| Max loss streak | {b['max_loss_streak']} |",
+        f"| Max win streak | {b['max_win_streak']} |",
+        f"| Mix | {b['trades_by_symbol']} |",
+        f"| BH QQQ / TQQQ | {b['bh_qqq_pct']}% / {b['bh_tqqq_pct']}% |",
+        "",
+        "## By regime",
+        "",
+        "| Regime | Trades | Win % | Compounded | Avg |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for k, v in p["by_regime"].items():
+        if v.get("trades"):
+            lines.append(
+                f"| {k} | {v['trades']} | {v['win_rate_pct']} | {v['compounded_return_pct']}% | {v['avg_return_pct']}% |"
+            )
+    lines += [
+        "",
+        "## By entry confidence (at exit row)",
+        "",
+        "| Bucket | Trades | Win % | Compounded | Avg |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for k, v in p["by_confidence_bucket"].items():
+        if v.get("trades"):
+            lines.append(
+                f"| {k} | {v['trades']} | {v['win_rate_pct']} | {v['compounded_return_pct']}% | {v['avg_return_pct']}% |"
+            )
+    lines += [
+        "",
+        "## By hold length",
+        "",
+        "| Hold | Trades | Win % | Compounded | Avg |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for k, v in p["by_hold_bucket"].items():
+        if v.get("trades"):
+            lines.append(
+                f"| {k} | {v['trades']} | {v['win_rate_pct']} | {v['compounded_return_pct']}% | {v['avg_return_pct']}% |"
+            )
+    lines += [
+        "",
+        "## Symbol × regime",
+        "",
+        "| Slice | Trades | Win % | Compounded | Avg |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for k, v in p["by_symbol_regime"].items():
+        if v.get("trades"):
+            lines.append(
+                f"| {k} | {v['trades']} | {v['win_rate_pct']} | {v['compounded_return_pct']}% | {v['avg_return_pct']}% |"
+            )
+
+    lines += [
+        "",
+        "## Rolling 12-month chunks (non-overlapping)",
+        "",
+        "| Window | Trades | Return | Win % | Max DD | BH QQQ | Mix |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for w in p["rolling_12m"]:
+        lines.append(
+            f"| {w['label']} | {w['closed_trades']} | {w['compounded_return_pct']}% | "
+            f"{w['win_rate_pct']} | {w['closed_max_dd_pct']}% | {w['bh_qqq_pct']}% | {w['trades_by_symbol']} |"
+        )
+
+    lines += [
+        "",
+        "## Rolling 6-month chunks (non-overlapping)",
+        "",
+        "| Window | Trades | Return | Win % | Max DD | BH QQQ |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for w in p["rolling_6m"]:
+        lines.append(
+            f"| {w['label']} | {w['closed_trades']} | {w['compounded_return_pct']}% | "
+            f"{w['win_rate_pct']} | {w['closed_max_dd_pct']}% | {w['bh_qqq_pct']}% |"
+        )
+
+    cf = p["tqqq_only_counterfactual"]
+    lines += [
+        "",
+        "## Learning counterfactual: suppress SQQQ entries",
+        "",
+        "Same window/rules, but BUY/FLIP into SQQQ become no-entry (FLIP from TQQQ → exit only). "
+        "**Not a proposed live change** — stress lens on inverse-leg drag.",
+        "",
+        f"| | Baseline | TQQQ-only CF |",
+        f"| --- | ---: | ---: |",
+        f"| Return | {b['compounded_return_pct']}% | **{cf['compounded_return_pct']}%** |",
+        f"| Win rate | {b['win_rate_pct']}% | {cf['win_rate_pct']}% |",
+        f"| Closed max DD | {b['closed_max_dd_pct']}% | {cf['closed_max_dd_pct']}% |",
+        f"| Trades | {b['closed_trades']} | {cf['closed_trades']} |",
+        f"| Mix | {b['trades_by_symbol']} | {cf['trades_by_symbol']} |",
+        "",
+        "## Worst 10 closed trades",
+        "",
+        "| When | Sym | Ret | Hold | Conf | Regime | Action |",
+        "| --- | --- | ---: | ---: | ---: | --- | --- |",
+    ]
+    for t in p["worst_10"]:
+        lines.append(
+            f"| {t['timestamp'][:10]} | {t['symbol']} | {t['return_pct']}% | {t['hold_days']} | "
+            f"{t['confidence']} | {t['regime']} | {t['action']} |"
+        )
+    lines += [
+        "",
+        "## Takeaways (still do not retune)",
+        "",
+        "1. Regime and SQQQ mix dominate outcomes more than confidence fine-tuning inside the freeze.",
+        "2. Rolling windows show regime clustering — strong late bull chunks vs ugly 2021–2022 blocks.",
+        "3. The TQQQ-only counterfactual is a **diagnostic**, not a green light to disable SQQQ live.",
+        "4. Paper Path B soak / risk caps remain more important than polishing weights on this sample.",
+        "5. Pre-2020 still unavailable on free IEX — this analysis cannot extend earlier.",
+        "",
+        f"Evidence JSON: `{OUT_JSON}`.",
+        "",
+    ]
+    OUT_DOC.parent.mkdir(parents=True, exist_ok=True)
+    OUT_DOC.write_text("\n".join(lines))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
