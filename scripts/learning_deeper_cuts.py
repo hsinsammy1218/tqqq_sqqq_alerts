@@ -333,4 +333,23 @@ def main() -> int:
     print("[score] TQQQ-only counterfactual", flush=True)
     tqqq_only = _tqqq_only_counterfactual(aligned, common, warmup_lo, pre_seal_hi)
 
-    seal_after = hashlib.sha256(SEAL_PATH.read_bytes()).hexdigest() if SEAL_PATH.exists() else
+    seal_after = hashlib.sha256(SEAL_PATH.read_bytes()).hexdigest() if SEAL_PATH.exists() else None
+
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "learning_only": True,
+        "frozen_weights": list(DEFAULT_SCORE_WEIGHTS),
+        "did_not_run_etf_sealed_oos": True,
+        "seal_sha256_before": seal_before,
+        "seal_sha256_after": seal_after,
+        "seal_unchanged": seal_before == seal_after,
+        "api": {**_api, "cli_calls_attempted": cli_calls_attempted(), "fetch_wall_s": round(time.time() - t0, 1)},
+        "baseline_full_pre_seal": {
+            "start": baseline.start_utc,
+            "end": baseline.end_utc,
+            "closed_trades": baseline.closed_trades,
+            "compounded_return_pct": round(float(baseline.total_return_pct), 2),
+            "win_rate_pct": round(float(baseline.win_rate_pct), 1),
+            "closed_max_dd_pct": round(float(baseline.max_drawdown_pct), 2),
+            "mtm_max_dd_pct": round(float(baseline.mtm_max_drawdown_pct), 2),
+            "exposure_pct": round(float(baseline.exposur
