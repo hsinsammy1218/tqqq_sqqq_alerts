@@ -575,4 +575,81 @@ def run() -> int:
         if research_window is not None:
             candle_kwargs = {
                 "daily_lookback_days": research_window.daily_lookback_days,
-                "max_daily_bars": resear
+                "max_daily_bars": research_window.max_daily_bars,
+                "hourly_lookback_days": research_window.hourly_lookback_days,
+                "max_hourly_bars": research_window.max_hourly_bars,
+            }
+        candles = load_candles(
+            ticker=settings.qqq_ticker,
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
+            **candle_kwargs,
+        )
+        last_daily = candles.daily.index[-1]
+        last_h4 = candles.four_hour.index[-1]
+        daily_fetch_label = last_daily.isoformat() if hasattr(last_daily, "isoformat") else str(last_daily)
+        h4_fetch_label = last_h4.isoformat() if hasattr(last_h4, "isoformat") else str(last_h4)
+        log_event(
+            logger,
+            logging.INFO,
+            "Data fetch succeeded",
+            qqq_ticker=settings.qqq_ticker,
+            latest_daily_candle=daily_fetch_label,
+            latest_h4_candle=h4_fetch_label,
+            alpaca_api_calls=cli_calls_attempted(),
+        )
+        _log_cli_usage(settings, logger)
+    except MarketDataQuotaError as exc:
+        print(f"Data error: {exc}")
+        _log_cli_usage(settings, logger, quota_error_detail=str(exc))
+        log_event(
+            logger,
+            logging.ERROR,
+            "Data fetch failed",
+            error=str(exc),
+            quota_exhausted=True,
+            alpaca_api_calls=cli_calls_attempted(),
+        )
+        try:
+            maybe_notify_quota_reached(
+                webhook_url=settings.discord_webhook_url,
+                dry_run=settings.dry_run,
+                state_path=Path("logs/api_quota_notified.json"),
+                detail=str(exc),
+                logger=logger,
+            )
+        except Exception as notify_exc:  # noqa: BLE001
+            print(f"API quota Discord notice failed: {notify_exc}")
+            log_event(logger, logging.ERROR, "API quota Discord notice failed", error=str(notify_exc))
+        return 1
+    except DataError as exc:
+        print(f"Data error: {exc}")
+        _log_cli_usage(settings, logger)
+        log_event(
+            logger,
+            logging.ERROR,
+            "Data fetch failed",
+            error=str(exc),
+            alpaca_api_calls=cli_calls_attempted(),
+        )
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        print(f"Unexpected data/indicator failure: {exc}")
+        log_event(logger, logging.ERROR, "Unexpected data failure", error=str(exc))
+        return 1
+
+    now_utc = datetime.now(timezone.utc)
+    blocked_dates, risk_notes = load_merged_blackout_dates(
+        settings.events_json,
+        risk_avoidance=settings.event_risk_avoidance,
+        risk_calendar_url=settings.event_risk_calendar_url or None,
+    )
+    for msg in risk_notes:
+        print(f"[events] {msg}")
+    log_event(
+        logger,
+        logging.INFO,
+        "Event risk evaluated",
+        risk_avoidance=settings.even
