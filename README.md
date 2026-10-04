@@ -95,10 +95,10 @@ Copy `.env.example` to `.env` and fill values:
   - `ALPACA_PAPER_VOL_STOP=stop_pct` — `stop_pct` uses `STOP_LOSS_PCT`; `atr` uses `ALPACA_PAPER_ATR_STOP_MULT` × QQQ ATR / QQQ price
   - `EXIT_MODE=fixed` — `atr_trail` replaces the fixed take-profit exit with an ATR trail (`ATR_TRAIL_MULT`, default 2). `STRETCH_TAKE_PROFIT_PCT` is never an automatic exit
   - `ALPACA_TRADING_BASE_URL` defaults to the paper API; `https://api.alpaca.markets` is rejected at config load
-  - Optional **paper risk controls** (default OFF so current Render soak is unchanged):
-    - `PAPER_MAX_BUY_NOTIONAL=0` — when `> 0`, hard cap on buy notional (e.g. `200` for later live rehearsal)
-    - `PAPER_TQQQ_ONLY=false` — when `true`, block SQQQ buys / flip-entries; sells still flatten
-    - `PAPER_MAX_DAILY_LOSS_USD=0` / `PAPER_MAX_WEEKLY_LOSS_USD=0` — when `> 0`, kill switch trips on sleeve equity drop vs prior close / week-start; blocks new buys, posts Discord `KILL`
+  - Optional **paper risk controls** (local `.env` default **OFF** / `0`; Render env group `tqqq-sqqq-alerts` turns the USD gates **ON**). Units are **USD dollars**, not percents. Still paper-only — never set the live Alpaca host.
+    - `PAPER_MAX_BUY_NOTIONAL` — when `> 0`, hard USD cap on each buy (Render default `300`)
+    - `PAPER_TQQQ_ONLY=false` — leave **false** so one book can buy TQQQ **and** SQQQ; `true` would block SQQQ buys (sells still flatten)
+    - `PAPER_MAX_DAILY_LOSS_USD` / `PAPER_MAX_WEEKLY_LOSS_USD` — when `> 0`, kill switch trips on sleeve equity drop vs prior close / week-start (Render defaults `25` / `60`, ~2.5% / ~6% of a $1,000 paper sleeve); blocks new buys, posts Discord `KILL`
   - Separate from any Robinhood setup; see paper-trading notes below
 
 Discord webhook quick setup:
@@ -161,7 +161,7 @@ Default is alerts-only. To rehearse execution on Alpaca **paper** (not live, not
 
 Order mapping: BUY → buy limit; SELL → sell full paper position (skip if flat at broker); FLIP → sell held then buy target. Failures are logged and do not block Discord / journal / bot memory.
 
-Optional risk controls (default **off**): `PAPER_MAX_BUY_NOTIONAL`, `PAPER_TQQQ_ONLY`, `PAPER_MAX_DAILY_LOSS_USD`, `PAPER_MAX_WEEKLY_LOSS_USD` — see `.env.example`. Kill trips block buys, allow sells, and post Discord content `KILL`.
+Optional risk controls (local default **off**; Render env group ships **on**): `PAPER_MAX_BUY_NOTIONAL`, `PAPER_TQQQ_ONLY`, `PAPER_MAX_DAILY_LOSS_USD`, `PAPER_MAX_WEEKLY_LOSS_USD` — see `.env.example`. Kill trips block buys, allow sells, and post Discord content `KILL`. Still paper Path B only.
 
 Paper order outcomes append to **`logs/trades.jsonl`** (gitignored; override with `TRADE_LOG_JSONL`) and, when `TRADE_LOG_BACKEND=supabase`, also insert into Supabase `public.bot_trade_log` for durable learning on Render — see `trade_log.py` / `trade_log_store.py`.
 
@@ -220,8 +220,12 @@ Render Cron containers are **ephemeral** — local `position_state.json` and `lo
    | `POSITION_STATE_BOT_ID` | `default` (or another id if you run multiple bots) |
    | `SUPABASE_URL` | project URL |
    | `SUPABASE_SERVICE_ROLE_KEY` | service role key |
+   | `PAPER_MAX_BUY_NOTIONAL` | `300` (USD per buy; hard cap — **not** a percent) |
+   | `PAPER_MAX_DAILY_LOSS_USD` | `25` (USD vs prior session close; ~2.5% of a $1,000 paper sleeve) |
+   | `PAPER_MAX_WEEKLY_LOSS_USD` | `60` (USD vs week-start equity; ~6% of a $1,000 paper sleeve) |
+   | `PAPER_TQQQ_ONLY` | `false` (both TQQQ and SQQQ in one book — do **not** set `true`) |
 
-   Copy any other strategy knobs from your local `.env` as needed. Secrets stay in the Dashboard — never commit `.env`. Live Alpaca host stays blocked; **do not wire Robinhood**.
+   Blueprint defaults above turn the paper risk gates **ON** (`0` / empty = off in code). Confirm or paste these in the Dashboard env group after **Manual Sync**. Secrets stay in the Dashboard — never commit `.env`. Live Alpaca host stays blocked (`https://paper-api.alpaca.markets` only); **do not wire Robinhood**.
 
 3. **Deploy the Blueprint**: Dashboard → New → Blueprint → this repo (`render.yaml`). That creates **one** weekday cron — every **15 minutes** during the US equity day — so the workspace stays under Render’s **25-service** limit (was 12 half-hour crons, then briefly 2 swing slots):
 
@@ -233,7 +237,7 @@ Render Cron containers are **ephemeral** — local `position_state.json` and `lo
 
    Pre-open ticks (9:00/9:15) no-op via market-hours. **Lunch blackout 12:00–1:00 PM ET** (16:00–16:59 UTC in EDT) is enforced in-app (`lunch_blackout_reason`) so the single `*/15` cron can fire at noon without scanning. Useful coverage: ~9:30/9:45–11:45 and 13:00–15:45.
 
-   **Before Manual Sync:** delete old cron services (`tqqq-sqqq-alerts-1000`, `1530`, and any `1030`–`1500` leftovers) so the Blueprint can replace them with `tqqq-sqqq-alerts-daytime` without exceeding the 25-service cap. Keep env group `tqqq-sqqq-alerts`.
+   **Before Manual Sync:** delete old cron services (`tqqq-sqqq-alerts-1000`, `1530`, and any `1030`–`1500` leftovers) so the Blueprint can replace them with `tqqq-sqqq-alerts-daytime` without exceeding the 25-service cap. Keep env group `tqqq-sqqq-alerts`. After **Manual Sync**, confirm the paper risk keys (`PAPER_MAX_BUY_NOTIONAL=300`, `PAPER_MAX_DAILY_LOSS_USD=25`, `PAPER_MAX_WEEKLY_LOSS_USD=60`, `PAPER_TQQQ_ONLY=false`) are present in that group — paste them if Blueprint sync did not write the new keys.
 
    **API call impact:** each scan historically uses ~18 Alpaca Market Data / trading API calls. ~21 useful weekday slots ≈ **~380 calls/day** (lunch skipped). Same entry rules; paper-only. Do **not** enable live trading.
 
