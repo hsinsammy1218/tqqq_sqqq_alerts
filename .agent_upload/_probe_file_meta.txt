@@ -1,1 +1,0 @@
-$file:/tmp/mcp_probe_content.txt
