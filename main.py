@@ -508,4 +508,148 @@ def run() -> int:
             trade_log_store = trade_log_store_from_settings(settings)
             result = run_learn_from_trades(
                 trade_log_path=settings.trade_log_jsonl,
-                digest_path=a
+                digest_path=args.learn_digest_json,
+                proposals_path=args.learn_proposals_md,
+                research_max_dd_pct=research_dd,
+                trade_log_store=trade_log_store,
+                send_discord=bool(args.learn_discord),
+                discord_webhook_url=settings.discord_webhook_url or "",
+                discord_dry_run=bool(settings.dry_run),
+            )
+        except (OSError, TradeLogStoreError, ConfigError, RuntimeError) as exc:
+            print(f"Learner error: {exc}")
+            log_event(logger, logging.ERROR, "Learner failed", error=str(exc))
+            return 1
+        digest = result["digest"]
+        print(format_learner_summary(digest, result["proposals"]))
+        print(f"Learner digest JSON written: {args.learn_digest_json}")
+        print(f"Learner proposals written: {args.learn_proposals_md}")
+        print(f"Learner source: {digest.get('source_path')}")
+        if args.learn_discord:
+            print("Learner Discord summary requested (--learn-discord).")
+        log_event(
+            logger,
+            logging.INFO,
+            "Learner digest written",
+            digest_path=args.learn_digest_json,
+            proposals_path=args.learn_proposals_md,
+            source_path=digest.get("source_path"),
+            row_count=digest.get("row_count"),
+            enough_data=digest.get("enough_data"),
+            learn_discord=bool(args.learn_discord),
+        )
+        return 0
+
+    is_research = any(research_flags)
+    webhook_err = _missing_live_webhook_message(settings)
+    if webhook_err and not is_research:
+        print(f"Config error: {webhook_err}")
+        log_event(logger, logging.ERROR, "Live Discord webhook missing", error=webhook_err)
+        return 1
+    if args.market_hours_only and not is_research:
+        skip_reason = cron_skip_reason()
+        if skip_reason is not None:
+            # Lunch blackout is a scan policy (session still open); market-closed covers the rest.
+            if "lunch" in skip_reason:
+                print(f"Skipped: {skip_reason}.")
+                usage_reason = "lunch blackout"
+                log_label = "Lunch blackout skip"
+            else:
+                print(f"Skipped: US equity market is closed ({skip_reason}).")
+                usage_reason = "market closed"
+                log_label = "Market hours skip"
+            print(format_cli_usage_line(reason=usage_reason))
+            log_event(logger, logging.INFO, log_label, reason=skip_reason, alpaca_api_calls=0)
+            return 0
+
+    long_research = bool(
+        args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.etf_backtest
+        or args.etf_sealed_oos
+    )
+    research_window = ResearchWindow() if long_research else None
+    try:
+        candle_kwargs: dict[str, int] = {}
+        if research_window is not None:
+            candle_kwargs = {
+                "daily_lookback_days": research_window.daily_lookback_days,
+                "max_daily_bars": research_window.max_daily_bars,
+                "hourly_lookback_days": research_window.hourly_lookback_days,
+                "max_hourly_bars": research_window.max_hourly_bars,
+            }
+        candles = load_candles(
+            ticker=settings.qqq_ticker,
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
+            **candle_kwargs,
+        )
+        last_daily = candles.daily.index[-1]
+        last_h4 = candles.four_hour.index[-1]
+        daily_fetch_label = last_daily.isoformat() if hasattr(last_daily, "isoformat") else str(last_daily)
+        h4_fetch_label = last_h4.isoformat() if hasattr(last_h4, "isoformat") else str(last_h4)
+        log_event(
+            logger,
+            logging.INFO,
+            "Data fetch succeeded",
+            qqq_ticker=settings.qqq_ticker,
+            latest_daily_candle=daily_fetch_label,
+            latest_h4_candle=h4_fetch_label,
+            alpaca_api_calls=cli_calls_attempted(),
+        )
+        _log_cli_usage(settings, logger)
+    except MarketDataQuotaError as exc:
+        print(f"Data error: {exc}")
+        _log_cli_usage(settings, logger, quota_error_detail=str(exc))
+        log_event(
+            logger,
+            logging.ERROR,
+            "Data fetch failed",
+            error=str(exc),
+            quota_exhausted=True,
+            alpaca_api_calls=cli_calls_attempted(),
+        )
+        try:
+            maybe_notify_quota_reached(
+                webhook_url=settings.discord_webhook_url,
+                dry_run=settings.dry_run,
+                state_path=Path("logs/api_quota_notified.json"),
+                detail=str(exc),
+                logger=logger,
+            )
+        except Exception as notify_exc:  # noqa: BLE001
+            print(f"API quota Discord notice failed: {notify_exc}")
+            log_event(logger, logging.ERROR, "API quota Discord notice failed", error=str(notify_exc))
+        return 1
+    except DataError as exc:
+        print(f"Data error: {exc}")
+        _log_cli_usage(settings, logger)
+        log_event(
+            logger,
+            logging.ERROR,
+            "Data fetch failed",
+            error=str(exc),
+            alpaca_api_calls=cli_calls_attempted(),
+        )
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        print(f"Unexpected data/indicator failure: {exc}")
+        log_event(logger, logging.ERROR, "Unexpected data failure", error=str(exc))
+        return 1
+
+    now_utc = datetime.now(timezone.utc)
+    blocked_dates, risk_notes = load_merged_blackout_dates(
+        settings.events_json,
+        risk_avoidance=settings.event_risk_avoidance,
+        risk_calendar_url=settings.event_risk_calendar_url or None,
+    )
+    for msg in risk_notes:
+        print(f"[events] {msg}")
+    log_event(
+        logger,
+        logging.INFO,
+        "Event risk evaluated",
+        risk_avoidance=settings.even
