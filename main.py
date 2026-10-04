@@ -311,4 +311,290 @@ def run() -> int:
         args.strategy_eval or args.small_grid or args.checklist_compare or args.health_check
     ):
         print(
-      
+            "Config error: --learn-from-trades cannot be combined with "
+            "--strategy-eval, --small-grid, --checklist-compare, or --health-check."
+        )
+        return 1
+    if args.learn_discord and not args.learn_from_trades:
+        print("Config error: --learn-discord requires --learn-from-trades.")
+        return 1
+    if args.debug_strategy_sanity and not args.debug_strategy:
+        print("Config error: --debug-strategy-sanity requires --debug-strategy.")
+        return 1
+    logger = setup_logger(args.log_level)
+    run_ts = format_utc_z(datetime.now(timezone.utc))
+    log_event(
+        logger,
+        logging.INFO,
+        "Run started",
+        run_timestamp=run_ts,
+        dry_run_arg=bool(args.dry_run),
+        health_check=bool(args.health_check),
+        no_technical=bool(args.no_technical),
+        backtest_report_csv=args.backtest_report_csv,
+        backtest_sweep=args.backtest_sweep,
+        backtest_sweep_csv=args.backtest_sweep_csv,
+        walk_forward=args.walk_forward,
+        walk_forward_csv=args.walk_forward_csv,
+        strategy_eval=args.strategy_eval,
+        small_grid=args.small_grid,
+        checklist_compare=args.checklist_compare,
+        trade_log_report=args.trade_log_report,
+        learn_from_trades=args.learn_from_trades,
+        learn_discord=args.learn_discord,
+        debug_strategy=args.debug_strategy,
+        debug_strategy_sanity=args.debug_strategy_sanity,
+        high_confidence_only=args.high_confidence_only,
+        market_hours_only=bool(args.market_hours_only),
+    )
+
+    if args.set_position is not None and args.entry_price is not None and args.entry_price <= 0:
+        print("Config error: --entry-price must be positive when provided.")
+        log_event(logger, logging.ERROR, "Invalid CLI args", error="entry-price must be positive")
+        return 1
+
+    if args.rh_preview:
+        return _run_rh_preview(logger)
+
+    try:
+        settings = load_settings()
+        if args.dry_run:
+            settings = settings.__class__(**{**settings.__dict__, "dry_run": True})
+        strategy_params = strategy_params_from_settings(settings)
+        log_event(
+            logger,
+            logging.INFO,
+            "Settings loaded",
+            qqq_ticker=settings.qqq_ticker,
+            position_state_backend=settings.position_state_backend,
+            position_state_json=str(settings.position_state_json),
+            position_state_bot_id=settings.position_state_bot_id,
+            events_json=str(settings.events_json),
+            dry_run=settings.dry_run,
+            alpaca_paper_trading=settings.alpaca_paper_trading,
+            alpaca_trading_base_url=settings.alpaca_trading_base_url,
+            log_level=args.log_level,
+        )
+    except ConfigError as exc:
+        print(f"Config error: {exc}")
+        log_event(logger, logging.ERROR, "Config load failed", error=str(exc))
+        return 1
+
+    try:
+        position_store = position_store_from_settings(settings)
+    except ConfigError as exc:
+        print(f"Config error: {exc}")
+        log_event(logger, logging.ERROR, "Position store init failed", error=str(exc))
+        return 1
+    position_state_label = position_store.describe()
+
+    stamp = format_utc_z(datetime.now(timezone.utc))
+    if args.flat:
+        try:
+            position_store.save(
+                PositionState(
+                    active_symbol=None,
+                    entry_price=None,
+                    entry_timestamp=None,
+                    last_signal="MANUAL_FLAT",
+                    updated_at=stamp,
+                )
+            )
+        except PositionStoreError as exc:
+            print(f"Position store error: {exc}")
+            log_event(logger, logging.ERROR, "Manual flat save failed", error=str(exc))
+            return 1
+        print("Position reset: flat (no active TQQQ/SQQQ in bot memory).")
+        log_event(
+            logger,
+            logging.INFO,
+            "Manual flat applied",
+            position_state_path=position_state_label,
+            position_after={
+                "symbol": None,
+                "entry_price": None,
+                "entry_time": None,
+                "last_signal": "MANUAL_FLAT",
+                "updated_at": stamp,
+            },
+        )
+        return 0
+    elif args.set_position is not None:
+        entry_price_f = float(args.entry_price) if args.entry_price is not None else None
+        entry_ts_str: str | None = None
+        if args.entry_time:
+            try:
+                entry_ts_str = format_utc_z(_parse_entry_time_arg(args.entry_time))
+            except ValueError:
+                print("Config error: --entry-time must be valid ISO8601 (e.g. 2026-05-01T16:00:00Z).")
+                log_event(logger, logging.ERROR, "Invalid entry time argument", entry_time=args.entry_time)
+                return 1
+        try:
+            position_store.save(
+                PositionState(
+                    active_symbol=args.set_position,
+                    entry_price=entry_price_f,
+                    entry_timestamp=entry_ts_str,
+                    last_signal="MANUAL_SET",
+                    updated_at=stamp,
+                )
+            )
+        except PositionStoreError as exc:
+            print(f"Position store error: {exc}")
+            log_event(logger, logging.ERROR, "Manual position set failed", error=str(exc))
+            return 1
+        extra = []
+        if entry_price_f is not None:
+            extra.append(f"@ {entry_price_f}")
+        else:
+            extra.append("entry price unset (exit levels use QQQ daily close as proxy)")
+        if entry_ts_str:
+            extra.append(f"opened {entry_ts_str}")
+        else:
+            extra.append("entry time unset (max hold counts from first successful bot run)")
+        print(f"Position set: {args.set_position} - " + "; ".join(extra) + ".")
+        log_event(
+            logger,
+            logging.INFO,
+            "Manual position set",
+            position_state_path=position_state_label,
+            position_after={
+                "symbol": args.set_position,
+                "entry_price": entry_price_f,
+                "entry_time": entry_ts_str,
+                "last_signal": "MANUAL_SET",
+                "updated_at": stamp,
+            },
+        )
+        return 0
+
+    if args.health_check:
+        return run_health_check(settings, settings.dry_run, logger)
+
+    if args.discord_test:
+        return _run_discord_test(settings, logger)
+
+    if args.trade_log_report:
+        research_dd = load_research_max_dd_pct()
+        try:
+            trade_log_store = trade_log_store_from_settings(settings)
+            payload = run_trade_log_report(
+                trade_log_path=settings.trade_log_jsonl,
+                report_path=args.trade_log_report_json,
+                research_max_dd_pct=research_dd,
+                trade_log_store=trade_log_store,
+            )
+        except (OSError, TradeLogStoreError, ConfigError) as exc:
+            print(f"Trade log report error: {exc}")
+            log_event(logger, logging.ERROR, "Trade log report failed", error=str(exc))
+            return 1
+        print(format_trade_log_report_summary(payload))
+        print(f"Trade log report JSON written: {args.trade_log_report_json}")
+        print(f"Trade log source: {payload.get('source_path')}")
+        log_event(
+            logger,
+            logging.INFO,
+            "Trade log report written",
+            report_path=args.trade_log_report_json,
+            source_path=payload.get("source_path"),
+            row_count=payload.get("row_count"),
+            enough_data_for_rule_changes=payload.get("enough_data_for_rule_changes"),
+        )
+        return 0
+
+    if args.learn_from_trades:
+        research_dd = load_research_max_dd_pct()
+        try:
+            trade_log_store = trade_log_store_from_settings(settings)
+            result = run_learn_from_trades(
+                trade_log_path=settings.trade_log_jsonl,
+                digest_path=args.learn_digest_json,
+                proposals_path=args.learn_proposals_md,
+                research_max_dd_pct=research_dd,
+                trade_log_store=trade_log_store,
+                send_discord=bool(args.learn_discord),
+                discord_webhook_url=settings.discord_webhook_url or "",
+                discord_dry_run=bool(settings.dry_run),
+            )
+        except (OSError, TradeLogStoreError, ConfigError, RuntimeError) as exc:
+            print(f"Learner error: {exc}")
+            log_event(logger, logging.ERROR, "Learner failed", error=str(exc))
+            return 1
+        digest = result["digest"]
+        print(format_learner_summary(digest, result["proposals"]))
+        print(f"Learner digest JSON written: {args.learn_digest_json}")
+        print(f"Learner proposals written: {args.learn_proposals_md}")
+        print(f"Learner source: {digest.get('source_path')}")
+        if args.learn_discord:
+            print("Learner Discord summary requested (--learn-discord).")
+        log_event(
+            logger,
+            logging.INFO,
+            "Learner digest written",
+            digest_path=args.learn_digest_json,
+            proposals_path=args.learn_proposals_md,
+            source_path=digest.get("source_path"),
+            row_count=digest.get("row_count"),
+            enough_data=digest.get("enough_data"),
+            learn_discord=bool(args.learn_discord),
+        )
+        return 0
+
+    is_research = any(research_flags)
+    webhook_err = _missing_live_webhook_message(settings)
+    if webhook_err and not is_research:
+        print(f"Config error: {webhook_err}")
+        log_event(logger, logging.ERROR, "Live Discord webhook missing", error=webhook_err)
+        return 1
+    if args.market_hours_only and not is_research:
+        skip_reason = cron_skip_reason()
+        if skip_reason is not None:
+            # Lunch blackout is a scan policy (session still open); market-closed covers the rest.
+            if "lunch" in skip_reason:
+                print(f"Skipped: {skip_reason}.")
+                usage_reason = "lunch blackout"
+                log_label = "Lunch blackout skip"
+            else:
+                print(f"Skipped: US equity market is closed ({skip_reason}).")
+                usage_reason = "market closed"
+                log_label = "Market hours skip"
+            print(format_cli_usage_line(reason=usage_reason))
+            log_event(logger, logging.INFO, log_label, reason=skip_reason, alpaca_api_calls=0)
+            return 0
+
+    long_research = bool(
+        args.strategy_eval
+        or args.small_grid
+        or args.checklist_compare
+        or args.etf_backtest
+        or args.etf_sealed_oos
+    )
+    research_window = ResearchWindow() if long_research else None
+    try:
+        candle_kwargs: dict[str, int] = {}
+        if research_window is not None:
+            candle_kwargs = {
+                "daily_lookback_days": research_window.daily_lookback_days,
+                "max_daily_bars": research_window.max_daily_bars,
+                "hourly_lookback_days": research_window.hourly_lookback_days,
+                "max_hourly_bars": research_window.max_hourly_bars,
+            }
+        candles = load_candles(
+            ticker=settings.qqq_ticker,
+            api_key=settings.alpaca_api_key,
+            api_secret=settings.alpaca_api_secret,
+            data_base_url=settings.alpaca_data_base_url,
+            feed=settings.alpaca_data_feed,
+            **candle_kwargs,
+        )
+        last_daily = candles.daily.index[-1]
+        last_h4 = candles.four_hour.index[-1]
+        daily_fetch_label = last_daily.isoformat() if hasattr(last_daily, "isoformat") else str(last_daily)
+        h4_fetch_label = last_h4.isoformat() if hasattr(last_h4, "isoformat") else str(last_h4)
+        log_event(
+            logger,
+            logging.INFO,
+            "Data fetch succeeded",
+            qqq_ticker=settings.qqq_ticker,
+            latest_daily_candle=daily_fetch_label,
+            lat
