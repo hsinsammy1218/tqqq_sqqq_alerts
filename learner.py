@@ -221,4 +221,78 @@ def build_proposals(
         proposal_id: str,
         title: str,
         hypothesis: str,
-        p
+        proposed_knobs: dict[str, Any],
+        confidence: str,
+        evidence: str,
+        validation: str,
+    ) -> None:
+        proposals.append(
+            {
+                "id": proposal_id,
+                "title": title,
+                "hypothesis": hypothesis,
+                "proposed_knobs": proposed_knobs,
+                "confidence": confidence,
+                "evidence": evidence,
+                "validation_required": validation,
+                "actionable": enough,
+                "blocked_reason": gate_note,
+                "auto_apply": False,
+            }
+        )
+
+    # Always surface IEX deeper-cut priors (learning only; never actionable).
+    _add(
+        proposal_id="research_prior_iex_deeper_cuts",
+        title="IEX pre-seal priors: range / short holds / low confidence",
+        hypothesis=(
+            "Offline IEX deeper cuts (2020→pre-seal, frozen weights) showed range "
+            "regimes, holds ≤10d, and low exit-row confidence as the weak slices. "
+            "Watch paper fills for the same patterns; do not retune "
+            "DEFAULT_SCORE_WEIGHTS or reopen sealed OOS."
+        ),
+        proposed_knobs={
+            "research_flags": [
+                "soft_gate_range_confidence_add",
+                "min_confidence_to_trade",
+                "flip_min_hold_trading_days",
+            ],
+            "watch_slices": ["range", "hold_le_10d", "confidence_lt_62_exit_row"],
+            "note": "Priors only. Run scripts/learning_deeper_cuts.py for a fresh offline cut.",
+        },
+        confidence="medium",
+        evidence=(
+            "IEX deeper cuts: range ~11% wins / large in-group drag; holds ≤10d mostly "
+            "losers; exit-row conf <62 weak vs 80+. TQQQ-only counterfactual is diagnostic only."
+        ),
+        validation=(
+            "Keep Path B paper soak. After the trip gate, test only via "
+            "`--checklist-compare` / `--strategy-eval`. Never auto-apply; never reopen sealed OOS."
+        ),
+    )
+
+    # Always include a meta proposal about the gate / process.
+    if not enough:
+        _add(
+            proposal_id="accumulate_strategy_round_trips",
+            title="Keep weekday paper sessions running",
+            hypothesis=(
+                "Strategy round-trips are below the learning gate; rule/checklist changes "
+                "would be noise-driven until the sample grows."
+            ),
+            proposed_knobs={},
+            confidence="high",
+            evidence=(
+                f"strategy_round_trips={strategy_trips}, "
+                f"min_required={min_trips}, row_count={row_count}"
+            ),
+            validation=(
+                "No knob change. Continue paper cron / `scripts/run_weekday_paper.py`; "
+                "re-run `--learn-from-trades` after more strategy fills."
+            ),
+        )
+    else:
+        _add(
+            proposal_id="gate_cleared_research_only",
+            title="Gate cleared — research before any adopt",
+            h
