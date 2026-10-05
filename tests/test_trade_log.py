@@ -77,6 +77,7 @@ def test_append_trade_record_grows_jsonl(tmp_path: Path):
     assert len(rows) == 2
     assert rows[0]["order_id"] == "ord-a"
     assert rows[0]["source"] == "manual_test"
+    assert rows[0]["strategy_version"] == "1.0.0"
     assert rows[0]["confidence"] == 80
     assert rows[1]["side"] == "sell"
     assert path.read_text(encoding="utf-8").count("\n") == 2
@@ -112,6 +113,11 @@ def test_execute_paper_orders_appends_trade_log(tmp_path: Path):
             resp.json.return_value = {"trade": {"p": 100.0}}
             return resp
         if "orders:client_order_id:" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
+        if "/quotes/latest" in url:
             resp.status_code = 404
             resp.text = "not found"
             resp.reason = "not found"

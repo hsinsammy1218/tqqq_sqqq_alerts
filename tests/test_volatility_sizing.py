@@ -138,6 +138,11 @@ def test_execute_paper_orders_vol_sizing_changes_qty(tmp_path):
             resp.text = "not found"
             resp.reason = "not found"
             return resp
+        if "/quotes/latest" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
         raise AssertionError(f"unexpected GET {url}")
 
     session.request.side_effect = fake_request
