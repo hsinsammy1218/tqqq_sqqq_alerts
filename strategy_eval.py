@@ -297,7 +297,6 @@ def resolve_research_bars(requested: int, daily_len: int, *, expand_default: boo
     return max(20, min(target, available))
 
 
-
 def run_strategy_evaluation(
     candles: CandleData,
     *,
