@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
+
+US_EASTERN = ZoneInfo("America/New_York")
+_RTH_OPEN = time(9, 30)
+_RTH_CLOSE = time(16, 0)
+_FOUR_HOURS = pd.Timedelta(hours=4)
 
 
 class DataError(Exception):
@@ -25,6 +31,8 @@ DEFAULT_DATA_FEED = "iex"
 class CandleData:
     daily: pd.DataFrame
     four_hour: pd.DataFrame
+    # Start timestamp of the newest hourly bar (UTC). Used by the stale-data gate.
+    latest_intraday: pd.Timestamp | None = None
 
 
 _api_calls_this_run = 0
@@ -222,6 +230,66 @@ def _fetch_bars(
     return _normalize_ohlcv(pd.DataFrame(rows), ticker=ticker)
 
 
+def aggregate_four_hour_utc_clock(hourly: pd.DataFrame) -> pd.DataFrame:
+    """Legacy 4h bins: pandas ``resample('4h')`` from UTC midnight.
+
+    On a regular session those labels fall at 08:00 ET and 12:00 ET, so the
+    09:30 open is mixed into a bin that starts before the cash open. Kept so
+    tests can show the old alignment. Live and research paths use
+    ``aggregate_session_four_hour``.
+    """
+    if hourly.empty:
+        return hourly
+    return (
+        hourly.resample("4h")
+        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        .dropna()
+    )
+
+
+def aggregate_session_four_hour(hourly: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate hourly bars into 4h buckets anchored at 09:30 America/New_York.
+
+    Regular session only (09:30–16:00 ET). Bucket starts are 09:30 and 13:30 ET.
+    The afternoon bucket ends at the 16:00 cash close, so it is shorter than 4h.
+    Returned index is UTC, labeled at the bucket start.
+    """
+    if hourly.empty:
+        return hourly.iloc[0:0]
+    frame = hourly
+    if frame.index.tz is None:
+        frame = frame.tz_localize("UTC")
+    et = frame.tz_convert(US_EASTERN).sort_index()
+    bucket_ids: list[pd.Timestamp] = []
+    keep_at: list[pd.Timestamp] = []
+    for ts in et.index:
+        clock = ts.timetz().replace(tzinfo=None)
+        if clock < _RTH_OPEN or clock >= _RTH_CLOSE:
+            continue
+        open_dt = ts.normalize() + pd.Timedelta(hours=9, minutes=30)
+        elapsed = ts - open_dt
+        if elapsed < pd.Timedelta(0):
+            continue
+        slot = int(elapsed // _FOUR_HOURS)
+        bucket_ids.append(open_dt + slot * _FOUR_HOURS)
+        keep_at.append(ts)
+    if not keep_at:
+        return frame.iloc[0:0]
+    subset = et.loc[keep_at].copy()
+    subset["_bucket"] = bucket_ids
+    grouped = subset.groupby("_bucket", sort=True)
+    out = grouped.agg(
+        open=("open", "first"),
+        high=("high", "max"),
+        low=("low", "min"),
+        close=("close", "last"),
+        volume=("volume", "sum"),
+    )
+    out.index = pd.DatetimeIndex(out.index).tz_convert("UTC")
+    out.index.name = frame.index.name
+    return out.dropna()
+
+
 def load_candles(
     ticker: str,
     *,
@@ -234,11 +302,15 @@ def load_candles(
     hourly_lookback_days: int | None = None,
     max_hourly_bars: int | None = None,
 ) -> CandleData:
-    """Load daily + synthetic 4h candles for ``ticker`` from Alpaca Market Data.
+    """Load daily + session 4h candles for ``ticker`` from Alpaca Market Data.
 
     Defaults match the live alert path (~400 daily bars). Research commands may
     request a longer daily window (about 2–4 years). Hourly history is still
     capped; older daily bars fall back to a daily-derived 4h series in backtests.
+
+    4h bars are aggregated in America/New_York from 09:30 (then 13:30), not from
+    UTC midnight. The previous ``resample('4h')`` bins started at 08:00 ET and
+    12:00 ET and mixed the cash open into the pre-open bin.
     """
     if not api_key or not api_secret:
         raise DataError("ALPACA_API_KEY and ALPACA_API_SECRET are required to load candles.")
@@ -276,16 +348,13 @@ def load_candles(
         max_bars=hourly_bars,
     )
 
-    four_hour = (
-        hourly.resample("4h")
-        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
-        .dropna()
-    )
+    four_hour = aggregate_session_four_hour(hourly)
     if len(daily) < 60:
         raise DataError("Not enough daily candles to compute indicators safely.")
     if len(four_hour) < 5:
         raise DataError("Not enough intraday candles to compute 4h context safely.")
-    return CandleData(daily=daily, four_hour=four_hour)
+    latest = hourly.index[-1] if len(hourly.index) else None
+    return CandleData(daily=daily, four_hour=four_hour, latest_intraday=latest)
 
 
 def load_daily_bars(
