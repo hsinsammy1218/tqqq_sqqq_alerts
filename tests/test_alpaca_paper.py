@@ -4,16 +4,24 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from datetime import datetime, timezone
+
 from alpaca_paper import (
     PAPER_TRADING_BASE_URL,
+    BrokerSnapshot,
     OrderIntent,
+    OrderResult,
+    broker_status_after_submit,
     build_limit_order_payload,
     build_order_intents,
     buy_notional_usd,
     execute_paper_orders,
+    fetch_broker_snapshot,
+    flip_entry_block_reason,
     is_live_trading_host,
     limit_price_from_trade,
     make_client_order_id,
+    order_status_filled,
     qty_for_notional,
     should_submit_paper_orders,
 )
@@ -247,6 +255,11 @@ def test_execute_paper_orders_buy_path_mocked(tmp_path):
             resp.text = "not found"
             resp.reason = "not found"
             return resp
+        if "/quotes/latest" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
         raise AssertionError(f"unexpected GET {url}")
 
     session.request.side_effect = fake_request
@@ -312,6 +325,11 @@ def test_execute_paper_orders_flip_mocked(tmp_path):
             resp.json.return_value = {"trade": {"p": 50.0}}
             return resp
         if "orders:client_order_id:" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
+        if "/quotes/latest" in url:
             resp.status_code = 404
             resp.text = "not found"
             resp.reason = "not found"
@@ -448,6 +466,11 @@ def test_flip_blocks_second_leg_when_sell_is_only_accepted(tmp_path):
             resp.text = "not found"
             resp.reason = "not found"
             return resp
+        if "/quotes/latest" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
         raise AssertionError(f"unexpected GET {url}")
 
     session.request.side_effect = fake_request
@@ -499,6 +522,11 @@ def test_flip_blocks_second_leg_when_sell_errors(tmp_path):
             resp.text = "not found"
             resp.reason = "not found"
             return resp
+        if "/quotes/latest" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
         raise AssertionError(f"unexpected GET {url}")
 
     session.request.side_effect = fake_request
@@ -532,6 +560,11 @@ def test_repeat_client_order_id_does_not_post_again(tmp_path):
             resp.text = '{"id":"existing","status":"accepted"}'
             resp.json.return_value = {"id": "existing", "status": "accepted"}
             return resp
+        if "/quotes/latest" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
         raise AssertionError(f"unexpected GET {url}")
 
     session.request.side_effect = fake_request
@@ -546,3 +579,187 @@ def test_repeat_client_order_id_does_not_post_again(tmp_path):
     assert results[0].order_id == "existing"
     assert results[0].status == "accepted"
     assert "idempotent" in results[0].detail
+
+
+def test_submit_does_not_invent_filled_status():
+    assert broker_status_after_submit({}) == "submitted"
+    assert broker_status_after_submit({"status": "accepted"}) == "accepted"
+    assert broker_status_after_submit({"status": "partially_filled"}) == "partially_filled"
+    assert order_status_filled("accepted") is False
+    assert order_status_filled("partially_filled") is False
+    assert order_status_filled("filled") is True
+    assert is_live_trading_host("https://api.alpaca.markets") is True
+    assert is_live_trading_host(PAPER_TRADING_BASE_URL) is False
+
+
+def test_flip_entry_requires_filled_exit_or_confirmed_flat():
+    accepted = OrderResult(
+        intent=OrderIntent("TQQQ", "sell", "flip_exit"),
+        ok=True,
+        status="accepted",
+        detail="",
+    )
+    partial = OrderResult(
+        intent=OrderIntent("TQQQ", "sell", "flip_exit"),
+        ok=True,
+        status="partially_filled",
+        detail="",
+    )
+    filled = OrderResult(
+        intent=OrderIntent("TQQQ", "sell", "flip_exit"),
+        ok=True,
+        status="filled",
+        detail="",
+    )
+    assert flip_entry_block_reason(accepted, None, None) is not None
+    assert flip_entry_block_reason(partial, None, None) is not None
+    assert flip_entry_block_reason(filled, None, None) is None
+    assert flip_entry_block_reason(None, BrokerSnapshot(), None) is None
+    assert flip_entry_block_reason(None, BrokerSnapshot(tqqq_qty=1), None) is not None
+    assert flip_entry_block_reason(None, BrokerSnapshot(sqqq_qty=1), None) is not None
+    assert flip_entry_block_reason(None, BrokerSnapshot(tqqq_qty=1, sqqq_qty=1), None) is not None
+    assert flip_entry_block_reason(None, BrokerSnapshot(open_order_count=1), None) is not None
+    assert flip_entry_block_reason(None, None, "timeout") is not None
+
+
+def test_fetch_broker_snapshot_down_raises():
+    session = MagicMock()
+    session.get.side_effect = __import__("requests").RequestException("broker down")
+    with pytest.raises(Exception, match="broker|positions|lookup|failed"):
+        fetch_broker_snapshot(
+            api_key="k",
+            api_secret="s",
+            trading_base_url=PAPER_TRADING_BASE_URL,
+            session=session,
+        )
+
+
+def test_flip_blocks_second_leg_when_sell_is_partial(tmp_path):
+    session = MagicMock()
+    posts: list[str] = []
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        resp = MagicMock()
+        resp.status_code = 200
+        if url.endswith("/v2/account"):
+            resp.text = '{"equity":"50000"}'
+            resp.json.return_value = {"equity": "50000"}
+            return resp
+        if url.endswith("/v2/orders") and method == "POST":
+            posts.append(json["side"])
+            resp.text = '{"id":"ord-sell","status":"partially_filled"}'
+            resp.json.return_value = {"id": "ord-sell", "status": "partially_filled"}
+            return resp
+        raise AssertionError(f"unexpected {method} {url}")
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        resp = MagicMock()
+        if url.endswith("/v2/positions/TQQQ"):
+            resp.status_code = 200
+            resp.text = '{"qty":"2"}'
+            resp.json.return_value = {"qty": "2"}
+            return resp
+        if "/quotes/latest" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
+        if "/trades/latest" in url:
+            resp.status_code = 200
+            resp.text = '{"trade":{"p":50.0}}'
+            resp.json.return_value = {"trade": {"p": 50.0}}
+            return resp
+        if "orders:client_order_id:" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
+        raise AssertionError(url)
+
+    session.request.side_effect = fake_request
+    session.get.side_effect = fake_get
+    results = execute_paper_orders(
+        _alert(alert_type="FLIP", symbol="SQQQ"),
+        PositionState(active_symbol="TQQQ"),
+        **_paper_session_kwargs(tmp_path, session),
+    )
+    assert posts == ["sell"]
+    assert results[0].status == "partially_filled"
+    assert results[1].status == "blocked"
+    assert results[1].intent.purpose == "flip_entry"
+
+
+def test_buy_uses_fresh_ask_not_trade_offset(tmp_path):
+    session = MagicMock()
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        resp = MagicMock()
+        resp.status_code = 200
+        if url.endswith("/v2/account"):
+            resp.text = '{"equity":"100000"}'
+            resp.json.return_value = {"equity": "100000"}
+            return resp
+        if url.endswith("/v2/orders") and method == "POST":
+            assert json["limit_price"] == "100.05"
+            assert json["side"] == "buy"
+            resp.text = '{"id":"ord-q","status":"accepted"}'
+            resp.json.return_value = {"id": "ord-q", "status": "accepted"}
+            return resp
+        raise AssertionError(f"{method} {url}")
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        resp = MagicMock()
+        if "/quotes/latest" in url:
+            resp.status_code = 200
+            resp.json.return_value = {"quote": {"bp": 100.0, "ap": 100.05, "t": now}}
+            resp.text = "{}"
+            return resp
+        if "/trades/latest" in url:
+            resp.status_code = 200
+            resp.json.return_value = {"trade": {"p": 90.0, "t": now}}
+            resp.text = "{}"
+            return resp
+        if "orders:client_order_id:" in url:
+            resp.status_code = 404
+            resp.text = "not found"
+            resp.reason = "not found"
+            return resp
+        raise AssertionError(url)
+
+    session.request.side_effect = fake_request
+    session.get.side_effect = fake_get
+    results = execute_paper_orders(
+        _alert(alert_type="BUY", symbol="TQQQ"),
+        None,
+        **_paper_session_kwargs(tmp_path, session),
+    )
+    assert results[0].status == "accepted"
+    assert results[0].payload["limit_price"] == "100.05"
+
+
+def test_stale_bar_blocks_buy_in_execute(tmp_path):
+    session = MagicMock()
+    posts: list[str] = []
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        resp = MagicMock()
+        if url.endswith("/v2/orders"):
+            posts.append("post")
+        resp.status_code = 200
+        resp.text = '{"equity":"1"}'
+        resp.json.return_value = {"equity": "1"}
+        return resp
+
+    session.request.side_effect = fake_request
+    session.get.side_effect = AssertionError("no broker call")
+    results = execute_paper_orders(
+        _alert(alert_type="BUY", symbol="TQQQ"),
+        None,
+        market_data_bar_start=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        market_data_max_age_minutes=90,
+        **_paper_session_kwargs(tmp_path, session),
+    )
+    assert posts == []
+    assert results[0].status == "blocked"
+    assert "STALE" in results[0].detail
