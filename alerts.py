@@ -490,6 +490,41 @@ def send_discord_kill_alert(
         print(f"[paper-risk] Discord KILL webhook error: {exc}")
 
 
+def send_discord_ops_warning(
+    webhook_url: str,
+    *,
+    title: str,
+    reason: str,
+    dry_run: bool,
+) -> None:
+    """Post a paper-ops warning (unknown risk, stale data). Never raises."""
+    embed = {
+        "title": title,
+        "description": reason,
+        "color": 0xF1C40F,
+    }
+    payload: dict[str, object] = {
+        "username": "QQQ Swing Alerts",
+        "content": title,
+        "embeds": [embed],
+    }
+    if dry_run:
+        print("[DRY RUN] Discord ops warning:")
+        print(json.dumps(payload, indent=2))
+        return
+    if not webhook_url:
+        print(f"[paper-ops] No DISCORD_WEBHOOK_URL — {title} logged to console only.")
+        return
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=15)
+        if response.status_code >= 400:
+            print(
+                f"[paper-ops] Discord warning failed: {response.status_code} {response.text}"
+            )
+    except requests.RequestException as exc:
+        print(f"[paper-ops] Discord warning error: {exc}")
+
+
 def _extract_json_object(text: str) -> dict[str, object] | None:
     idx = text.find("{")
     if idx < 0:

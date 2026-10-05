@@ -35,6 +35,10 @@ class Settings:
     paper_tqqq_only: bool
     paper_max_daily_loss_usd: float
     paper_max_weekly_loss_usd: float
+    market_data_max_age_minutes: float
+    quote_max_age_seconds: float
+    quote_max_spread_bps: float
+    trade_max_age_seconds: float
     discord_webhook_url: str
     dry_run: bool
     bull_entry_threshold: int
@@ -180,6 +184,18 @@ def load_settings() -> Settings:
     paper_max_weekly_loss_usd = float(os.getenv("PAPER_MAX_WEEKLY_LOSS_USD", "0"))
     if paper_max_weekly_loss_usd < 0:
         raise ConfigError("PAPER_MAX_WEEKLY_LOSS_USD must be >= 0 (0 = kill off).")
+    market_data_max_age_minutes = float(os.getenv("MARKET_DATA_MAX_AGE_MINUTES", "90"))
+    if market_data_max_age_minutes < 0:
+        raise ConfigError("MARKET_DATA_MAX_AGE_MINUTES must be >= 0 (0 = freshness gate off).")
+    quote_max_age_seconds = float(os.getenv("QUOTE_MAX_AGE_SECONDS", "180"))
+    if quote_max_age_seconds < 0:
+        raise ConfigError("QUOTE_MAX_AGE_SECONDS must be >= 0.")
+    quote_max_spread_bps = float(os.getenv("QUOTE_MAX_SPREAD_BPS", "100"))
+    if quote_max_spread_bps < 0:
+        raise ConfigError("QUOTE_MAX_SPREAD_BPS must be >= 0.")
+    trade_max_age_seconds = float(os.getenv("TRADE_MAX_AGE_SECONDS", "900"))
+    if trade_max_age_seconds < 0:
+        raise ConfigError("TRADE_MAX_AGE_SECONDS must be >= 0.")
     exit_mode = (os.getenv("EXIT_MODE", "fixed").strip().lower() or "fixed")
     if exit_mode not in {"fixed", "atr_trail"}:
         raise ConfigError("EXIT_MODE must be 'fixed' or 'atr_trail'.")
@@ -245,6 +261,10 @@ def load_settings() -> Settings:
         paper_tqqq_only=paper_tqqq_only,
         paper_max_daily_loss_usd=paper_max_daily_loss_usd,
         paper_max_weekly_loss_usd=paper_max_weekly_loss_usd,
+        market_data_max_age_minutes=market_data_max_age_minutes,
+        quote_max_age_seconds=quote_max_age_seconds,
+        quote_max_spread_bps=quote_max_spread_bps,
+        trade_max_age_seconds=trade_max_age_seconds,
         discord_webhook_url=webhook,
         dry_run=dry_run,
         bull_entry_threshold=int(os.getenv("BULL_ENTRY_THRESHOLD", "5")),

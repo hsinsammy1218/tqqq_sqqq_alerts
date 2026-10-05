@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Identity of the decision rules shipped with this tree. Bump only when rules
+# change on purpose. Nothing in the runtime writes new weights from this value.
+STRATEGY_VERSION = "1.0.0"
 
 DEFAULT_SCORE_WEIGHTS: tuple[float, ...] = (1.5, 1.5, 0.5, 1.0, 1.5, 1.5, 1.0, 0.5)
 """Trend-tilted checklist: boost daily/4h EMA stack; cut RSI and volume noise.

@@ -42,6 +42,20 @@ def test_reconcile_blocks_while_an_order_is_open():
     assert rec.position_for_decide is memory
 
 
+def test_reconcile_memory_tqqq_when_broker_holds_sqqq():
+    memory = PositionState(active_symbol="TQQQ", entry_price=80.0)
+    rec = reconcile_at_start(memory, BrokerSnapshot(sqqq_qty=2))
+    assert rec.block_new_orders is False
+    assert rec.position_for_decide.active_symbol == "SQQQ"
+    assert rec.position_for_decide.entry_price is None
+
+
+def test_state_to_save_rejects_partial_flip_memory():
+    proposed = PositionState(active_symbol="SQQQ")
+    assert state_to_save(proposed, BrokerSnapshot(tqqq_qty=1)) is None
+    assert state_to_save(proposed, BrokerSnapshot(open_order_count=2)) is None
+
+
 def test_state_to_save_requires_a_broker_match():
     proposed = PositionState(active_symbol="TQQQ", entry_price=110.0)
     assert state_to_save(proposed, BrokerSnapshot()) is None

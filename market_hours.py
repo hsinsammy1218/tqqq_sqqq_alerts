@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -56,14 +56,25 @@ def _nyse_holidays(year: int) -> set[date]:
     return _holiday_cache[year]
 
 
+def _thanksgiving(year: int) -> date:
+    """Fourth Thursday of November (NYSE Thanksgiving)."""
+    first = date(year, 11, 1)
+    offset = (3 - first.weekday()) % 7
+    return first + timedelta(days=offset + 21)
+
+
 def _is_early_close_day(d: date) -> bool:
     if d.weekday() >= 5:
         return False
+    if d in _nyse_holidays(d.year):
+        return False
     if d.month == 12 and d.day == 24:
+        return True
+    if d == _thanksgiving(d.year) + timedelta(days=1):
         return True
     if d.month == 7 and d.day == 3 and d.weekday() < 5:
         july4 = date(d.year, 7, 4)
-        if july4.weekday() in (1, 2, 3, 4) and d not in _nyse_holidays(d.year):
+        if july4.weekday() in (1, 2, 3, 4):
             return True
     return False
 
@@ -113,9 +124,10 @@ def is_us_equity_market_open(now: datetime | None = None) -> bool:
 def lunch_blackout_reason(now: datetime | None = None) -> str | None:
     """Return a skip reason when ``now`` falls in the 12:00–12:59 ET lunch window.
 
-    Used by the ``--market-hours-only`` cron start path so a single
-    ``*/15 13-19 * * 1-5`` Render cron can no-op at noon without a second service.
-    Wall-clock is always America/New_York (handles EDT/EST automatically).
+    Used by the ``--market-hours-only`` cron start path so a single broad UTC
+    cron (``*/15 13-21 * * 1-5``, covering both EDT and EST) can no-op at noon
+    without a second service. A cron fire is not permission to trade: callers
+    must use ``cron_skip_reason``. Wall-clock is always America/New_York.
     """
     if now is None:
         now = datetime.now(US_EASTERN)

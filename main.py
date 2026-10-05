@@ -36,6 +36,7 @@ from strategy_eval import (
 )
 from cli_args import build_parser
 from config import ConfigError, Settings, load_settings, strategy_params_from_settings
+from strategy_params import STRATEGY_VERSION
 from data import (
     DataError,
     MarketDataQuotaError,
@@ -1049,6 +1050,7 @@ def run() -> int:
         decision={
             "alert_type": alert.alert_type,
             "symbol": alert.symbol,
+            "strategy_version": STRATEGY_VERSION,
             "notes": alert.notes,
             "confidence": alert.confidence_score,
             "signal_quality": alert.signal_quality,
@@ -1100,6 +1102,15 @@ def run() -> int:
             tqqq_only=settings.paper_tqqq_only,
             max_daily_loss_usd=settings.paper_max_daily_loss_usd,
             max_weekly_loss_usd=settings.paper_max_weekly_loss_usd,
+            market_data_bar_start=(
+                candles.latest_intraday.to_pydatetime()
+                if getattr(candles, "latest_intraday", None) is not None
+                else None
+            ),
+            market_data_max_age_minutes=settings.market_data_max_age_minutes,
+            quote_max_age_seconds=settings.quote_max_age_seconds,
+            quote_max_spread_bps=settings.quote_max_spread_bps,
+            trade_max_age_seconds=settings.trade_max_age_seconds,
             discord_webhook_url=settings.discord_webhook_url,
             logger=logger,
             trade_log_path=settings.trade_log_jsonl,

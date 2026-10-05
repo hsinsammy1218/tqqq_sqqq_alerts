@@ -229,13 +229,13 @@ Render Cron containers are **ephemeral** — local `position_state.json` and `lo
 
 3. **Deploy the Blueprint**: Dashboard → New → Blueprint → this repo (`render.yaml`). That creates **one** weekday cron — every **15 minutes** during the US equity day — so the workspace stays under Render’s **25-service** limit (was 12 half-hour crons, then briefly 2 swing slots):
 
-   | Service | Local Eastern (EDT) | UTC cron |
-   |---------|---------------------|----------|
-   | `tqqq-sqqq-alerts-daytime` | every 15m 9:00–15:45 ET | `*/15 13-19 * * 1-5` |
+   | Service | America/New_York | UTC cron |
+   |---------|------------------|----------|
+   | `tqqq-sqqq-alerts-daytime` | every 15m while the session is open | `*/15 13-21 * * 1-5` |
 
    Start command: `python main.py --no-technical --market-hours-only`.
 
-   Pre-open ticks (9:00/9:15) no-op via market-hours. **Lunch blackout 12:00–1:00 PM ET** (16:00–16:59 UTC in EDT) is enforced in-app (`lunch_blackout_reason`) so the single `*/15` cron can fire at noon without scanning. Useful coverage: ~9:30/9:45–11:45 and 13:00–15:45.
+   The UTC window covers both EDT and EST (about 9:00–17:45 ET in summer and 8:00–16:45 ET in winter). A cron fire is not permission to trade. Pre-open, after-close, weekends, holidays, early closes, and **lunch blackout 12:00–1:00 PM ET** no-op in `cron_skip_reason` (`America/New_York`) before any market-data fetch. Useful coverage is the regular session, roughly 9:30–11:45 and 13:00 through the cash close.
 
    **Before Manual Sync:** delete old cron services (`tqqq-sqqq-alerts-1000`, `1530`, and any `1030`–`1500` leftovers) so the Blueprint can replace them with `tqqq-sqqq-alerts-daytime` without exceeding the 25-service cap. Keep env group `tqqq-sqqq-alerts`. After **Manual Sync**, confirm the paper risk keys (`PAPER_MAX_BUY_NOTIONAL=300`, `PAPER_MAX_DAILY_LOSS_USD=25`, `PAPER_MAX_WEEKLY_LOSS_USD=60`, `PAPER_TQQQ_ONLY=false`) are present in that group — paste them if Blueprint sync did not write the new keys.
 

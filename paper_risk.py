@@ -21,6 +21,12 @@ class PaperRiskError(Exception):
     """Non-fatal risk-control failure (logged; does not abort the alert run)."""
 
 
+RISK_PASS = "PASS"
+RISK_TRIPPED = "TRIPPED"
+RISK_UNKNOWN = "UNKNOWN"
+_RISK_STATES = frozenset({RISK_PASS, RISK_TRIPPED, RISK_UNKNOWN})
+
+
 @dataclass(frozen=True)
 class PaperRiskLimits:
     """Paper-path ops caps. Zero / false means that control is off."""
@@ -41,6 +47,14 @@ class PaperRiskLimits:
 
 @dataclass(frozen=True)
 class KillStatus:
+    """Loss-gate result. ``state`` is PASS, TRIPPED, or UNKNOWN.
+
+    UNKNOWN means a configured cap could not be evaluated (API down, malformed
+    payload, missing mark). It blocks new exposure the same way TRIPPED does.
+    ``tripped`` stays True only for TRIPPED, so older callers that check the
+    boolean still mean "cap breached".
+    """
+
     tripped: bool
     reason: str
     equity: float | None = None
@@ -48,6 +62,19 @@ class KillStatus:
     weekly_pnl: float | None = None
     last_equity: float | None = None
     week_start_equity: float | None = None
+    state: str = RISK_PASS
+
+    def __post_init__(self) -> None:
+        state = self.state if self.state in _RISK_STATES else RISK_UNKNOWN
+        if state != self.state:
+            object.__setattr__(self, "state", state)
+        if self.tripped and state == RISK_PASS:
+            object.__setattr__(self, "state", RISK_TRIPPED)
+        elif state == RISK_TRIPPED and not self.tripped:
+            object.__setattr__(self, "tripped", True)
+
+    def blocks_new_exposure(self) -> bool:
+        return self.state in {RISK_TRIPPED, RISK_UNKNOWN}
 
 
 def apply_buy_notional_cap(notional: float, max_buy_notional: float) -> float:
@@ -91,17 +118,22 @@ def filter_intents_for_kill(
     *,
     kill: KillStatus,
 ) -> tuple[list[Any], list[str]]:
-    """When kill is tripped, allow sells only (flatten); block new buys."""
-    if not kill.tripped:
+    """Block BUY and flip entry when the gate is TRIPPED or UNKNOWN.
+
+    Risk-reducing sells (exit and flip_exit) stay in the list.
+    """
+    if not kill.blocks_new_exposure():
         return list(intents), []
+    label = "UNKNOWN" if kill.state == RISK_UNKNOWN else "KILL"
     kept: list[Any] = []
     skipped: list[str] = []
     for intent in intents:
         side = str(getattr(intent, "side", "") or "").lower()
+        purpose = str(getattr(intent, "purpose", "") or "")
         if is_buy_side(side):
             skipped.append(
-                f"KILL blocked buy {getattr(intent, 'symbol', '')} "
-                f"({getattr(intent, 'purpose', '')}): {kill.reason}"
+                f"{label} blocked buy {getattr(intent, 'symbol', '')} "
+                f"({purpose}): {kill.reason or kill.state}"
             )
             continue
         kept.append(intent)
@@ -120,7 +152,8 @@ def evaluate_loss_kill(
 
     Daily PnL uses Alpaca ``last_equity`` (prior session close) vs current equity.
     Weekly PnL uses portfolio-history week-start equity vs current.
-    Caps of 0 disable that check. Missing marks fail open (no trip) with no reason.
+    Caps of 0 disable that check. A configured cap with a missing mark is UNKNOWN
+    (fail closed for new exposure), not a pass.
     """
     daily_pnl: float | None = None
     weekly_pnl: float | None = None
@@ -130,44 +163,56 @@ def evaluate_loss_kill(
     if equity is not None and week_start_equity is not None:
         weekly_pnl = float(equity) - float(week_start_equity)
 
+    common = dict(
+        equity=equity,
+        daily_pnl=daily_pnl,
+        weekly_pnl=weekly_pnl,
+        last_equity=last_equity,
+        week_start_equity=week_start_equity,
+    )
+
     if max_daily_loss_usd and max_daily_loss_usd > 0 and daily_pnl is not None:
         if daily_pnl <= -float(max_daily_loss_usd):
             return KillStatus(
                 tripped=True,
+                state=RISK_TRIPPED,
                 reason=(
                     f"daily loss {daily_pnl:.2f} USD breached "
                     f"PAPER_MAX_DAILY_LOSS_USD={max_daily_loss_usd:g}"
                 ),
-                equity=equity,
-                daily_pnl=daily_pnl,
-                weekly_pnl=weekly_pnl,
-                last_equity=last_equity,
-                week_start_equity=week_start_equity,
+                **common,
             )
 
     if max_weekly_loss_usd and max_weekly_loss_usd > 0 and weekly_pnl is not None:
         if weekly_pnl <= -float(max_weekly_loss_usd):
             return KillStatus(
                 tripped=True,
+                state=RISK_TRIPPED,
                 reason=(
                     f"weekly loss {weekly_pnl:.2f} USD breached "
                     f"PAPER_MAX_WEEKLY_LOSS_USD={max_weekly_loss_usd:g}"
                 ),
-                equity=equity,
-                daily_pnl=daily_pnl,
-                weekly_pnl=weekly_pnl,
-                last_equity=last_equity,
-                week_start_equity=week_start_equity,
+                **common,
             )
+
+    unknown: list[str] = []
+    if max_daily_loss_usd and max_daily_loss_usd > 0 and daily_pnl is None:
+        unknown.append("daily loss mark unavailable")
+    if max_weekly_loss_usd and max_weekly_loss_usd > 0 and weekly_pnl is None:
+        unknown.append("weekly loss mark unavailable")
+    if unknown:
+        return KillStatus(
+            tripped=False,
+            state=RISK_UNKNOWN,
+            reason="; ".join(unknown),
+            **common,
+        )
 
     return KillStatus(
         tripped=False,
+        state=RISK_PASS,
         reason="",
-        equity=equity,
-        daily_pnl=daily_pnl,
-        weekly_pnl=weekly_pnl,
-        last_equity=last_equity,
-        week_start_equity=week_start_equity,
+        **common,
     )
 
 
@@ -276,11 +321,15 @@ def assess_kill_from_broker(
     session: requests.Session | None = None,
     logger: Any | None = None,
 ) -> KillStatus:
-    """Fetch account marks and evaluate daily/weekly kill. Fail-open on API errors."""
+    """Fetch account marks and evaluate daily/weekly kill.
+
+    Caps of 0 skip the broker call and return PASS. When a cap is on, account
+    or history failure, or a mark that cannot be parsed, returns UNKNOWN.
+    """
     need_daily = bool(limits.max_daily_loss_usd and limits.max_daily_loss_usd > 0)
     need_weekly = bool(limits.max_weekly_loss_usd and limits.max_weekly_loss_usd > 0)
     if not need_daily and not need_weekly:
-        return KillStatus(tripped=False, reason="")
+        return KillStatus(tripped=False, reason="", state=RISK_PASS)
 
     equity: float | None = None
     last_equity: float | None = None
@@ -297,8 +346,19 @@ def assess_kill_from_broker(
     except PaperRiskError as exc:
         if logger is not None:
             log_event(logger, 30, "Paper risk account fetch failed", error=str(exc))
-        print(f"[paper-risk] Account fetch failed (kill check skipped): {exc}")
-        return KillStatus(tripped=False, reason="")
+        print(f"[paper-risk] Account fetch failed (new exposure blocked): {exc}")
+        return KillStatus(
+            tripped=False,
+            state=RISK_UNKNOWN,
+            reason=f"account unavailable: {exc}",
+        )
+
+    if need_daily and (equity is None or last_equity is None):
+        reason = "account payload missing equity or last_equity"
+        if logger is not None:
+            log_event(logger, 30, "Paper risk account payload malformed", error=reason)
+        print(f"[paper-risk] {reason} (new exposure blocked)")
+        return KillStatus(tripped=False, state=RISK_UNKNOWN, reason=reason, equity=equity, last_equity=last_equity)
 
     if need_weekly:
         try:
@@ -311,7 +371,14 @@ def assess_kill_from_broker(
         except PaperRiskError as exc:
             if logger is not None:
                 log_event(logger, 30, "Paper risk week equity fetch failed", error=str(exc))
-            print(f"[paper-risk] Week equity fetch failed (weekly kill skipped): {exc}")
+            print(f"[paper-risk] Week equity fetch failed (new exposure blocked): {exc}")
+            return KillStatus(
+                tripped=False,
+                state=RISK_UNKNOWN,
+                reason=f"portfolio history unavailable: {exc}",
+                equity=equity,
+                last_equity=last_equity,
+            )
 
     return evaluate_loss_kill(
         equity=equity,

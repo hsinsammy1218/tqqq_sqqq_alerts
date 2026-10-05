@@ -14,17 +14,15 @@
 #   dashboard/supabase/migrations/20260714180000_bot_position_state.sql
 #   dashboard/supabase/migrations/20260930190000_bot_trade_log.sql
 #
-# Cadence: ONE cron service, every 15 minutes during the US equity day.
-# Schedule (EDT = UTC-4): */15 13-19 * * 1-5 → 9:00–15:45 ET weekdays.
-# --market-hours-only no-ops pre-open (9:00/9:15) and enforces lunch blackout
-# 12:00–12:59 ET (16:00–16:59 UTC in EDT) via lunch_blackout_reason in market_hours.py.
-# First useful slots include 9:30/9:45 through 11:45, then 13:00 through afternoon.
-# One service stays under Render's 25-service workspace limit (was 12 half-hour crons).
-#
-# Winter (EST = UTC-5): shift the UTC hour range one hour later
-# (e.g. */15 14-20 * * 1-5); lunch then falls at 17:00–17:59 UTC. Or leave the
-# EDT expression and rely on --market-hours-only / lunch guard (America/New_York
-# wall-clock) for occasional skip / edge-of-session runs near DST boundaries.
+# Cadence: ONE cron service, every 15 minutes across a UTC window that covers
+# both EDT (UTC-4) and EST (UTC-5). Schedule: */15 13-21 * * 1-5.
+# That is 9:00–17:45 ET in summer and 8:00–16:45 ET in winter. The cron firing
+# is not permission to trade. --market-hours-only calls cron_skip_reason()
+# (America/New_York): weekend, NYSE holiday, pre-open, after close (including
+# 13:00 ET early closes), and lunch blackout 12:00–12:59 ET.
+# Full pytest runs in GitHub Actions, not in this cron build: a red test should
+# fail the PR before Render, and compileall is the deploy syntax gate.
+# One service stays under Render's 25-service workspace limit.
 #
 # Docs: README.md → "Deploy on Render"; store docs/cloud-setup-supabase-render.md
 
@@ -33,10 +31,10 @@ services:
     name: tqqq-sqqq-alerts-daytime
     runtime: python
     plan: starter
-    schedule: "*/15 13-19 * * 1-5"
-    # Fail the build if main.py is truncated/corrupt (Render previously went
-    # live on a mid-restore main.py that raised SyntaxError at log_event().
-    buildCommand: python -m py_compile main.py && pip install -r requirements.txt
+    schedule: "*/15 13-21 * * 1-5"
+    # Fail the build if any module is truncated/corrupt (Render previously went
+    # live on a mid-restore main.py that raised SyntaxError at log_event()).
+    buildCommand: python -m compileall -q . && pip install -r requirements.txt
     startCommand: python main.py --no-technical --market-hours-only
     envVars:
       - fromGroup: tqqq-sqqq-alerts

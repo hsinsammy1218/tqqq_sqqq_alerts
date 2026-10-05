@@ -37,6 +37,7 @@ from strategy_eval import (
     walk_forward_efficiency,
 )
 from strategy_params import DEFAULT_SCORE_WEIGHTS, StrategyParams
+from strategy_params import STRATEGY_VERSION
 from strategy_scoring import trading_days_between_inclusive
 
 # Same 10 bp the paper bot uses as ALPACA_PAPER_LIMIT_OFFSET_BPS, in ETF price
@@ -882,6 +883,7 @@ def format_phase_report(evaluation: PhaseEvaluation) -> str:
     wfe = evaluation.wfe.get("walk_forward_efficiency")
     lines = [
         "--- ETF backtest (live decide(), next-bar day limits) ---",
+        f"Strategy version: {STRATEGY_VERSION}",
         f"Role: {evaluation.role}",
         f"Frozen live score weights: {evaluation.score_weights}",
         f"Code default weights (not retuned): {DEFAULT_SCORE_WEIGHTS}",
@@ -933,6 +935,7 @@ def format_phase_report(evaluation: PhaseEvaluation) -> str:
 def write_seal(path: Path, evaluation: PhaseEvaluation) -> None:
     """Record that the sealed window was looked at once."""
     payload = {
+        "strategy_version": STRATEGY_VERSION,
         "role": evaluation.role,
         "window_start": evaluation.result.start_utc,
         "window_end": evaluation.result.end_utc,

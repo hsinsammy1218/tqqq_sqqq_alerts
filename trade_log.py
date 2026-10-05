@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from runtime_logging import format_utc_z
+from strategy_params import STRATEGY_VERSION
 
 DEFAULT_TRADE_LOG_PATH = Path("logs/trades.jsonl")
 
@@ -38,6 +39,7 @@ TRADE_LOG_FIELDS = (
     "error",
     "source",
     "detail",
+    "strategy_version",
 )
 
 
@@ -81,6 +83,7 @@ def build_trade_record(
         "side": (side or "").lower(),
         "status": status,
         "source": source,
+        "strategy_version": STRATEGY_VERSION,
     }
     optional: dict[str, Any] = {
         "qty": None if qty is None else str(qty),

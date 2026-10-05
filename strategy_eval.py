@@ -17,7 +17,7 @@ from typing import Sequence
 from backtest import BacktestResult, BacktestTradeRow, run_backtest
 from backtest_sweep import NeighborShare, SweepResultRow, profitable_neighbor_share
 from data import CandleData
-from strategy_params import DEFAULT_SCORE_WEIGHTS, StrategyParams
+from strategy_params import DEFAULT_SCORE_WEIGHTS, STRATEGY_VERSION, StrategyParams
 from strategy import DecideOptions
 
 MIN_TRADES = 30
@@ -422,6 +422,7 @@ def run_strategy_evaluation(
         flags.append("paper_gate_failed")
 
     return {
+        "strategy_version": STRATEGY_VERSION,
         "generated_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "pnl_source": "qqq_close_to_close_proxy_closed_trades",
         "slippage": {

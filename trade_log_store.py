@@ -65,6 +65,14 @@ def record_to_supabase_row(record: dict[str, Any], *, bot_id: str) -> dict[str, 
             row[key] = value
     if "timestamp" not in row or not row["timestamp"]:
         raise TradeLogStoreError("Trade log record missing timestamp.")
+    # Durable rows keep the existing columns. Stamp the version into detail so
+    # a missing strategy_version column cannot fail the insert.
+    version = record.get("strategy_version")
+    if version:
+        stamp = f"strategy_version={version}"
+        detail = str(row.get("detail") or "")
+        if stamp not in detail:
+            row["detail"] = f"{detail} {stamp}".strip()
     return row
 
 

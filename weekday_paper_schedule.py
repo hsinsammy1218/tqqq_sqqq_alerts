@@ -17,10 +17,10 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 # Every 15 minutes: morning 9:45–11:45 ET, afternoon 13:00–15:45 ET (lunch skipped).
-# Matches Render Blueprint cron `*/15 13-19 * * 1-5` (EDT = UTC-4 → 9:00–15:45 ET);
+# Matches Render Blueprint cron `*/15 13-21 * * 1-5` (EDT and EST; session gate is in-app);
 # --market-hours-only no-ops pre-open and enforces 12:00–12:59 ET lunch blackout.
 # One cron service stays under Render's 25-service limit (was 12, then 2 swing slots).
-# Winter EST (UTC-5): shift UTC hours +1, or rely on America/New_York guards.
+# The UTC cron covers winter EST; America/New_York guards decide whether to trade.
 DEFAULT_SLOTS: tuple[tuple[int, int], ...] = tuple(
     (h, m)
     for h in range(9, 16)
@@ -117,10 +117,10 @@ def print_cron_lines(slots: tuple[Slot, ...], repo: Path) -> None:
             f">> logs/weekday_paper_cron.log 2>&1"
         )
     print()
-    print("# Render Blueprint (single service; EDT = UTC-4):")
-    print("#   */15 13-19 * * 1-5  → tqqq-sqqq-alerts-daytime")
-    print("# Lunch 12:00–12:59 ET is skipped in-app (lunch_blackout_reason), not by cron.")
-    print("# EST winter (UTC-5) — shift hours +1 vs EDT lines above, or use --loop.")
+    print("# Render Blueprint (single service; UTC span covers EDT and EST):")
+    print("#   */15 13-21 * * 1-5  → tqqq-sqqq-alerts-daytime")
+    print("# Cron firing is not permission to trade. Session, lunch, and holidays")
+    print("# are enforced in market_hours.cron_skip_reason (America/New_York).")
 
 
 def build_parser() -> argparse.ArgumentParser:
