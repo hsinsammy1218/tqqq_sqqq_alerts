@@ -34,7 +34,9 @@ services:
     runtime: python
     plan: starter
     schedule: "*/15 13-19 * * 1-5"
-    buildCommand: pip install -r requirements.txt
+    # Fail the build if main.py is truncated/corrupt (Render previously went
+    # live on a mid-restore main.py that raised SyntaxError at log_event().
+    buildCommand: python -m py_compile main.py && pip install -r requirements.txt
     startCommand: python main.py --no-technical --market-hours-only
     envVars:
       - fromGroup: tqqq-sqqq-alerts
