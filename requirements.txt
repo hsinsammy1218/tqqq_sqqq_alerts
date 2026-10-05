@@ -3,3 +3,5 @@ python-dotenv
 requests
 supabase>=2.0.0
 pytest
+# Environment pip is scanned by pip-audit. Releases before 26.2 are PYSEC-2026-*.
+pip>=26.2
