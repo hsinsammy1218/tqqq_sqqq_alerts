@@ -6,8 +6,8 @@ run on a dedicated agentic account:
 
 https://agent.robinhood.com/mcp/trading
 
-Default is review-only. ``place_equity_order`` is withheld unless the caller
-sets ``allow_place=True`` (this process does not).
+Default is review-only. ``place_equity_order`` is always withheld.
+``allow_place=True`` does not emit a place step in this build.
 """
 
 from __future__ import annotations
@@ -145,16 +145,17 @@ def build_rh_playbook(
             "purpose": leg.purpose,
             "only_after": "review_equity_order",
         }
+        # allow_place cannot emit a place tool. Live submission is a future
+        # code change (brokers.robinhood_agentic.LIVE_SUBMISSION_IMPLEMENTED).
         if allow_place:
-            steps.append(place)
-        else:
-            withheld.append(place)
+            blocked.append("allow_place ignored; this build cannot emit place_equity_order")
+        withheld.append(place)
 
     return {
         "mcp_url": RH_MCP_URL,
         "status": "ready_to_review",
         "reason": "Review these orders in the agentic account. This bot does not place them.",
-        "allow_place": bool(allow_place),
+        "allow_place": False,
         "alert_type": alert.alert_type,
         "symbol": alert.symbol,
         "max_notional_usd": notional,
@@ -163,11 +164,9 @@ def build_rh_playbook(
         "steps": steps,
         "withheld_place_steps": withheld,
         "instruction": (
-            "Call review_equity_order only. Leave place_equity_order withheld "
-            "unless Trade approvals are ON and you have separately allowed placement. "
-            "Use the dedicated Robinhood agentic account, not the main brokerage account."
-            if not allow_place
-            else "Place only after a clean review_equity_order on the agentic account."
+            "Call review_equity_order only. place_equity_order stays withheld. "
+            "This process never calls Robinhood. Live submission requires a future "
+            "code change and is not enabled by allow_place or ROBINHOOD_LIVE_ENABLED."
         ),
     }
 
