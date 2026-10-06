@@ -98,6 +98,7 @@ class AccountView:
     day_start_equity: float | None
     week_start_equity: float | None
     peak_equity: float | None
+    cash: float | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,8 @@ class BrokerState:
     data_bar_start: datetime | None = None
     now: datetime | None = None
     detail: str = ""
+    quotes: tuple[QuoteView, ...] = ()
+    order_history_complete: bool = True
 
 
 @dataclass(frozen=True)
