@@ -7,8 +7,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from alerts import format_alert_message, send_discord
-from brokers.mode import ROBINHOOD_SHADOW, UnsafeBrokerConfiguration, execution_broker_from_environ
+from brokers.mode import (
+    ROBINHOOD_CONNECTED_SHADOW,
+    ROBINHOOD_SHADOW,
+    UnsafeBrokerConfiguration,
+    execution_broker_from_environ,
+)
 from rh_agent import build_rh_playbook, format_rh_playbook
+from robinhood_connected import run_connected_shadow_after_strategy
 from robinhood_shadow import run_live_shadow_after_strategy
 from alpaca_paper import (
     PaperTradingError,
@@ -136,7 +142,7 @@ def _run_rh_preview(logger: logging.Logger) -> int:
     )
     print(f"Robinhood agent preview from {source}: {alert.alert_type} {alert.symbol}")
     print(format_rh_playbook(playbook))
-    print("Review only — no Robinhood call, no paper order, no position change.")
+    print("Review only \u2014 no Robinhood call, no paper order, no position change.")
     log_event(
         logger,
         logging.INFO,
@@ -1159,6 +1165,20 @@ def run() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[robinhood-shadow] Shadow plan failed: {exc}")
             log_event(logger, logging.ERROR, "Robinhood shadow failed", error=str(exc))
+    elif execution_broker == ROBINHOOD_CONNECTED_SHADOW:
+        try:
+            intraday = getattr(candles, "latest_intraday", None)
+            run_connected_shadow_after_strategy(
+                alert,
+                position,
+                dry_run=settings.dry_run,
+                webhook_url=settings.discord_webhook_url,
+                data_bar_start=intraday.to_pydatetime() if intraday is not None else None,
+                now=now_utc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[robinhood-connected] Connected shadow failed: {exc}")
+            log_event(logger, logging.ERROR, "Robinhood connected shadow failed", error=str(exc))
 
     broker_check_failed = False
     if submit_orders:
