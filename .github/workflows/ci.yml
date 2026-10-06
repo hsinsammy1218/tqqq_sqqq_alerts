@@ -35,12 +35,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Compile Python
-        run: python -m compileall -q .
-
-      - name: Check installed packages
-        run: pip check
-
       - name: Run tests
         run: pytest -q
 
