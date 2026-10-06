@@ -32,6 +32,7 @@ from robinhood_risk import (
     check_new_exposure,
     execution_symbol_block_reason,
     limits_from_env,
+    quote_for,
     size_buy,
 )
 from strategy_params import STRATEGY_VERSION
@@ -50,12 +51,13 @@ class ShadowLeg:
     execution_status: str
     text: str
 
-    def audit_row(self, *, broker_state: str) -> dict[str, Any]:
+    def audit_row(self, *, broker_state: str, execution_mode: str = "shadow") -> dict[str, Any]:
+        mode = execution_mode if execution_mode == "connected_shadow" else "shadow"
         row = self.intent.as_audit()
         row.update(
             {
                 "broker": "robinhood",
-                "execution_mode": "shadow",
+                "execution_mode": mode,
                 "risk_status": self.risk_status,
                 "risk_reason": self.risk_reason,
                 "broker_state": broker_state,
@@ -206,10 +208,11 @@ def evaluate_leg(
     limits: RobinhoodLimits,
     exit_status: str | None = None,
     exit_qty_remaining: float | None = None,
+    buy_block_reason: str | None = None,
 ) -> ShadowLeg:
     symbol_reason = execution_symbol_block_reason(symbol)
     action_reason = action_block_reason(action)
-    price = _price_for(action, state.quote, symbol)
+    price = _price_for(action, quote_for(state, symbol), symbol)
     if symbol_reason or action_reason:
         intent = _draft_intent(
             alert,
@@ -295,11 +298,19 @@ def evaluate_leg(
         )
         return replace(leg, text=_format_leg(leg, live_flag=limits.live_enabled_flag))
 
+    if buy_block_reason:
+        intent = _draft_intent(
+            alert, symbol=symbol, action="BUY", purpose=purpose, price=price, quantity=0
+        )
+        leg = _blocked_leg(intent, buy_block_reason, (("Reconcile", "FAIL"),))
+        return replace(leg, text=_format_leg(leg, live_flag=limits.live_enabled_flag))
+
     draft = _draft_intent(
         alert, symbol=symbol, action="BUY", purpose=purpose, price=price, quantity=0
     )
     if recovery:
-        leg = _blocked_leg(draft, recovery, (("Recovery", "FAIL"),))
+        reason = buy_block_reason if buy_block_reason and not state.known else recovery
+        leg = _blocked_leg(draft, reason, (("Recovery", "FAIL"),))
         return replace(leg, text=_format_leg(leg, live_flag=limits.live_enabled_flag))
     allowed, reason, checks = check_new_exposure(draft, state, limits)
     if not allowed:
@@ -327,6 +338,7 @@ def run_robinhood_shadow(
     exit_status: str | None = None,
     exit_qty_remaining: float | None = None,
     broker: RobinhoodAgenticBroker | None = None,
+    buy_block_reason: str | None = None,
 ) -> ShadowRun:
     """Plan shadow legs. ``broker.submit_order`` is never called."""
     adapter = broker or RobinhoodAgenticBroker(state)
@@ -344,6 +356,7 @@ def run_robinhood_shadow(
                 purpose="rejected",
                 state=state,
                 limits=limits,
+                buy_block_reason=buy_block_reason,
             )
         )
     for intent in order_intents:
@@ -358,6 +371,7 @@ def run_robinhood_shadow(
                 limits=limits,
                 exit_status=exit_status if intent.purpose == "flip_entry" else None,
                 exit_qty_remaining=exit_qty_remaining if intent.purpose == "flip_entry" else None,
+                buy_block_reason=buy_block_reason,
             )
         )
     if adapter.submission_attempts != before:
