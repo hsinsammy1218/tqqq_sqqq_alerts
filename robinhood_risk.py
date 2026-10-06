@@ -13,6 +13,7 @@ from brokers.types import (
     ORDER_FILLED,
     BrokerState,
     PositionView,
+    QuoteView,
     RobinhoodLimits,
     TradeIntent,
     UnsafeBrokerConfiguration,
@@ -130,6 +131,18 @@ def limits_from_env(env: dict[str, str] | None = None) -> RobinhoodLimits:
     )
 
 
+def quote_for(state: BrokerState, symbol: str) -> QuoteView | None:
+    """Quote for this symbol. A quote for a different symbol is not reused."""
+    wanted = (symbol or "").upper()
+    for quote in state.quotes:
+        if quote.symbol.upper() == wanted:
+            return quote
+    quote = state.quote
+    if quote is not None and quote.symbol.upper() == wanted:
+        return quote
+    return None
+
+
 def _position_qty(positions: tuple[PositionView, ...], symbol: str) -> float:
     total = 0.0
     for row in positions:
@@ -195,7 +208,7 @@ def check_new_exposure(
     if not data_ok:
         return False, freshness.reason, tuple(checks)
 
-    quote = state.quote
+    quote = quote_for(state, intent.execution_symbol)
     quote_ok = False
     quote_reason = "quote missing"
     reference: float | None = None

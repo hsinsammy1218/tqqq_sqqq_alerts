@@ -35,8 +35,11 @@ class ShadowAuditLog:
 
     def append(self, row: dict[str, Any]) -> None:
         safe = redact(row)
+        requested = str(safe.get("execution_mode") or "shadow").strip().lower()
+        if requested != "connected_shadow":
+            requested = "shadow"
         safe["broker"] = "robinhood"
-        safe["execution_mode"] = "shadow"
+        safe["execution_mode"] = requested
         safe["execution_status"] = "NOT_SUBMITTED"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:

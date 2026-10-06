@@ -9,7 +9,8 @@ from brokers.types import UnsafeBrokerConfiguration
 
 ALPACA_PAPER = "alpaca_paper"
 ROBINHOOD_SHADOW = "robinhood_shadow"
-_ALLOWED = frozenset({ALPACA_PAPER, ROBINHOOD_SHADOW})
+ROBINHOOD_CONNECTED_SHADOW = "robinhood_connected_shadow"
+_ALLOWED = frozenset({ALPACA_PAPER, ROBINHOOD_SHADOW, ROBINHOOD_CONNECTED_SHADOW})
 _LIVE_NAMES = frozenset(
     {
         "robinhood_live",
@@ -40,7 +41,8 @@ def parse_execution_broker(raw: str | None) -> str:
     if text not in _ALLOWED:
         raise UnsafeBrokerConfiguration(
             f"EXECUTION_BROKER={text!r} is not supported. "
-            f"Use {ALPACA_PAPER!r} or {ROBINHOOD_SHADOW!r}."
+            f"Use {ALPACA_PAPER!r}, {ROBINHOOD_SHADOW!r}, "
+            f"or {ROBINHOOD_CONNECTED_SHADOW!r}."
         )
     return text
 
