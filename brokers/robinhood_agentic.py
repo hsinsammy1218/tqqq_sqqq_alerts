@@ -8,6 +8,7 @@ is true. Turning on live trading requires editing ``LIVE_SUBMISSION_IMPLEMENTED`
 
 from __future__ import annotations
 
+from brokers.quotes import quote_for_symbol
 from brokers.types import (
     AccountView,
     BrokerState,
@@ -49,10 +50,7 @@ class RobinhoodAgenticBroker:
     def get_quote(self, symbol: str) -> QuoteView | None:
         if not self._state.known:
             return None
-        quote = self._state.quote
-        if quote is None or quote.symbol.upper() != (symbol or "").upper():
-            return None
-        return quote
+        return quote_for_symbol(self._state, symbol)
 
     def submit_order(self, order: TradeIntent) -> str:
         self.submission_attempts += 1

@@ -9,16 +9,22 @@ agent" (endpoint https://agent.robinhood.com/mcp/trading). Input schemas are
 not published. ``get_equity_quotes`` is documented as accepting up to 20
 symbols, so that call sends ``symbols``. Any other failure leaves the caller
 with an unknown broker state.
+
+Case C: official auth is OAuth inside an MCP host (authorization code + PKCE,
+optional refresh after that browser grant). This unattended process has no
+host and no client-credentials grant. A static ``ROBINHOOD_MCP_TOKEN`` is not
+official auth and is ignored. No socket is opened.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
-import requests
+# Official auth cannot support this runtime. See the module docstring.
+AUTH_CASE = "C"
+UNATTENDED_AUTH_SUPPORTED = False
 
 READ_TOOLS = frozenset(
     {
@@ -115,67 +121,26 @@ class RobinhoodReadClient:
 
 
 class McpReadTransport:
-    """HTTP JSON-RPC transport. The allowlist is checked before any socket open."""
+    """Deprecated static-bearer client. It never opens a socket.
+
+    Robinhood's documented auth is an MCP host OAuth session. A URL plus a
+    bearer env var is not that session. Writes are still rejected by name.
+    Reads fail closed before any HTTP call.
+    """
 
     def __init__(self, url: str, token: str, session: Any | None = None) -> None:
-        self._url = url
-        self._token = token
-        self._session = session
+        # Accepted for old call sites, then dropped. The token is not stored.
+        del url, token, session
 
     def __call__(self, name: str, arguments: dict[str, Any]) -> Any:
-        tool = assert_read_only(name)
-        body = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {"name": tool, "arguments": arguments},
-        }
-        headers = {
-            "Authorization": f"Bearer {self._token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
-        post = self._session.post if self._session is not None else requests.post
-        try:
-            response = post(self._url, json=body, headers=headers, timeout=20)
-        except requests.RequestException:
-            raise RobinhoodReadError(f"{tool} transport failed") from None
-        status = getattr(response, "status_code", 0)
-        if status >= 400:
-            raise RobinhoodReadError(f"{tool} HTTP {status}")
-        return _parse_http_payload(response)
+        assert_read_only(name)
+        raise RobinhoodReadError(
+            "unattended Robinhood MCP auth is unsupported; "
+            "static bearer JSON-RPC is not used"
+        )
 
 
-def _parse_http_payload(response: Any) -> Any:
-    headers = getattr(response, "headers", {}) or {}
-    ctype = str(headers.get("content-type", ""))
-    text = str(getattr(response, "text", "") or "")
-    if "text/event-stream" in ctype or text.lstrip().startswith("data:"):
-        parsed: Any = None
-        for line in text.splitlines():
-            if not line.startswith("data:"):
-                continue
-            blob = line[5:].strip()
-            if not blob or blob == "[DONE]":
-                continue
-            try:
-                parsed = json.loads(blob)
-            except json.JSONDecodeError:
-                parsed = None
-        if parsed is None:
-            raise RobinhoodReadError("Robinhood read returned an unreadable event stream")
-        return parsed
-    try:
-        return response.json()
-    except ValueError:
-        raise RobinhoodReadError("Robinhood read returned non-JSON") from None
-
-
-def transport_from_env(env: Mapping[str, str] | None = None) -> McpReadTransport | None:
-    """Build a transport only when both URL and token are set. Otherwise stay offline."""
-    source = os.environ if env is None else env
-    url = str(source.get("ROBINHOOD_MCP_URL") or "").strip()
-    token = str(source.get("ROBINHOOD_MCP_TOKEN") or "").strip()
-    if not url or not token:
-        return None
-    return McpReadTransport(url, token)
+def transport_from_env(env: Mapping[str, str] | None = None) -> None:
+    """Stay offline. ``ROBINHOOD_MCP_URL`` and ``ROBINHOOD_MCP_TOKEN`` are ignored."""
+    del env
+    return None

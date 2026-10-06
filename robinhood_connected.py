@@ -50,6 +50,13 @@ def _connected_text(text: str) -> str:
     )
 
 
+# Case C. Official Robinhood auth is an MCP-host OAuth session. This process
+# cannot complete it, so a missing or static-token transport stays unknown.
+UNATTENDED_AUTH_DETAIL = (
+    "unattended Robinhood MCP auth is unsupported; reader is not configured"
+)
+
+
 def _unknown(detail: str, *, data_bar_start: datetime | None, now: datetime) -> BrokerState:
     return BrokerState(
         known=False,
@@ -70,7 +77,7 @@ def load_connected_state(
     if transport is None:
         return (
             _unknown(
-                "Robinhood reader is not configured",
+                UNATTENDED_AUTH_DETAIL,
                 data_bar_start=data_bar_start,
                 now=now,
             ),
