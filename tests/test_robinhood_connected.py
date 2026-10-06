@@ -13,12 +13,17 @@ from alpaca_paper import PAPER_TRADING_BASE_URL
 from brokers.mode import ROBINHOOD_CONNECTED_SHADOW, parse_execution_broker
 from brokers.robinhood_agentic import LIVE_SUBMISSION_IMPLEMENTED, RobinhoodAgenticBroker
 from brokers.robinhood_normalize import normalize_snapshot
+from brokers.quotes import quote_for_symbol
 from brokers.robinhood_reader import (
     ALLOWED_READS,
+    AUTH_CASE,
     READ_TOOLS,
+    UNATTENDED_AUTH_SUPPORTED,
     McpReadTransport,
     RobinhoodReadClient,
+    RobinhoodReadError,
     RobinhoodToolRejected,
+    transport_from_env,
 )
 from brokers.types import LiveSubmissionDisabled, TradeIntent, UnsafeBrokerConfiguration
 from robinhood_audit import ShadowAuditLog
@@ -164,34 +169,31 @@ def test_http_transport_rejects_writes_before_the_socket():
         transport("place_equity_order", {"symbol": "TQQQ"})
 
 
-def test_http_transport_posts_only_an_allowlisted_read():
-    seen: dict = {}
-
+def test_static_bearer_transport_does_not_open_a_socket():
     class Session:
-        def post(self, url, json, headers, timeout):  # type: ignore[no-untyped-def]
-            seen["url"] = url
-            seen["body"] = json
-            seen["headers"] = headers
-            return _JsonResponse({"result": {"accounts": [{"status": "active"}]}})
+        def post(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("socket opened for a static bearer read")
 
-    transport = McpReadTransport("https://agent.robinhood.com/mcp/trading", "super-secret-token", session=Session())
-    payload = transport("get_accounts", {})
-    assert payload["result"]["accounts"][0]["status"] == "active"
-    assert seen["body"]["params"]["name"] == "get_accounts"
-    assert "super-secret-token" not in str(seen["body"])
-    assert seen["body"]["params"]["name"] in ALLOWED_READS
-
-
-class _JsonResponse:
-    status_code = 200
-    headers = {"content-type": "application/json"}
-    text = ""
-
-    def __init__(self, payload: dict) -> None:
-        self._payload = payload
-
-    def json(self) -> dict:
-        return self._payload
+    transport = McpReadTransport(
+        "https://agent.robinhood.com/mcp/trading",
+        "super-secret-token",
+        session=Session(),
+    )
+    assert AUTH_CASE == "C"
+    assert UNATTENDED_AUTH_SUPPORTED is False
+    assert transport_from_env(
+        {
+            "ROBINHOOD_MCP_URL": "https://agent.robinhood.com/mcp/trading",
+            "ROBINHOOD_MCP_TOKEN": "super-secret-token",
+        }
+    ) is None
+    with pytest.raises(RobinhoodReadError, match="unsupported"):
+        transport("get_accounts", {})
+    assert not hasattr(transport, "_token")
+    source = inspect.getsource(McpReadTransport)
+    assert "requests" not in source
+    assert "Authorization" not in source
+    assert "get_accounts" in ALLOWED_READS
 
 
 def test_buy_uses_real_quote_and_does_not_submit():
@@ -504,6 +506,132 @@ def test_discord_payload_has_no_secret(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert "CONNECTED SHADOW" in body
     assert "super-secret-token" not in body
     assert "secret-token" not in body
+
+
+def test_static_token_env_blocks_without_http(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    def _boom(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("HTTP was attempted")
+
+    monkeypatch.setattr("requests.post", _boom)
+    result = run_connected_shadow_after_strategy(
+        _alert(),
+        None,
+        dry_run=True,
+        webhook_url="",
+        data_bar_start=NOW,
+        now=NOW,
+        env={
+            "EXECUTION_BROKER": "robinhood_connected_shadow",
+            "ROBINHOOD_NEW_ENTRIES_ENABLED": "true",
+            "ROBINHOOD_MAX_POSITION_PCT": "0.50",
+            "ROBINHOOD_MAX_ORDER_NOTIONAL": "100",
+            "ROBINHOOD_MAX_DAILY_LOSS_PCT": "0.02",
+            "ROBINHOOD_MAX_WEEKLY_LOSS_PCT": "0.04",
+            "ROBINHOOD_MAX_DRAWDOWN_PCT": "0.10",
+            "ROBINHOOD_MAX_ORDERS_PER_DAY": "1",
+            "ROBINHOOD_SHADOW_LOG": str(tmp_path / "token.jsonl"),
+            "ROBINHOOD_MCP_URL": "https://agent.robinhood.com/mcp/trading",
+            "ROBINHOOD_MCP_TOKEN": "super-secret-token",
+        },
+    )
+    assert result is not None
+    assert result.legs[0].risk_status == "BLOCKED"
+    assert "unsupported" in result.legs[0].risk_reason
+    assert "not configured" in result.legs[0].risk_reason
+    assert result.legs[0].execution_status == "NOT_SUBMITTED"
+    assert result.submission_attempts == 0
+    text = (tmp_path / "token.jsonl").read_text(encoding="utf-8")
+    assert "super-secret-token" not in text
+
+
+def test_reversed_quotes_price_the_execution_symbol():
+    payloads = _payloads(
+        get_equity_quotes=[
+            {"symbol": "SQQQ", "bid": 20.00, "ask": 20.50, "quote_time": NOW.isoformat()},
+            {"symbol": "TQQQ", "bid": 52.10, "ask": 52.14, "quote_time": NOW.isoformat()},
+        ]
+    )
+    result, broker_state, _calls, state = _run(payloads)
+    assert broker_state == "known"
+    assert state.quote is None
+    assert [quote.symbol for quote in state.quotes] == ["SQQQ", "TQQQ"]
+    selected = quote_for_symbol(state, result.legs[0].intent.execution_symbol)
+    assert selected is not None and selected.symbol == "TQQQ"
+    assert selected.ask == 52.14
+    broker = RobinhoodAgenticBroker(state)
+    assert broker.get_quote("TQQQ") is not None and broker.get_quote("TQQQ").ask == 52.14
+    assert broker.get_quote("SQQQ") is not None and broker.get_quote("SQQQ").ask == 20.50
+    assert result.legs[0].risk_status == "PASS"
+    assert result.legs[0].intent.estimated_price == 52.14
+    assert result.legs[0].intent.estimated_price != 20.50
+
+
+def test_missing_execution_quote_blocks():
+    payloads = _payloads(
+        get_equity_quotes=[
+            {"symbol": "SQQQ", "bid": 20.00, "ask": 20.02, "quote_time": NOW.isoformat()},
+        ]
+    )
+    result, broker_state, _calls, state = _run(payloads)
+    assert broker_state == "known"
+    assert quote_for_symbol(state, "TQQQ") is None
+    assert len(state.quotes) == 1 and state.quotes[0].symbol == "SQQQ"
+    leg = result.legs[0]
+    assert leg.intent.execution_symbol == "TQQQ"
+    assert leg.risk_status == "BLOCKED"
+    assert "quote" in leg.risk_reason
+    assert leg.intent.quantity == 0
+    assert leg.intent.estimated_price is None
+    assert leg.execution_status == "NOT_SUBMITTED"
+
+
+def test_stale_execution_quote_blocks_when_the_other_etf_is_fresh():
+    stale = (NOW - timedelta(seconds=120)).isoformat()
+    payloads = _payloads(
+        get_equity_quotes=[
+            {"symbol": "SQQQ", "bid": 20.00, "ask": 20.02, "quote_time": NOW.isoformat()},
+            {"symbol": "TQQQ", "bid": 52.10, "ask": 52.14, "quote_time": stale},
+        ]
+    )
+    result, _broker_state, _calls, state = _run(payloads)
+    assert quote_for_symbol(state, "TQQQ") is not None
+    assert quote_for_symbol(state, "SQQQ") is not None
+    leg = result.legs[0]
+    assert leg.risk_status == "BLOCKED"
+    assert "stale" in leg.risk_reason
+    assert leg.intent.estimated_price != 20.02
+    assert leg.intent.quantity == 0
+    assert leg.execution_status == "NOT_SUBMITTED"
+
+
+def test_spread_is_isolated_to_the_execution_symbol():
+    tight_tqqq = {"symbol": "TQQQ", "bid": 52.10, "ask": 52.14, "quote_time": NOW.isoformat()}
+    wide_sqqq = {"symbol": "SQQQ", "bid": 20.00, "ask": 21.00, "quote_time": NOW.isoformat()}
+    wide_tqqq = {"symbol": "TQQQ", "bid": 52.00, "ask": 53.00, "quote_time": NOW.isoformat()}
+    tight_sqqq = {"symbol": "SQQQ", "bid": 20.00, "ask": 20.02, "quote_time": NOW.isoformat()}
+
+    wide_other, _broker_state, _calls, _state = _run(
+        _payloads(get_equity_quotes=[wide_sqqq, tight_tqqq])
+    )
+    assert wide_other.legs[0].intent.execution_symbol == "TQQQ"
+    assert wide_other.legs[0].risk_status == "PASS"
+    assert wide_other.legs[0].intent.estimated_price == 52.14
+
+    wide_execution, _broker_state, _calls, _state = _run(
+        _payloads(get_equity_quotes=[tight_sqqq, wide_tqqq])
+    )
+    assert wide_execution.legs[0].risk_status == "BLOCKED"
+    assert "spread" in wide_execution.legs[0].risk_reason
+    assert wide_execution.legs[0].intent.quantity == 0
+
+    sqqq_buy, _broker_state, _calls, _state = _run(
+        _payloads(get_equity_quotes=[tight_tqqq, wide_sqqq]),
+        alert=_alert(symbol="SQQQ", alert_type="BUY"),
+    )
+    assert sqqq_buy.legs[0].intent.execution_symbol == "SQQQ"
+    assert sqqq_buy.legs[0].risk_status == "BLOCKED"
+    assert "spread" in sqqq_buy.legs[0].risk_reason
+    assert sqqq_buy.legs[0].intent.estimated_price != 52.14
 
 
 def test_unconfigured_reader_blocks(tmp_path: Path):

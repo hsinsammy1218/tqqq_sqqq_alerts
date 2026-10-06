@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
+from brokers.quotes import quote_for_symbol
 from brokers.types import (
     ORDER_FILLED,
     BrokerState,
@@ -133,14 +134,7 @@ def limits_from_env(env: dict[str, str] | None = None) -> RobinhoodLimits:
 
 def quote_for(state: BrokerState, symbol: str) -> QuoteView | None:
     """Quote for this symbol. A quote for a different symbol is not reused."""
-    wanted = (symbol or "").upper()
-    for quote in state.quotes:
-        if quote.symbol.upper() == wanted:
-            return quote
-    quote = state.quote
-    if quote is not None and quote.symbol.upper() == wanted:
-        return quote
-    return None
+    return quote_for_symbol(state, symbol)
 
 
 def _position_qty(positions: tuple[PositionView, ...], symbol: str) -> float:

@@ -282,7 +282,7 @@ def normalize_snapshot(
         open_orders=tuple(open_orders),
         known_client_order_ids=frozenset(known_ids),
         orders_today=orders_today,
-        quote=quotes[0] if quotes else None,
+        quote=None,
         quotes=tuple(quotes),
         data_bar_start=data_bar_start,
         now=now,
