@@ -86,9 +86,10 @@ def test_cli_preview_runs_without_alpaca_keys(monkeypatch, capsys, tmp_path):
     assert "place_equity_order" not in out.split("withheld_place_steps")[0]
 
 
-def test_allow_place_appends_place_after_review():
+def test_allow_place_cannot_emit_a_live_order_tool():
     playbook = build_rh_playbook(_alert(), allow_place=True)
     tools = [s["tool"] for s in playbook["steps"]]
-    assert tools.index("review_equity_order") < tools.index("place_equity_order")
-    assert playbook["withheld_place_steps"] == []
-    assert playbook["allow_place"] is True
+    assert "place_equity_order" not in tools
+    assert playbook["withheld_place_steps"][0]["tool"] == "place_equity_order"
+    assert playbook["allow_place"] is False
+    assert any("allow_place ignored" in item for item in playbook["blocked"])
