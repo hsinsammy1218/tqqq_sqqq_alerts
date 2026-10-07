@@ -143,9 +143,11 @@ Blind re-run of already-applied `CREATE POLICY` without `DROP IF EXISTS` is unsa
 
 | Check | Result |
 |-------|--------|
-| `pytest -q` (incl. new verify + existing RLS) | see commit notes |
-| `python3 -m compileall -q .` | required green |
-| `pip check` | required green |
+| `pytest -q` | **395 passed** (was 391 + 4 verify-script tests) |
+| RH RLS + verify | 11 passed |
+| Branch tip | `36a8bc8503172fef29073c257a1be2b23324ed5f` |
+| `python3 -m compileall -q .` | ok |
+| `pip check` | No broken requirements |
 
 ## 11. Docs
 
