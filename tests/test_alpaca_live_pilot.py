@@ -862,6 +862,114 @@ def test_flip_refresh_blocks_qty_open_sell_both_etfs_missing_cash():
     assert "cash" in missing_cash.reason.lower()
 
 
+def test_flip_refresh_blocks_missing_bp_quote_unknown_and_both_etfs():
+    """Remaining FLIP failure cases from the Phase 4.1 brief checklist."""
+    no_bp = AccountView(
+        available=True,
+        status="ACTIVE",
+        buying_power=None,
+        equity=1000,
+        day_start_equity=1000,
+        week_start_equity=1000,
+        peak_equity=1000,
+        cash=1000,
+    )
+    missing_bp = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(account=no_bp),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert missing_bp.allowed is False
+    assert "buying power" in missing_bp.reason.lower()
+
+    missing_quote = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(quotes=(QuoteView("TQQQ", 50.0, 50.10, NOW, last=50.05),)),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert missing_quote.allowed is False
+    assert "quote" in missing_quote.reason.lower()
+
+    unknown = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(known=False, account=None),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert unknown.allowed is False
+    assert "unknown" in unknown.reason.lower()
+
+    both_etfs = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(
+            positions=(PositionView("TQQQ", 1), PositionView("SQQQ", 1))
+        ),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert both_etfs.allowed is False
+
+
+def test_flip_risk_fail_after_refresh_blocks_opposite_buy():
+    """Gate can pass flatness; live risk/sizing must still re-run and can BLOCK."""
+    transport = FakeTradingTransport()
+    transport.accept_status = "filled"
+
+    class RefreshReader:
+        def read_snapshot(self):
+            return {
+                "account": {
+                    "status": "ACTIVE",
+                    "equity": "5000",
+                    "buying_power": "5000",
+                    "cash": "5000",
+                    "last_equity": "5000",
+                    "week_start_equity": "5000",
+                    "peak_equity": "5000",
+                },
+                "positions": [],
+                "orders": [],
+                "quotes": {
+                    "TQQQ": {"quote": {"bp": 50.0, "ap": 50.10, "t": NOW.isoformat()}},
+                    "SQQQ": {"quote": {"bp": 20.0, "ap": 20.05, "t": NOW.isoformat()}},
+                },
+            }
+
+    # Ceiling 100 with equity 5000 → check_new_exposure BLOCK after refresh.
+    result = run_alpaca_live_pilot(
+        _alert(alert_type="FLIP", symbol="SQQQ"),
+        PositionState(active_symbol="TQQQ"),
+        _state(positions=(PositionView("TQQQ", 2),), equity=1000, cash=1000, bp=1000),
+        _limits(ALPACA_LIVE_CAPITAL_CEILING="100"),
+        armed=True,
+        claim_store=InMemoryAtomicClaimStore(),
+        circuit=InMemoryCircuitStore(),
+        reservation_store=InMemoryEntryReservationStore(),
+        executor=AlpacaLiveExecutor(api_key="k", api_secret="s", transport=transport, armed=True),
+        reader=RefreshReader(),  # type: ignore[arg-type]
+        now=NOW,
+        data_bar_start=NOW - timedelta(minutes=5),
+    )
+    assert result.legs[0].execution_status == ORDER_FILLED
+    assert result.legs[1].risk_status == "BLOCKED"
+    assert "ceiling" in result.legs[1].risk_reason.lower()
+    assert all(p["side"] == "sell" for p in transport.posts)
+
+
 def test_flip_refresh_blocks_stale_and_wide_quote():
     stale_quotes = (
         QuoteView("TQQQ", 50.0, 50.10, NOW - timedelta(minutes=30), last=50.05),
