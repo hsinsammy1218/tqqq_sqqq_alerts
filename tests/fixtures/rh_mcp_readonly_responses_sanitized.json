@@ -1,0 +1,54 @@
+{
+  "note": "Sanitized mock MCP read responses for offline schema tests. No real account ids, tokens, or order ids.",
+  "get_accounts": {
+    "accounts": [
+      {
+        "account_id": "[REDACTED]",
+        "account_type": "mcp",
+        "status": "active",
+        "nickname": "agentic-preflight"
+      }
+    ]
+  },
+  "get_portfolio": {
+    "total_value": 1000.0,
+    "buying_power": 1000.0,
+    "cash": 1000.0,
+    "equity": 1000.0,
+    "by_asset_class": { "equity": 0.0, "cash": 1000.0 }
+  },
+  "get_equity_positions": {
+    "positions": []
+  },
+  "get_equity_quotes": {
+    "quotes": [
+      {
+        "symbol": "QQQ",
+        "bid": 480.1,
+        "ask": 480.2,
+        "previous_close": 479.5,
+        "quote_time": "2026-10-07T15:00:00Z"
+      },
+      {
+        "symbol": "TQQQ",
+        "bid": 70.1,
+        "ask": 70.15,
+        "previous_close": 69.9,
+        "quote_time": "2026-10-07T15:00:00Z"
+      },
+      {
+        "symbol": "SQQQ",
+        "bid": 12.4,
+        "ask": 12.42,
+        "previous_close": 12.5,
+        "quote_time": "2026-10-07T15:00:00Z"
+      }
+    ]
+  },
+  "get_equity_orders": {
+    "orders": []
+  },
+  "get_trade_approval_setting": {
+    "trade_approvals_enabled": true
+  }
+}
