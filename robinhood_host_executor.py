@@ -27,10 +27,22 @@ from brokers.types import (
     ORDER_PARTIALLY_FILLED,
     ORDER_UNKNOWN,
     BrokerState,
+    QuoteView,
     TradeIntent,
+    UnsafeBrokerConfiguration,
 )
 from robinhood_flip import advance_flip
 from robinhood_host_audit import HostAuditLog, post_host_discord
+from robinhood_host_entry import (
+    InMemoryRhEntryReservationStore,
+    RhEntryReservationStore,
+    reserve_rh_daily_entry,
+)
+from robinhood_host_equity import (
+    EquityBaselineStore,
+    InMemoryEquityBaselineStore,
+    merge_account_baselines,
+)
 from robinhood_host_risk import (
     check_host_new_exposure,
     host_arming_block_reason,
@@ -38,6 +50,12 @@ from robinhood_host_risk import (
     quote_for,
     sell_qty_allowed,
     size_host_buy,
+)
+from robinhood_host_schema import (
+    HostMcpCapabilities,
+    assert_capabilities_ready,
+    build_place_args,
+    docs_confirmed_capabilities,
 )
 from robinhood_intent import intent_from_row, verify_integrity
 from robinhood_intent_store import IntentStore, StoreResult
@@ -151,30 +169,26 @@ class HostMediatedClient:
         return reader.read_snapshot(symbols)
 
 
-def place_args_for_intent(intent: TradeIntent) -> dict[str, Any]:
-    """Conservative place/review args. Confirm against live tools/list before real use.
+def place_args_for_intent(
+    intent: TradeIntent,
+    *,
+    quote: QuoteView | None = None,
+    capabilities: HostMcpCapabilities | None = None,
+    slippage_bps: float = 25.0,
+) -> dict[str, Any]:
+    """Allowlisted place/review args. Never invents ``client_order_id``.
 
-    Official docs list market share-based and dollar-based orders. Client order
-    id field is not published — we pass ``client_order_id`` when present and
-    always reconcile-before-retry on UNKNOWN.
+    Uses marketable LIMIT when capabilities confirm limit support; otherwise
+    fail closed (no silent market fallback). Internal UNIQUE ``client_order_id``
+    stays in Supabase for idempotency — it is not sent to MCP.
     """
-    side = "buy" if intent.action.upper() == "BUY" else "sell"
-    args: dict[str, Any] = {
-        "symbol": intent.execution_symbol.upper(),
-        "side": side,
-        "order_type": "market",
-        "time_in_force": "gfd",
-        "client_order_id": intent.client_order_id,
-    }
-    if side == "sell":
-        args["quantity"] = int(intent.quantity)
-        # Prefer quantity flatten; sell_all is an alternate documented shape.
-        if intent.quantity <= 0:
-            args.pop("quantity", None)
-            args["sell_all"] = True
-    else:
-        args["quantity"] = int(intent.quantity)
-    return args
+    caps = capabilities or docs_confirmed_capabilities()
+    return build_place_args(
+        intent,
+        quote=quote,
+        capabilities=caps,
+        slippage_bps=slippage_bps,
+    )
 
 
 def _normalize_place_status(payload: Any) -> HostSubmitResult:
@@ -249,10 +263,11 @@ def load_host_state(
     *,
     now: datetime,
     data_bar_start: datetime | None,
+    equity_store: EquityBaselineStore | None = None,
 ) -> BrokerState:
     try:
         raw = client.read_snapshot()
-        return normalize_snapshot(raw, now=now, data_bar_start=data_bar_start)
+        state = normalize_snapshot(raw, now=now, data_bar_start=data_bar_start)
     except (RobinhoodReadError, RobinhoodToolRejected, HostTransportError, ValueError, TypeError, KeyError):
         return BrokerState(
             known=False,
@@ -261,27 +276,75 @@ def load_host_state(
             now=now,
             order_history_complete=False,
         )
+    if state.account is None or equity_store is None:
+        return state
+    merged_account, _ = merge_account_baselines(state.account, equity_store, now=now)
+    return replace(state, account=merged_account)
 
 
 def reconcile_before_retry(
     state: BrokerState,
     client_order_id: str,
+    *,
+    store_row: dict[str, Any] | None = None,
 ) -> HostSubmitResult | None:
-    """If an open/history order already matches client_order_id, do not place again."""
-    for order in state.open_orders:
-        if order.client_order_id == client_order_id:
-            status = order.status.upper()
-            if status == ORDER_UNKNOWN:
-                raise HostOrderAmbiguous("existing order status UNKNOWN; no resubmit")
-            return HostSubmitResult(
-                status if status else ORDER_UNKNOWN,
-                order.client_order_id,
-                None,
-                "reconciled existing order; skipped place",
-                0,
+    """Idempotency without relying on broker ``client_order_id``.
+
+    Authority order:
+    1. Our durable intent row already SUBMITTED/FILLED/UNKNOWN → never place again
+    2. Open order matched by broker_order_id we previously stored
+    3. Open order matched by symbol+side (ambiguous → UNKNOWN, no resubmit)
+    4. Internal id appearing in known_client_order_ids (rare; treat as ambiguous)
+    """
+    if store_row is not None:
+        status = str(store_row.get("status") or "").upper()
+        if status in {
+            "SUBMITTED",
+            "FILLED",
+            "PARTIALLY_FILLED",
+            "UNKNOWN",
+            "REJECTED",
+            "CANCELLED",
+            "EXPIRED",
+        }:
+            raise HostOrderAmbiguous(
+                f"intent already terminal/in-flight as {status}; no resubmit"
             )
+        broker_oid = store_row.get("broker_order_id")
+        if broker_oid:
+            for order in state.open_orders:
+                # OpenOrderView.client_order_id may hold broker id when RH omits client id
+                if order.client_order_id == str(broker_oid):
+                    st = order.status.upper()
+                    if st == ORDER_UNKNOWN:
+                        raise HostOrderAmbiguous("existing broker order UNKNOWN; no resubmit")
+                    return HostSubmitResult(
+                        st if st else ORDER_UNKNOWN,
+                        str(broker_oid),
+                        None,
+                        "reconciled by broker_order_id; skipped place",
+                        0,
+                    )
+
+    # Symbol+side collision with an open order → ambiguous (no client_order_id bridge)
+    intent_side = None
+    intent_symbol = None
+    if store_row is not None:
+        intent_side = str(store_row.get("action") or "").lower()
+        intent_symbol = str(store_row.get("execution_symbol") or "").upper()
+    if intent_side and intent_symbol:
+        conflicts = [
+            o
+            for o in state.open_orders
+            if o.symbol.upper() == intent_symbol and o.side.lower() == intent_side
+        ]
+        if conflicts:
+            raise HostOrderAmbiguous(
+                "open order on same symbol/side; reconcile manually; no resubmit"
+            )
+
     if client_order_id in state.known_client_order_ids:
-        raise HostOrderAmbiguous("client_order_id already known; no resubmit")
+        raise HostOrderAmbiguous("internal client_order_id already known at broker; no resubmit")
     return None
 
 
@@ -295,15 +358,22 @@ def execute_claimed_intent(
     now: datetime,
     data_bar_start: datetime | None,
     position_before: PositionState | None = None,
+    reservation_store: RhEntryReservationStore | None = None,
+    equity_store: EquityBaselineStore | None = None,
+    capabilities: HostMcpCapabilities | None = None,
 ) -> HostExecLeg:
     armed_reason = host_arming_block_reason(
         env,
         submission_implemented=ROBINHOOD_HOST_SUBMISSION_IMPLEMENTED,
         host_executor=True,
+        # NEW_ENTRIES is enforced only on BUY via check_host_new_exposure so
+        # risk-reducing SELL remains possible when new entries are killed.
+        require_new_entries=False,
     )
     armed = armed_reason is None
     durable = intent_from_row(row)
     intent = durable.intent
+    caps = capabilities or docs_confirmed_capabilities()
     if not verify_integrity(intent, durable.integrity_digest):
         store.update_status(
             intent.client_order_id,
@@ -322,7 +392,12 @@ def execute_claimed_intent(
         )
         return _blocked(intent, "intent expired after claim", armed=armed, status="EXPIRED_INTENT")
 
-    state = load_host_state(client, now=now, data_bar_start=data_bar_start)
+    state = load_host_state(
+        client,
+        now=now,
+        data_bar_start=data_bar_start,
+        equity_store=equity_store,
+    )
     book = reconcile_books(position_before, state)
     if book.blocks_new_exposure and intent.action == "BUY":
         store.update_status(
@@ -333,11 +408,26 @@ def execute_claimed_intent(
         )
         return _blocked(intent, book.reason, (("Reconcile", "FAIL"),), armed=armed)
 
+    quote = quote_for(state, intent.execution_symbol)
+    checks: tuple[tuple[str, str], ...] = ()
+
     if intent.action == "BUY":
-        # Re-size at execution time; refuse if stored qty exceeds fresh size.
+        # Cannot execute without known/fresh state — PENDING ≠ approved.
+        if not state.known:
+            store.update_status(
+                intent.client_order_id,
+                from_statuses={"CLAIMED"},
+                to_status="BLOCKED",
+                fields={"detail": "unknown broker state; PENDING is not approval"},
+            )
+            return _blocked(
+                intent,
+                "unknown broker state; cannot execute PENDING without known/fresh state",
+                (("Broker state", "FAIL"), ("Pending≠approved", "PASS")),
+                armed=armed,
+            )
         allowed, reason, checks = check_host_new_exposure(intent, state, limits)
         if allowed:
-            quote = quote_for(state, intent.execution_symbol)
             ask = float(quote.ask) if quote and quote.ask is not None else None
             fresh_qty, fresh_notional = size_host_buy(ask or 0.0, state, limits)
             if intent.quantity > fresh_qty:
@@ -345,14 +435,19 @@ def execute_claimed_intent(
                 reason = f"stored qty {intent.quantity} exceeds fresh size {fresh_qty}"
                 checks = checks + (("Execution revalidation", "FAIL"),)
             else:
+                qty = intent.quantity if intent.quantity > 0 else fresh_qty
                 intent = TradeIntent(
                     strategy_version=intent.strategy_version,
                     signal_symbol=intent.signal_symbol,
                     execution_symbol=intent.execution_symbol,
                     action=intent.action,
-                    quantity=intent.quantity if intent.quantity > 0 else fresh_qty,
+                    quantity=qty,
                     estimated_price=ask,
-                    estimated_notional=fresh_notional if intent.quantity <= 0 else round(intent.quantity * (ask or 0), 2),
+                    estimated_notional=(
+                        fresh_notional
+                        if intent.quantity <= 0
+                        else round(qty * (ask or 0), 2)
+                    ),
                     confidence=intent.confidence,
                     regime=intent.regime,
                     reason=intent.reason,
@@ -370,8 +465,50 @@ def execute_claimed_intent(
                 fields={"risk_status": "BLOCKED", "risk_reason": reason},
             )
             return _blocked(intent, reason, checks, armed=armed)
+
+        # Authoritative daily entry reservation at host BUY boundary (not Render).
+        res_store = reservation_store or InMemoryRhEntryReservationStore()
+        reserved = reserve_rh_daily_entry(
+            res_store,
+            now=now,
+            meta={
+                "client_order_id": intent.client_order_id,
+                "purpose": intent.purpose,
+                "execution_symbol": intent.execution_symbol,
+                "signal_id": intent.signal_id,
+            },
+        )
+        if not reserved.reserved:
+            store.update_status(
+                intent.client_order_id,
+                from_statuses={"CLAIMED"},
+                to_status="BLOCKED",
+                fields={"detail": reserved.reason},
+            )
+            return _blocked(
+                intent,
+                reserved.reason,
+                checks + (("Daily entry reservation", "FAIL"),),
+                armed=armed,
+            )
+        checks = checks + (("Daily entry reservation", "PASS"),)
     else:
-        qty, sell_reason = sell_qty_allowed(state, intent.execution_symbol, intent.quantity or 10**9)
+        if not state.known:
+            store.update_status(
+                intent.client_order_id,
+                from_statuses={"CLAIMED"},
+                to_status="BLOCKED",
+                fields={"detail": "unknown broker state; sell blocked"},
+            )
+            return _blocked(
+                intent,
+                "unknown broker state; sell blocked",
+                (("Broker state", "FAIL"),),
+                armed=armed,
+            )
+        qty, sell_reason = sell_qty_allowed(
+            state, intent.execution_symbol, intent.quantity or 10**9
+        )
         checks = (("Sell", "PASS" if sell_reason is None else "FAIL"),)
         if sell_reason:
             store.update_status(
@@ -381,14 +518,15 @@ def execute_claimed_intent(
                 fields={"detail": sell_reason},
             )
             return _blocked(intent, sell_reason, checks, armed=armed)
+        bid = float(quote.bid) if quote and quote.bid is not None else intent.estimated_price
         intent = TradeIntent(
             strategy_version=intent.strategy_version,
             signal_symbol=intent.signal_symbol,
             execution_symbol=intent.execution_symbol,
             action=intent.action,
             quantity=qty,
-            estimated_price=intent.estimated_price,
-            estimated_notional=round(qty * float(intent.estimated_price), 2) if intent.estimated_price else None,
+            estimated_price=bid,
+            estimated_notional=round(qty * float(bid), 2) if bid else None,
             confidence=intent.confidence,
             regime=intent.regime,
             reason=intent.reason,
@@ -416,9 +554,32 @@ def execute_claimed_intent(
         )
         return _blocked(intent, "host transport is read-only", armed=armed)
 
-    # Idempotency: reconcile before place.
     try:
-        existing = reconcile_before_retry(state, intent.client_order_id)
+        assert_capabilities_ready(caps)
+        args = place_args_for_intent(
+            intent,
+            quote=quote,
+            capabilities=caps,
+            slippage_bps=float(limits.max_slippage_bps),
+        )
+        if "client_order_id" in args:
+            raise UnsafeBrokerConfiguration(
+                "place args included undocumented client_order_id"
+            )
+    except UnsafeBrokerConfiguration as exc:
+        store.update_status(
+            intent.client_order_id,
+            from_statuses={"CLAIMED"},
+            to_status="BLOCKED",
+            fields={"detail": str(exc)},
+        )
+        return _blocked(intent, str(exc), checks + (("Schema", "FAIL"),), armed=armed)
+
+    # Idempotency: reconcile before place (internal id + store status authority).
+    try:
+        existing = reconcile_before_retry(
+            state, intent.client_order_id, store_row=store.get(intent.client_order_id)
+        )
     except HostOrderAmbiguous as exc:
         store.update_status(
             intent.client_order_id,
@@ -447,9 +608,7 @@ def execute_claimed_intent(
         )
         return replace(leg, text=_format_leg(leg, armed=armed))
 
-    args = place_args_for_intent(intent)
     try:
-        # Optional review first (documented simulate tool).
         client.call("review_equity_order", args)
         raw = client.call("place_equity_order", args)
         submit = _normalize_place_status(raw)
@@ -462,13 +621,22 @@ def execute_claimed_intent(
         )
         return _blocked(intent, str(exc), armed=armed, status="UNKNOWN")
     except (HostTransportError, RobinhoodToolRejected, RobinhoodReadError) as exc:
+        # Transport timeout / malformed after a possible accept → UNKNOWN, not
+        # REJECTED, when the error is ambiguous. Explicit tool rejection stays
+        # REJECTED (safe to not resubmit either way).
+        detail = str(exc)
+        ambiguous = any(
+            marker in detail.lower()
+            for marker in ("timeout", "timed out", "malformed", "ambiguous", "connection reset")
+        )
+        to = "UNKNOWN" if ambiguous else "REJECTED"
         store.update_status(
             intent.client_order_id,
             from_statuses={"CLAIMED"},
-            to_status="REJECTED",
-            fields={"detail": str(exc)},
+            to_status=to,
+            fields={"detail": detail},
         )
-        return _blocked(intent, str(exc), armed=armed, status="REJECTED")
+        return _blocked(intent, detail, armed=armed, status=to)
 
     to_status = submit.status if submit.status in {
         "SUBMITTED", "FILLED", "PARTIALLY_FILLED", "REJECTED", "CANCELLED", "EXPIRED", "UNKNOWN"
@@ -488,7 +656,7 @@ def execute_claimed_intent(
         intent=intent,
         risk_status="PASS",
         risk_reason="host place completed",
-        checks=(("Arming", "PASS"), ("Place", "PASS")),
+        checks=checks + (("Arming", "PASS"), ("Schema", "PASS"), ("Place", "PASS")),
         execution_status=to_status,
         text="",
         submit=submit,
@@ -522,6 +690,9 @@ def run_host_executor_once(
     position_before: PositionState | None = None,
     dry_run: bool = False,
     webhook_url: str = "",
+    reservation_store: RhEntryReservationStore | None = None,
+    equity_store: EquityBaselineStore | None = None,
+    capabilities: HostMcpCapabilities | None = None,
 ) -> HostExecRun:
     clock = now or datetime.now(timezone.utc)
     if clock.tzinfo is None:
@@ -532,9 +703,13 @@ def run_host_executor_once(
         source,
         submission_implemented=ROBINHOOD_HOST_SUBMISSION_IMPLEMENTED,
         host_executor=True,
+        require_new_entries=False,
     )
     armed = armed_reason is None and not dry_run
     client = HostMediatedClient(transport, allow_writes=allow_writes and armed and not dry_run)
+    res_store = reservation_store if reservation_store is not None else InMemoryRhEntryReservationStore()
+    eq_store = equity_store if equity_store is not None else InMemoryEquityBaselineStore()
+    caps = capabilities or docs_confirmed_capabilities()
 
     if client_order_id:
         claim: StoreResult = store.claim_by_client_order_id(
@@ -555,6 +730,9 @@ def run_host_executor_once(
         now=clock,
         data_bar_start=data_bar_start,
         position_before=position_before,
+        reservation_store=res_store,
+        equity_store=eq_store,
+        capabilities=caps,
     )
     log_path = Path(source.get("ROBINHOOD_HOST_EXEC_LOG") or "logs/robinhood_host_exec.jsonl")
     HostAuditLog(log_path).append(leg.audit_row())
