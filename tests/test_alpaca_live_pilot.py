@@ -13,6 +13,11 @@ import pytest
 
 from alpaca_live_claim import AtomicLiveClaimStore, InMemoryAtomicClaimStore
 from alpaca_live_circuit import CircuitState, InMemoryCircuitStore
+from alpaca_live_entry_reservation import (
+    InMemoryEntryReservationStore,
+    trading_day_america_new_york,
+)
+from alpaca_live_flip_refresh import require_post_sell_flat_for_flip
 from alpaca_live_pilot import (
     evaluate_pilot_leg,
     run_alpaca_live_pilot,
@@ -419,6 +424,7 @@ def test_dry_run_after_strategy_disarms(tmp_path: Path):
         env=env,
         claim_store=InMemoryAtomicClaimStore(),
         circuit=InMemoryCircuitStore(),
+        reservation_store=InMemoryEntryReservationStore(),
         executor=AlpacaLiveExecutor(
             api_key="k",
             api_secret="s",
@@ -537,6 +543,7 @@ def test_kill_switch_blocks_entry_allows_exit_sizing():
         armed=True,
         claim_store=InMemoryAtomicClaimStore(),
         circuit=circuit,
+        reservation_store=InMemoryEntryReservationStore(),
         executor=executor,
     )
     assert sell.risk_status == "PASS"
@@ -596,8 +603,7 @@ def test_flip_filled_flat_allows_entry_post():
                 },
             }
 
-    # Use run with filled sell: after sell, exit_status FILLED and qty remaining 0.
-    # Without reader refresh of positions, evaluate uses exit_qty_remaining from submit.
+    reader = RefreshReader()
     executor = AlpacaLiveExecutor(api_key="k", api_secret="s", transport=transport, armed=True)
     result = run_alpaca_live_pilot(
         _alert(alert_type="FLIP", symbol="SQQQ"),
@@ -607,34 +613,27 @@ def test_flip_filled_flat_allows_entry_post():
         armed=True,
         claim_store=InMemoryAtomicClaimStore(),
         circuit=InMemoryCircuitStore(),
+        reservation_store=InMemoryEntryReservationStore(),
         executor=executor,
+        reader=reader,  # type: ignore[arg-type]
+        now=NOW,
+        data_bar_start=NOW - timedelta(minutes=5),
     )
     assert result.legs[0].execution_status == ORDER_FILLED
-    # Second leg may pass flip gate; risk may still size a buy.
     assert result.legs[1].intent.action == "BUY"
+    assert reader.calls >= 1
     sides = [p["side"] for p in transport.posts]
     assert sides[0] == "sell"
-    # Buy posts only if flip advanced and risk passed.
-    if result.legs[1].risk_status == "PASS":
-        assert "buy" in sides
-    else:
-        # If blocked, reason must be risk/circuit — not "exit has not been sent"
-        assert "exit has not been sent" not in result.legs[1].risk_reason
+    # Success path requires broker-confirmed flat + fresh quote + risk pass.
+    assert result.legs[1].risk_status == "PASS", result.legs[1].risk_reason
+    assert "buy" in sides
 
 
 def test_one_entry_per_day_durable():
-    circuit = InMemoryCircuitStore(
-        CircuitState(
-            bot_id="default",
-            day_key=NOW.date(),
-            entries_today=1,
-            week_key=None,
-            kill_new_entries=False,
-            daily_loss_tripped=False,
-            weekly_loss_tripped=False,
-            drawdown_tripped=False,
-        )
-    )
+    """Atomic reservation UNIQUE slot — not racy circuit entries_today."""
+    reservations = InMemoryEntryReservationStore()
+    day = trading_day_america_new_york(NOW)
+    assert reservations.reserve(trading_day=day, meta={"purpose": "prior"}).reserved
     transport = FakeTradingTransport()
     executor = AlpacaLiveExecutor(api_key="k", api_secret="s", transport=transport, armed=True)
     result = run_alpaca_live_pilot(
@@ -644,12 +643,13 @@ def test_one_entry_per_day_durable():
         _limits(),
         armed=True,
         claim_store=InMemoryAtomicClaimStore(),
-        circuit=circuit,
+        circuit=InMemoryCircuitStore(),
+        reservation_store=reservations,
         executor=executor,
         now=NOW,
     )
     assert result.legs[0].risk_status == "BLOCKED"
-    assert "day" in result.legs[0].risk_reason.lower()
+    assert "reserv" in result.legs[0].risk_reason.lower()
     assert transport.posts == []
 
 
@@ -712,3 +712,519 @@ def test_claim_store_required_message_when_supabase_missing(tmp_path: Path):
     assert result.blocked >= 1
     assert result.submission_attempts == 0
     assert "claim" in result.legs[0].risk_reason.lower()
+
+
+def _flat_refresh_state(**overrides: object) -> BrokerState:
+    base = _state(positions=(), equity=1000, cash=1000, bp=1000)
+    if not overrides:
+        return base
+    # Rebuild with selective overrides via dataclass-like fields on BrokerState.
+    return BrokerState(
+        known=bool(overrides.get("known", True)),
+        account=overrides.get("account", base.account),  # type: ignore[arg-type]
+        positions=overrides.get("positions", ()),  # type: ignore[arg-type]
+        open_orders=overrides.get("open_orders", ()),  # type: ignore[arg-type]
+        quotes=overrides.get("quotes", base.quotes),  # type: ignore[arg-type]
+        quote=None,
+        data_bar_start=NOW - timedelta(minutes=5),
+        now=NOW,
+        order_history_complete=True,
+        detail="refresh-test",
+        known_client_order_ids=frozenset(),
+        orders_today=0,
+    )
+
+
+@pytest.mark.parametrize(
+    "exit_status",
+    [
+        "SUBMITTED",
+        "ACCEPTED",
+        "PARTIALLY_FILLED",
+        "CANCELLED",
+        "REJECTED",
+        "EXPIRED",
+        "UNKNOWN",
+        "NEW",
+        "",
+    ],
+)
+def test_flip_refresh_blocks_non_filled_sell_statuses(exit_status: str):
+    gate = require_post_sell_flat_for_flip(
+        exit_status=exit_status or None,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert gate.allowed is False
+
+
+def test_flip_refresh_blocks_reader_missing_and_refresh_error():
+    missing = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=False,
+    )
+    assert missing.allowed is False
+    assert "reader" in missing.reason.lower()
+
+    failed = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=None,
+        refresh_error="timeout talking to Alpaca",
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert failed.allowed is False
+    assert "refresh" in failed.reason.lower()
+
+
+def test_flip_refresh_blocks_qty_open_sell_both_etfs_missing_cash():
+    qty = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(positions=(PositionView("TQQQ", 1),)),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert qty.allowed is False
+    assert "qty" in qty.reason.lower() or "open" in qty.reason.lower()
+
+    open_sell = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(
+            open_orders=(
+                OpenOrderView(
+                    client_order_id="sell-open",
+                    symbol="TQQQ",
+                    side="sell",
+                    status="ACCEPTED",
+                    qty=1,
+                ),
+            )
+        ),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert open_sell.allowed is False
+    assert "sell" in open_sell.reason.lower()
+
+    both = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(
+            positions=(PositionView("TQQQ", 0), PositionView("SQQQ", 2))
+        ),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    # Opposite already held (SQQQ) blocks even if exit qty is 0.
+    assert both.allowed is False
+
+    cashless = _state(positions=(), equity=1000, cash=1000, bp=1000)
+    assert cashless.account is not None
+    no_cash_account = AccountView(
+        available=True,
+        status="ACTIVE",
+        buying_power=1000,
+        equity=1000,
+        day_start_equity=1000,
+        week_start_equity=1000,
+        peak_equity=1000,
+        cash=None,
+    )
+    missing_cash = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(account=no_cash_account),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert missing_cash.allowed is False
+    assert "cash" in missing_cash.reason.lower()
+
+
+def test_flip_refresh_blocks_missing_bp_quote_unknown_and_both_etfs():
+    """Remaining FLIP failure cases from the Phase 4.1 brief checklist."""
+    no_bp = AccountView(
+        available=True,
+        status="ACTIVE",
+        buying_power=None,
+        equity=1000,
+        day_start_equity=1000,
+        week_start_equity=1000,
+        peak_equity=1000,
+        cash=1000,
+    )
+    missing_bp = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(account=no_bp),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert missing_bp.allowed is False
+    assert "buying power" in missing_bp.reason.lower()
+
+    missing_quote = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(quotes=(QuoteView("TQQQ", 50.0, 50.10, NOW, last=50.05),)),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert missing_quote.allowed is False
+    assert "quote" in missing_quote.reason.lower()
+
+    unknown = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(known=False, account=None),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert unknown.allowed is False
+    assert "unknown" in unknown.reason.lower()
+
+    both_etfs = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(
+            positions=(PositionView("TQQQ", 1), PositionView("SQQQ", 1))
+        ),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert both_etfs.allowed is False
+
+
+def test_flip_risk_fail_after_refresh_blocks_opposite_buy():
+    """Gate can pass flatness; live risk/sizing must still re-run and can BLOCK."""
+    transport = FakeTradingTransport()
+    transport.accept_status = "filled"
+
+    class RefreshReader:
+        def read_snapshot(self):
+            return {
+                "account": {
+                    "status": "ACTIVE",
+                    "equity": "5000",
+                    "buying_power": "5000",
+                    "cash": "5000",
+                    "last_equity": "5000",
+                    "week_start_equity": "5000",
+                    "peak_equity": "5000",
+                },
+                "positions": [],
+                "orders": [],
+                "quotes": {
+                    "TQQQ": {"quote": {"bp": 50.0, "ap": 50.10, "t": NOW.isoformat()}},
+                    "SQQQ": {"quote": {"bp": 20.0, "ap": 20.05, "t": NOW.isoformat()}},
+                },
+            }
+
+    # Ceiling 100 with equity 5000 → check_new_exposure BLOCK after refresh.
+    result = run_alpaca_live_pilot(
+        _alert(alert_type="FLIP", symbol="SQQQ"),
+        PositionState(active_symbol="TQQQ"),
+        _state(positions=(PositionView("TQQQ", 2),), equity=1000, cash=1000, bp=1000),
+        _limits(ALPACA_LIVE_CAPITAL_CEILING="100"),
+        armed=True,
+        claim_store=InMemoryAtomicClaimStore(),
+        circuit=InMemoryCircuitStore(),
+        reservation_store=InMemoryEntryReservationStore(),
+        executor=AlpacaLiveExecutor(api_key="k", api_secret="s", transport=transport, armed=True),
+        reader=RefreshReader(),  # type: ignore[arg-type]
+        now=NOW,
+        data_bar_start=NOW - timedelta(minutes=5),
+    )
+    assert result.legs[0].execution_status == ORDER_FILLED
+    assert result.legs[1].risk_status == "BLOCKED"
+    assert "ceiling" in result.legs[1].risk_reason.lower()
+    assert all(p["side"] == "sell" for p in transport.posts)
+
+
+def test_flip_refresh_blocks_stale_and_wide_quote():
+    stale_quotes = (
+        QuoteView("TQQQ", 50.0, 50.10, NOW - timedelta(minutes=30), last=50.05),
+        QuoteView("SQQQ", 20.0, 20.05, NOW - timedelta(minutes=30), last=20.02),
+    )
+    stale = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(quotes=stale_quotes),
+        refresh_error=None,
+        limits=_limits(ALPACA_LIVE_MAX_QUOTE_AGE_SECONDS="5"),
+        reader_present=True,
+    )
+    assert stale.allowed is False
+    assert "stale" in stale.reason.lower()
+
+    wide_quotes = (
+        QuoteView("TQQQ", 50.0, 50.10, NOW, last=50.05),
+        QuoteView("SQQQ", 20.0, 25.0, NOW, last=22.0),
+    )
+    wide = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(quotes=wide_quotes),
+        refresh_error=None,
+        limits=_limits(ALPACA_LIVE_MAX_SPREAD_BPS="10"),
+        reader_present=True,
+    )
+    assert wide.allowed is False
+    assert "spread" in wide.reason.lower()
+
+
+def test_flip_refresh_success_and_inverse_sqqq_to_tqqq():
+    ok = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="TQQQ",
+        entry_symbol="SQQQ",
+        refreshed_state=_flat_refresh_state(),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert ok.allowed is True
+    assert ok.exit_qty_remaining == 0.0
+
+    inverse = require_post_sell_flat_for_flip(
+        exit_status=ORDER_FILLED,
+        exit_symbol="SQQQ",
+        entry_symbol="TQQQ",
+        refreshed_state=_flat_refresh_state(),
+        refresh_error=None,
+        limits=_limits(),
+        reader_present=True,
+    )
+    assert inverse.allowed is True
+
+
+def test_flip_without_reader_never_posts_opposite_buy():
+    transport = FakeTradingTransport()
+    transport.accept_status = "filled"
+    executor = AlpacaLiveExecutor(api_key="k", api_secret="s", transport=transport, armed=True)
+    result = run_alpaca_live_pilot(
+        _alert(alert_type="FLIP", symbol="SQQQ"),
+        PositionState(active_symbol="TQQQ"),
+        _state(positions=(PositionView("TQQQ", 2),)),
+        _limits(),
+        armed=True,
+        claim_store=InMemoryAtomicClaimStore(),
+        circuit=InMemoryCircuitStore(),
+        reservation_store=InMemoryEntryReservationStore(),
+        executor=executor,
+        reader=None,
+    )
+    assert result.legs[1].risk_status == "BLOCKED"
+    assert all(p["side"] == "sell" for p in transport.posts)
+
+
+def test_daily_reservation_same_day_second_signal_blocked():
+    reservations = InMemoryEntryReservationStore()
+    transport = FakeTradingTransport()
+    transport.accept_status = "filled"
+    executor = AlpacaLiveExecutor(api_key="k", api_secret="s", transport=transport, armed=True)
+    first = run_alpaca_live_pilot(
+        _alert(timestamp="2026-10-06T14:30:00Z"),
+        PositionState(active_symbol=None),
+        _state(),
+        _limits(),
+        armed=True,
+        claim_store=InMemoryAtomicClaimStore(),
+        circuit=InMemoryCircuitStore(),
+        reservation_store=reservations,
+        executor=executor,
+        now=NOW,
+    )
+    assert first.legs[0].risk_status == "PASS"
+    second = run_alpaca_live_pilot(
+        _alert(timestamp="2026-10-06T15:00:00Z"),
+        PositionState(active_symbol=None),
+        _state(),
+        _limits(),
+        armed=True,
+        claim_store=InMemoryAtomicClaimStore(),
+        circuit=InMemoryCircuitStore(),
+        reservation_store=reservations,
+        executor=executor,
+        now=NOW,
+    )
+    assert second.legs[0].risk_status == "BLOCKED"
+    assert "reserv" in second.legs[0].risk_reason.lower()
+
+
+def test_daily_reservation_restart_keeps_slot_next_day_new_slot():
+    reservations = InMemoryEntryReservationStore()
+    day = trading_day_america_new_york(NOW)
+    assert reservations.reserve(trading_day=day).reserved
+    # Restart simulation: same store state survives (durable UNIQUE).
+    assert reservations.has_reservation(trading_day=day) is True
+    transport = FakeTradingTransport()
+    executor = AlpacaLiveExecutor(api_key="k", api_secret="s", transport=transport, armed=True)
+    blocked = run_alpaca_live_pilot(
+        _alert(),
+        PositionState(active_symbol=None),
+        _state(),
+        _limits(),
+        armed=True,
+        claim_store=InMemoryAtomicClaimStore(),
+        circuit=InMemoryCircuitStore(),
+        reservation_store=reservations,
+        executor=executor,
+        now=NOW,
+    )
+    assert blocked.legs[0].risk_status == "BLOCKED"
+
+    next_day = NOW + timedelta(days=1)
+    allowed = run_alpaca_live_pilot(
+        _alert(timestamp="2026-10-07T14:30:00Z"),
+        PositionState(active_symbol=None),
+        _state(),
+        _limits(),
+        armed=True,
+        claim_store=InMemoryAtomicClaimStore(),
+        circuit=InMemoryCircuitStore(),
+        reservation_store=reservations,
+        executor=executor,
+        now=next_day,
+    )
+    assert allowed.legs[0].risk_status == "PASS"
+
+
+def test_exit_does_not_consume_daily_reservation_flip_buy_does():
+    reservations = InMemoryEntryReservationStore()
+    transport = FakeTradingTransport()
+    transport.accept_status = "filled"
+    executor = AlpacaLiveExecutor(api_key="k", api_secret="s", transport=transport, armed=True)
+    sell = run_alpaca_live_pilot(
+        _alert(alert_type="SELL", symbol="TQQQ"),
+        PositionState(active_symbol="TQQQ"),
+        _state(positions=(PositionView("TQQQ", 2),)),
+        _limits(),
+        armed=True,
+        claim_store=InMemoryAtomicClaimStore(),
+        circuit=InMemoryCircuitStore(),
+        reservation_store=reservations,
+        executor=executor,
+        now=NOW,
+    )
+    assert sell.legs[0].risk_status == "PASS"
+    assert reservations.rows == []
+
+    class RefreshReader:
+        def read_snapshot(self):
+            return {
+                "account": {
+                    "status": "ACTIVE",
+                    "equity": "1000",
+                    "buying_power": "1000",
+                    "cash": "1000",
+                    "last_equity": "1000",
+                    "week_start_equity": "1000",
+                    "peak_equity": "1000",
+                },
+                "positions": [],
+                "orders": [],
+                "quotes": {
+                    "TQQQ": {"quote": {"bp": 50.0, "ap": 50.10, "t": NOW.isoformat()}},
+                    "SQQQ": {"quote": {"bp": 20.0, "ap": 20.05, "t": NOW.isoformat()}},
+                },
+            }
+
+    flip_transport = FakeTradingTransport()
+    flip_transport.accept_status = "filled"
+    flip = run_alpaca_live_pilot(
+        _alert(alert_type="FLIP", symbol="SQQQ"),
+        PositionState(active_symbol="TQQQ"),
+        _state(positions=(PositionView("TQQQ", 2),), equity=1000, cash=1000, bp=1000),
+        _limits(),
+        armed=True,
+        claim_store=InMemoryAtomicClaimStore(),
+        circuit=InMemoryCircuitStore(),
+        reservation_store=reservations,
+        executor=AlpacaLiveExecutor(
+            api_key="k", api_secret="s", transport=flip_transport, armed=True
+        ),
+        reader=RefreshReader(),  # type: ignore[arg-type]
+        now=NOW,
+        data_bar_start=NOW - timedelta(minutes=5),
+    )
+    assert flip.legs[0].intent.action == "SELL"
+    assert flip.legs[1].intent.action == "BUY"
+    assert flip.legs[1].risk_status == "PASS", flip.legs[1].risk_reason
+    assert len(reservations.rows) == 1
+    assert reservations.rows[0]["purpose"] == "flip_entry"
+
+
+def test_reservation_store_required_when_supabase_missing(tmp_path: Path):
+    env = _armed_env(ALPACA_LIVE_PILOT_LOG=str(tmp_path / "r.jsonl"))
+    env.pop("SUPABASE_URL", None)
+    env.pop("NEXT_PUBLIC_SUPABASE_URL", None)
+    env.pop("SUPABASE_SERVICE_ROLE_KEY", None)
+    result = run_alpaca_live_pilot_after_strategy(
+        _alert(),
+        PositionState(active_symbol=None),
+        dry_run=False,
+        webhook_url="",
+        data_bar_start=NOW - timedelta(minutes=5),
+        now=NOW,
+        env=env,
+        claim_store=InMemoryAtomicClaimStore(),
+        executor=AlpacaLiveExecutor(
+            api_key="k",
+            api_secret="s",
+            transport=FakeTradingTransport(),
+            armed=True,
+        ),
+        client=None,
+    )
+    assert result is not None
+    assert result.blocked >= 1
+    assert result.submission_attempts == 0
+    assert "reserv" in result.legs[0].risk_reason.lower()
+
+
+def test_submitted_sell_blocked_in_advance_flip():
+    from robinhood_flip import advance_flip
+
+    flip = advance_flip(
+        exit_status="SUBMITTED",
+        exit_qty_remaining=0.0,
+        broker_state_known=True,
+    )
+    assert flip.entry_validation_allowed is False
+
+
+def test_shadow_submission_flag_still_false():
+    assert ALPACA_LIVE_SUBMISSION_IMPLEMENTED is False
+    assert ALPACA_LIVE_PILOT_SUBMISSION_IMPLEMENTED is True

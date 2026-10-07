@@ -163,12 +163,12 @@ python main.py --discord-test
 4. `LIVE_TRADING_ENABLED=true`
 5. Code constant `ALPACA_LIVE_PILOT_SUBMISSION_IMPLEMENTED=True` (already true only on the pilot executor)
 6. Separate `ALPACA_LIVE_API_KEY` / `ALPACA_LIVE_API_SECRET` (never paper keys)
-7. Supabase (`SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`) for atomic `bot_live_order_claims` inserts
+7. Supabase (`SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`) for atomic `bot_live_order_claims` **and** `bot_live_entry_reservations` inserts
 8. Live risk env: `ALPACA_LIVE_CAPITAL_CEILING`, `ALPACA_LIVE_MAX_ORDER_NOTIONAL`, `ALPACA_LIVE_MAX_POSITION_PCT`, daily/weekly/drawdown limits, `ALPACA_LIVE_MAX_ORDERS_PER_DAY`
-9. Apply migrations `20261007020000_bot_live_order_claims.sql` and `20261007020100_bot_live_circuit_state.sql`
+9. Apply migrations `20261007020000_bot_live_order_claims.sql`, `20261007020100_bot_live_circuit_state.sql`, and `20261007030000_bot_live_entry_reservations.sql`
 10. `DRY_RUN=false` (dry-run forces disarm)
 
-If account equity exceeds `ALPACA_LIVE_CAPITAL_CEILING`, new exposure is **blocked** (not silently sized down). Timeout on order POST looks up by `client_order_id` and never blind-retries. Discord messages say **REAL MONEY**. Keep the daytime cron on paper unless Hemman explicitly arms a dedicated sleeve.
+If account equity exceeds `ALPACA_LIVE_CAPITAL_CEILING`, new exposure is **blocked** (not silently sized down). Daily new entries use an atomic UNIQUE `(bot_id, trading_day, entry_slot)` reservation (America/New_York calendar date; crash after reserve does **not** auto-free). FLIP opposite BUY requires a **fresh** Alpaca snapshot after a FILLED SELL — never assume flat from the SELL response alone. Timeout on order POST looks up by `client_order_id` and never blind-retries. Discord messages say **REAL MONEY**. Keep the daytime cron on paper unless Hemman explicitly arms a dedicated sleeve.
 
 ### Optional Alpaca paper orders
 

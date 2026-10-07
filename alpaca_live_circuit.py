@@ -24,7 +24,20 @@ class CircuitState:
     drawdown_tripped: bool
     detail: str = ""
 
-    def blocks_new_entry(self, *, today: date, max_entries_per_day: int) -> str | None:
+    def blocks_new_entry(
+        self,
+        *,
+        today: date,
+        max_entries_per_day: int,
+        enforce_entries_today: bool = False,
+    ) -> str | None:
+        """Kill / loss / drawdown gates.
+
+        Daily entry capacity for live pilot is owned by
+        ``bot_live_entry_reservations`` (atomic UNIQUE slot). The racy
+        ``entries_today`` counter is not the production authority unless
+        ``enforce_entries_today`` is explicitly requested (legacy/tests).
+        """
         if self.kill_new_entries:
             return "kill switch blocks new entries (exits still allowed)"
         if self.daily_loss_tripped:
@@ -33,9 +46,10 @@ class CircuitState:
             return "durable weekly loss circuit is tripped"
         if self.drawdown_tripped:
             return "durable drawdown circuit is tripped"
-        count = self.entries_today if self.day_key == today else 0
-        if count >= max_entries_per_day:
-            return "one new entry per day already used (durable)"
+        if enforce_entries_today:
+            count = self.entries_today if self.day_key == today else 0
+            if count >= max_entries_per_day:
+                return "one new entry per day already used (durable)"
         return None
 
 
