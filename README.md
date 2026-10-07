@@ -151,7 +151,24 @@ python main.py --discord-test
 
 ### Optional Alpaca live shadow (read-only)
 
-`EXECUTION_BROKER=alpaca_live_shadow` reads a real Alpaca **live** account (separate `ALPACA_LIVE_*` keys + exact `https://api.alpaca.markets` host), runs live risk, and writes a would-be intent with `execution_status=NOT_SUBMITTED`. It **never** posts, cancels, or replaces live orders. `alpaca_live` is rejected. Env flags such as `ALPACA_LIVE_ENABLED=true` cannot unlock submission — `ALPACA_LIVE_SUBMISSION_IMPLEMENTED` stays `False` in code. Default cron remains Alpaca paper; do not set live shadow or live keys on Render unless explicitly requested.
+`EXECUTION_BROKER=alpaca_live_shadow` reads a real Alpaca **live** account (separate `ALPACA_LIVE_*` keys + exact `https://api.alpaca.markets` host), runs live risk, and writes a would-be intent with `execution_status=NOT_SUBMITTED`. It **never** posts, cancels, or replaces live orders. Bare `alpaca_live` is rejected. Env flags such as `ALPACA_LIVE_ENABLED=true` cannot unlock shadow submission — `ALPACA_LIVE_SUBMISSION_IMPLEMENTED` stays `False` on the shadow broker. Default cron remains Alpaca paper; do not set live shadow or live keys on Render unless explicitly requested.
+
+### Optional Alpaca live pilot (real money — not armed by default)
+
+`EXECUTION_BROKER=alpaca_live_pilot` is the controlled real-money path. **Merging this code does not activate live trading.** Render must keep `EXECUTION_BROKER` unset (paper). Activation requires **all** of:
+
+1. `EXECUTION_BROKER=alpaca_live_pilot`
+2. `ALPACA_LIVE_ENABLED=true`
+3. `ALPACA_LIVE_NEW_ENTRIES_ENABLED=true`
+4. `LIVE_TRADING_ENABLED=true`
+5. Code constant `ALPACA_LIVE_PILOT_SUBMISSION_IMPLEMENTED=True` (already true only on the pilot executor)
+6. Separate `ALPACA_LIVE_API_KEY` / `ALPACA_LIVE_API_SECRET` (never paper keys)
+7. Supabase (`SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`) for atomic `bot_live_order_claims` inserts
+8. Live risk env: `ALPACA_LIVE_CAPITAL_CEILING`, `ALPACA_LIVE_MAX_ORDER_NOTIONAL`, `ALPACA_LIVE_MAX_POSITION_PCT`, daily/weekly/drawdown limits, `ALPACA_LIVE_MAX_ORDERS_PER_DAY`
+9. Apply migrations `20261007020000_bot_live_order_claims.sql` and `20261007020100_bot_live_circuit_state.sql`
+10. `DRY_RUN=false` (dry-run forces disarm)
+
+If account equity exceeds `ALPACA_LIVE_CAPITAL_CEILING`, new exposure is **blocked** (not silently sized down). Timeout on order POST looks up by `client_order_id` and never blind-retries. Discord messages say **REAL MONEY**. Keep the daytime cron on paper unless Hemman explicitly arms a dedicated sleeve.
 
 ### Optional Alpaca paper orders
 

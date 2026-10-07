@@ -9,12 +9,14 @@ from brokers.types import UnsafeBrokerConfiguration
 
 ALPACA_PAPER = "alpaca_paper"
 ALPACA_LIVE_SHADOW = "alpaca_live_shadow"
+ALPACA_LIVE_PILOT = "alpaca_live_pilot"
 ROBINHOOD_SHADOW = "robinhood_shadow"
 ROBINHOOD_CONNECTED_SHADOW = "robinhood_connected_shadow"
 _ALLOWED = frozenset(
     {
         ALPACA_PAPER,
         ALPACA_LIVE_SHADOW,
+        ALPACA_LIVE_PILOT,
         ROBINHOOD_SHADOW,
         ROBINHOOD_CONNECTED_SHADOW,
     }
@@ -32,7 +34,7 @@ _LIVE_NAMES = frozenset(
 
 
 def parse_execution_broker(raw: str | None) -> str:
-    """Require an explicit safe mode. Blank and live names fail closed."""
+    """Require an explicit allowlisted mode. Blank and bare live names fail closed."""
     if raw is None:
         raise UnsafeBrokerConfiguration(
             "EXECUTION_BROKER is missing. Refusing to guess a broker."
@@ -47,12 +49,12 @@ def parse_execution_broker(raw: str | None) -> str:
     if text in _LIVE_NAMES or "live" in text:
         raise UnsafeBrokerConfiguration(
             f"EXECUTION_BROKER={text!r} is not available. "
-            "Real-money execution is not implemented. "
-            f"Use {ALPACA_LIVE_SHADOW!r} for Alpaca live reads only."
+            "Use alpaca_live_shadow for reads or alpaca_live_pilot for the "
+            "controlled real-money path (multi-key arming required)."
         )
     raise UnsafeBrokerConfiguration(
         f"EXECUTION_BROKER={text!r} is not supported. "
-        f"Use {ALPACA_PAPER!r}, {ALPACA_LIVE_SHADOW!r}, "
+        f"Use {ALPACA_PAPER!r}, {ALPACA_LIVE_SHADOW!r}, {ALPACA_LIVE_PILOT!r}, "
         f"{ROBINHOOD_SHADOW!r}, or {ROBINHOOD_CONNECTED_SHADOW!r}."
     )
 

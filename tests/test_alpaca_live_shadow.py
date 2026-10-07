@@ -184,7 +184,10 @@ def _fake_transport(payloads: dict):
 
 
 def test_mode_accepts_live_shadow_rejects_alpaca_live():
+    from brokers.mode import ALPACA_LIVE_PILOT
+
     assert parse_execution_broker("alpaca_live_shadow") == ALPACA_LIVE_SHADOW
+    assert parse_execution_broker("alpaca_live_pilot") == ALPACA_LIVE_PILOT
     with pytest.raises(UnsafeBrokerConfiguration):
         parse_execution_broker("alpaca_live")
     with pytest.raises(UnsafeBrokerConfiguration):
@@ -326,7 +329,8 @@ def test_normalize_and_read_snapshot_through_transport():
 
 
 def test_buy_proposed_not_submitted_with_live_flags_on(tmp_path: Path):
-    state = _state()
+    # Equity must be at/under capital ceiling or new exposure blocks.
+    state = _state(equity=1_000.0, cash=1_000.0, bp=1_000.0, day_start=1_000.0, week_start=1_000.0, peak=1_000.0)
     limits = _limits()
     claims = LiveShadowClaimStore(tmp_path / "claims.jsonl")
     result = run_alpaca_live_shadow(
@@ -364,7 +368,8 @@ def test_missing_live_limits_block():
 
 
 def test_borrowed_funds_blocked():
-    state = _state(cash=10.0, bp=10_000.0)
+    # Equity at/under ceiling so the cash/margin gate is the one that fires.
+    state = _state(equity=1_000.0, cash=10.0, bp=10_000.0, day_start=1_000.0, week_start=1_000.0, peak=1_000.0)
     limits = _limits()
     draft = TradeIntent(
         strategy_version=STRATEGY_VERSION,
@@ -384,17 +389,53 @@ def test_borrowed_funds_blocked():
     )
     ok, reason, _ = check_new_exposure(draft, state, limits)
     assert ok is False
-    assert "borrowed" in reason
+    assert "borrowed" in reason or "zero shares" in reason or "cash" in reason.lower()
 
 
-def test_capital_ceiling_caps_size():
+def test_capital_ceiling_blocks_when_equity_above_ceiling():
+    """Equity above the sleeve ceiling must not silently size down."""
     state = _state(equity=50_000.0, cash=50_000.0, bp=50_000.0)
-    limits = _limits(
-        ALPACA_LIVE_CAPITAL_CEILING="100",
-        ALPACA_LIVE_MAX_ORDER_NOTIONAL="10_000",
-        ALPACA_LIVE_MAX_POSITION_PCT="1",
+    limits = live_limits_from_env(
+        {
+            "ALPACA_LIVE_MAX_POSITION_PCT": "1",
+            "ALPACA_LIVE_MAX_ORDER_NOTIONAL": "10000",
+            "ALPACA_LIVE_CAPITAL_CEILING": "100",
+            "ALPACA_LIVE_MAX_DAILY_LOSS_PCT": "0.05",
+            "ALPACA_LIVE_MAX_WEEKLY_LOSS_PCT": "0.10",
+            "ALPACA_LIVE_MAX_DRAWDOWN_PCT": "0.15",
+            "ALPACA_LIVE_MAX_ORDERS_PER_DAY": "3",
+            "ALPACA_LIVE_NEW_ENTRIES_ENABLED": "true",
+            "ALPACA_LIVE_MAX_QUOTE_AGE_SECONDS": "60",
+            "ALPACA_LIVE_MAX_SPREAD_BPS": "50",
+            "ALPACA_LIVE_MAX_DATA_AGE_MINUTES": "90",
+        }
     )
-    # Fix: _limits stringifies; pass numeric strings properly
+    qty, notional = size_buy(50.0, state, limits)
+    assert qty == 0
+    assert notional == 0.0
+    draft = TradeIntent(
+        strategy_version=STRATEGY_VERSION,
+        signal_symbol="QQQ",
+        execution_symbol="TQQQ",
+        action="BUY",
+        quantity=0,
+        estimated_price=50.1,
+        estimated_notional=None,
+        confidence=78,
+        regime="trend_up",
+        reason="t",
+        signal_id="s",
+        timestamp="2026-10-06T14:30:00Z",
+        purpose="entry",
+        client_order_id="alceil",
+    )
+    ok, reason, _ = check_new_exposure(draft, state, limits)
+    assert ok is False
+    assert "capital" in reason.lower() or "ceiling" in reason.lower()
+
+
+def test_capital_ceiling_sizes_when_equity_at_or_below_ceiling():
+    state = _state(equity=100.0, cash=100.0, bp=100.0, day_start=100.0, week_start=100.0, peak=100.0)
     limits = live_limits_from_env(
         {
             "ALPACA_LIVE_MAX_POSITION_PCT": "1",

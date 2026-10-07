@@ -6,6 +6,7 @@ Paper limits are never substituted. Nothing here submits an order.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -114,6 +115,32 @@ def _optional_count(name: str, raw: str | None) -> int | None:
 
 def _flag(raw: str | None) -> bool:
     return (raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_truthy(raw: str | None) -> bool:
+    return _flag(raw)
+
+
+def pilot_arming_block_reason(
+    env: Mapping[str, str] | None,
+    *,
+    submission_implemented: bool,
+    execution_broker: str | None = None,
+) -> str | None:
+    """Return a block reason unless every live-pilot arming key is true."""
+    source: Mapping[str, str] = os.environ if env is None else env
+    broker = (execution_broker or source.get("EXECUTION_BROKER") or "").strip().lower()
+    if broker != "alpaca_live_pilot":
+        return f"EXECUTION_BROKER must be alpaca_live_pilot (got {broker!r})"
+    if not submission_implemented:
+        return "ALPACA_LIVE_PILOT_SUBMISSION_IMPLEMENTED is false; refusing live POST"
+    if not _flag(source.get("ALPACA_LIVE_ENABLED")):
+        return "ALPACA_LIVE_ENABLED is not true"
+    if not _flag(source.get("ALPACA_LIVE_NEW_ENTRIES_ENABLED")):
+        return "ALPACA_LIVE_NEW_ENTRIES_ENABLED is not true"
+    if not _flag(source.get("LIVE_TRADING_ENABLED")):
+        return "LIVE_TRADING_ENABLED is not true"
+    return None
 
 
 def live_limits_from_env(env: dict[str, str] | None = None) -> AlpacaLiveLimits:
@@ -298,16 +325,31 @@ def check_new_exposure(
         add("Buying power", False)
         return False, "equity or buying power is unknown", tuple(checks)
 
-    sizing_equity = min(float(account.equity), float(limits.capital_ceiling))
-    cap = min(
-        float(limits.max_order_notional),
-        sizing_equity * float(limits.max_position_pct),
-        float(limits.capital_ceiling),
-    )
+    # Equity above the sleeve ceiling must not silently size down — BLOCK.
+    if float(account.equity) > float(limits.capital_ceiling) + 1e-9:
+        add("Capital ceiling", False)
+        return (
+            False,
+            "account equity exceeds ALPACA_LIVE_CAPITAL_CEILING; new exposure blocked",
+            tuple(checks),
+        )
+    add("Capital ceiling", True)
+
+    if account.cash is None:
+        add("Cash", False)
+        return False, "cash is unknown; new exposure blocked", tuple(checks)
+
+    # Most conservative of equity×pct / cash / max notional / ceiling.
     # Buying power is not the size budget.
     if reference is None or reference <= 0:
         add("Price", False)
         return False, "estimated price is missing", tuple(checks)
+    cap = min(
+        float(account.equity) * float(limits.max_position_pct),
+        float(account.cash),
+        float(limits.max_order_notional),
+        float(limits.capital_ceiling),
+    )
     quantity = int(cap // reference)
     if quantity < 1:
         add("Position limit", False)
@@ -316,16 +358,19 @@ def check_new_exposure(
     if notional > float(limits.max_order_notional) + 0.01:
         add("Position limit", False)
         return False, "order notional exceeds ALPACA_LIVE_MAX_ORDER_NOTIONAL", tuple(checks)
+    if notional > float(limits.capital_ceiling) + 0.01:
+        add("Capital ceiling", False)
+        return False, "order notional exceeds ALPACA_LIVE_CAPITAL_CEILING", tuple(checks)
     if account.buying_power + 1e-6 < notional:
         add("Buying power", False)
         return False, "insufficient buying power", tuple(checks)
-    if limits.block_borrowed_funds and account.cash is not None and account.cash + 1e-6 < notional:
+    if limits.block_borrowed_funds and account.cash + 1e-6 < notional:
         add("Cash", False)
         return False, "order would require borrowed funds; blocked", tuple(checks)
+    # One whole share over any limit → already prevented by floor division.
     add("Buying power", True)
     add("Cash", True)
     add("Position limit", True)
-    add("Capital ceiling", True)
 
     daily = _loss_pct(account.day_start_equity, account.equity)
     weekly = _loss_pct(account.week_start_equity, account.equity)
@@ -372,18 +417,21 @@ def size_buy(intent_price: float, state: BrokerState, limits: AlpacaLiveLimits) 
     if (
         account is None
         or account.equity is None
+        or account.cash is None
         or limits.max_order_notional is None
         or limits.max_position_pct is None
         or limits.capital_ceiling is None
     ):
         return 0, 0.0
-    sizing_equity = min(float(account.equity), float(limits.capital_ceiling))
-    cap = min(
-        float(limits.max_order_notional),
-        sizing_equity * float(limits.max_position_pct),
-        float(limits.capital_ceiling),
-    )
+    if float(account.equity) > float(limits.capital_ceiling) + 1e-9:
+        return 0, 0.0
     if intent_price <= 0:
         return 0, 0.0
+    cap = min(
+        float(account.equity) * float(limits.max_position_pct),
+        float(account.cash),
+        float(limits.max_order_notional),
+        float(limits.capital_ceiling),
+    )
     quantity = int(cap // intent_price)
     return quantity, round(quantity * intent_price, 2)

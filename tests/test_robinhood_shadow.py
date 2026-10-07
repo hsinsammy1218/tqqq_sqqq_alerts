@@ -115,6 +115,7 @@ def test_modes():
     assert parse_execution_broker("alpaca_paper") == "alpaca_paper"
     assert parse_execution_broker(" robinhood_shadow ") == "robinhood_shadow"
     assert parse_execution_broker("alpaca_live_shadow") == "alpaca_live_shadow"
+    assert parse_execution_broker("alpaca_live_pilot") == "alpaca_live_pilot"
     assert execution_broker_from_environ({}) == "alpaca_paper"
     for raw in ("", "   ", None, "robinhood_live", "live", "nope", "robinhood", "alpaca_live"):
         with pytest.raises(UnsafeBrokerConfiguration):
