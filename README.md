@@ -170,6 +170,18 @@ python main.py --discord-test
 
 If account equity exceeds `ALPACA_LIVE_CAPITAL_CEILING`, new exposure is **blocked** (not silently sized down). Daily new entries use an atomic UNIQUE `(bot_id, trading_day, entry_slot)` reservation (America/New_York calendar date; crash after reserve does **not** auto-free). FLIP opposite BUY requires a **fresh** Alpaca snapshot after a FILLED SELL — never assume flat from the SELL response alone. Timeout on order POST looks up by `client_order_id` and never blind-retries. Discord messages say **REAL MONEY**. Keep the daytime cron on paper unless Hemman explicitly arms a dedicated sleeve.
 
+### Optional Robinhood host-mediated pilot (Case C — not armed)
+
+Real-money pilot target is **Robinhood Agentic**, not Alpaca Live. Official auth is OAuth inside an MCP host at `https://agent.robinhood.com/mcp/trading` (authorization code + PKCE). Unattended Render cannot complete that flow (**Case C**).
+
+Architecture:
+
+1. **Render / strategy** (optional `EXECUTION_BROKER=robinhood_host_handoff`) — Strategy 1.0.0 drafts a durable `TradeIntent`, risk-checks, and inserts `PENDING` rows into Supabase `bot_robinhood_execution_intents`. Render **never** calls `place_equity_order`.
+2. **Supabase** — handoff + atomic claim (`PENDING→CLAIMED`) + daily entry reservation (`bot_robinhood_entry_reservations`). No OAuth tokens stored.
+3. **Authenticated MCP host** — `scripts/robinhood_execute_pending.py` with `ROBINHOOD_HOST_EXECUTOR=true`, injected host transport, and multi-key arming re-reads RH state, revalidates risk, then may place.
+
+Kill switches default **false**: `ROBINHOOD_HOST_ENABLED`, `ROBINHOOD_HOST_NEW_ENTRIES_ENABLED`, `ROBINHOOD_HOST_LIVE_SUBMISSION`, `ROBINHOOD_HOST_EXECUTOR`, `LIVE_TRADING_ENABLED`. Capital ceiling is env-configurable (`ROBINHOOD_HOST_CAPITAL_CEILING`, example `100`) — equity above ceiling blocks. Do **not** set these on the daytime cron unless Hemman explicitly asks. Apply migrations `20261007160000_bot_robinhood_execution_intents.sql` and `20261007160100_bot_robinhood_entry_reservations.sql`. Mock tests: `pytest -q tests/test_robinhood_host_mediated.py`.
+
 ### Optional Alpaca paper orders
 
 Default is alerts-only. To rehearse execution on Alpaca **paper** (not live, not Robinhood):

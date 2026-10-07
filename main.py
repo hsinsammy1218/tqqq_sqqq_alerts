@@ -13,12 +13,14 @@ from brokers.mode import (
     ALPACA_LIVE_PILOT,
     ALPACA_LIVE_SHADOW,
     ROBINHOOD_CONNECTED_SHADOW,
+    ROBINHOOD_HOST_HANDOFF,
     ROBINHOOD_SHADOW,
     UnsafeBrokerConfiguration,
     execution_broker_from_environ,
 )
 from rh_agent import build_rh_playbook, format_rh_playbook
 from robinhood_connected import run_connected_shadow_after_strategy
+from robinhood_host_handoff import run_robinhood_host_handoff_after_strategy
 from robinhood_shadow import run_live_shadow_after_strategy
 from alpaca_paper import (
     PaperTradingError,
@@ -1211,6 +1213,20 @@ def run() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[alpaca-live-pilot] Live pilot failed: {exc}")
             log_event(logger, logging.ERROR, "Alpaca live pilot failed", error=str(exc))
+    elif execution_broker == ROBINHOOD_HOST_HANDOFF:
+        try:
+            intraday = getattr(candles, "latest_intraday", None)
+            run_robinhood_host_handoff_after_strategy(
+                alert,
+                position,
+                dry_run=settings.dry_run,
+                webhook_url=settings.discord_webhook_url,
+                data_bar_start=intraday.to_pydatetime() if intraday is not None else None,
+                now=now_utc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[robinhood-host-handoff] Handoff failed: {exc}")
+            log_event(logger, logging.ERROR, "Robinhood host handoff failed", error=str(exc))
 
     broker_check_failed = False
     if submit_orders:

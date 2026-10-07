@@ -4,7 +4,9 @@ Strategy code stays free of broker-specific order calls. Alpaca paper
 submission remains in ``alpaca_paper.execute_paper_orders``. Alpaca live shadow
 never submits. Alpaca live pilot posts only through
 ``AlpacaLiveExecutor.submit_validated_order`` under multi-key arming.
-Robinhood live submission is not implemented.
+Robinhood Agentic broker submit_order stays disabled. Host-mediated placement
+uses an injected MCP host transport via robinhood_host_executor (Case C:
+Render never places).
 """
 
 from brokers.alpaca_live_broker import ALPACA_LIVE_SUBMISSION_IMPLEMENTED
