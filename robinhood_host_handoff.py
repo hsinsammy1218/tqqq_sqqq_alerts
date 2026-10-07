@@ -19,9 +19,8 @@ from brokers.robinhood_agentic import LIVE_SUBMISSION_IMPLEMENTED, RobinhoodAgen
 from brokers.types import EXECUTION_NOT_SUBMITTED, BrokerState, TradeIntent
 from robinhood_flip import advance_flip, recovery_block_reason
 from robinhood_host_audit import HostAuditLog, post_host_discord
-from robinhood_host_entry import InMemoryRhEntryReservationStore, reserve_rh_daily_entry
 from robinhood_host_risk import (
-    check_host_new_exposure,
+    check_handoff_prevalidation,
     host_limits_from_env,
     quote_for,
     sell_qty_allowed,
@@ -150,74 +149,77 @@ def evaluate_handoff_leg(
     now: datetime,
     ttl_seconds: int,
 ) -> HandoffLeg:
-    price = _price_for(state, symbol, action)
-    checks: tuple[tuple[str, str], ...] = ()
-    if action == "BUY":
-        quantity = 0
-        if price is not None:
-            quantity, _ = size_host_buy(price, state, limits)
-        intent = _draft_intent(
-            alert,
-            symbol=symbol,
-            action=action,
-            purpose=purpose,
-            price=price,
-            quantity=quantity,
-        )
-        allowed, reason, checks = check_host_new_exposure(intent, state, limits)
-        if not allowed:
-            return _blocked(intent, reason, checks)
-        sized_qty, notional = size_host_buy(float(price or 0), state, limits)
-        intent = replace(intent, quantity=sized_qty, estimated_price=price, estimated_notional=notional)
-        if reservation_store is not None:
-            reserved = reserve_rh_daily_entry(
-                reservation_store,
-                now=now,
-                meta={
-                    "client_order_id": intent.client_order_id,
-                    "purpose": purpose,
-                    "execution_symbol": symbol,
-                    "signal_id": intent.signal_id,
-                },
-            )
-            if not reserved.reserved:
-                return _blocked(intent, reserved.reason, checks)
-    else:
-        qty, sell_reason = sell_qty_allowed(state, symbol, requested=10**9)
-        intent = _draft_intent(
-            alert,
-            symbol=symbol,
-            action=action,
-            purpose=purpose,
-            price=price,
-            quantity=qty,
-        )
-        checks = (("Action", "PASS"), ("Symbol", "PASS"))
-        if sell_reason:
-            return _blocked(intent, sell_reason, checks)
+    """Persist PENDING only. Pre-handoff ≠ host execution risk.
 
-    dup = recovery_block_reason(
-        open_order_count=len(state.open_orders),
-        proposed_client_order_id=intent.client_order_id,
-        known_client_order_ids=state.known_client_order_ids,
-        broker_state_known=state.known,
+    Reservation is intentionally ignored here — authoritative daily entry
+    reservation happens at the host BUY boundary after claim + risk.
+    ``reservation_store`` is accepted for API compatibility and unused.
+    """
+    del reservation_store  # host BUY boundary owns reservation
+    price = _price_for(state, symbol, action)
+    # Optional hint sizing when Render somehow has known state (tests). Host
+    # always re-sizes. Unknown state → quantity 0 (host fills in).
+    quantity = 0
+    notional: float | None = None
+    if action == "BUY" and state.known and price is not None:
+        quantity, notional = size_host_buy(float(price), state, limits)
+    elif action == "SELL" and state.known:
+        qty, _sell_reason = sell_qty_allowed(state, symbol, requested=10**9)
+        quantity = qty
+        if price is not None and qty > 0:
+            notional = round(qty * float(price), 2)
+
+    intent = _draft_intent(
+        alert,
+        symbol=symbol,
+        action=action,
+        purpose=purpose,
+        price=price,
+        quantity=quantity,
     )
-    if dup:
-        return _blocked(intent, dup, checks if action == "BUY" else (("Recovery", "FAIL"),))
+    if notional is not None:
+        intent = replace(intent, estimated_notional=notional)
+
+    allowed, reason, checks = check_handoff_prevalidation(intent, action=action)
+    if not allowed:
+        return _blocked(intent, reason, checks)
+
+    # When broker state is known, still refuse duplicate open-order collisions
+    # as a soft Render guard. Unknown state skips — host reconciles.
+    if state.known:
+        dup = recovery_block_reason(
+            open_order_count=len(state.open_orders),
+            proposed_client_order_id=intent.client_order_id,
+            known_client_order_ids=state.known_client_order_ids,
+            broker_state_known=True,
+        )
+        if dup:
+            return _blocked(intent, dup, checks + (("Recovery", "FAIL"),))
 
     durable = wrap_intent(intent, now=now, ttl_seconds=ttl_seconds, status="PENDING")
     created: StoreResult = store.create_pending(
         durable,
-        meta={"handoff": True, "auth_case": "C", "strategy_version": STRATEGY_VERSION},
+        meta={
+            "handoff": True,
+            "auth_case": "C",
+            "strategy_version": STRATEGY_VERSION,
+            "pending_not_approved": True,
+            "broker_state_known_at_handoff": state.known,
+        },
     )
     if not created.ok:
-        return _blocked(intent, created.reason, checks if action == "BUY" else ())
+        # Failed intent insert must not consume a daily entry slot (we never
+        # reserved on this path).
+        return _blocked(intent, created.reason, checks)
 
     leg = HandoffLeg(
         intent=intent,
         risk_status="PASS",
-        risk_reason="pending intent persisted for host executor",
-        checks=checks if action == "BUY" else (("Sell", "PASS"),),
+        risk_reason=(
+            "PENDING persisted for host executor (not approved; host must "
+            "revalidate with known/fresh broker state before place)"
+        ),
+        checks=checks + (("Persisted", "PENDING"),),
         execution_status="PENDING",
         text="",
         persisted=True,
@@ -363,18 +365,19 @@ def run_robinhood_host_handoff_after_strategy(
                 raise
             intent_store = InMemoryIntentStore()
 
-    reservation_store = InMemoryRhEntryReservationStore()
+    # No reservation on Render. Authoritative daily entry reservation is at the
+    # host BUY boundary after claim + full risk revalidation.
     result = run_robinhood_host_handoff(
         alert,
         position,
         state,
         limits,
         store=intent_store,
-        reservation_store=reservation_store,
+        reservation_store=None,
         now=now,
     )
-    # Under default unknown state, buys/sells block — that is correct for Case C
-    # Render without a host. Discord still reports the blocked handoff.
+    # Unknown BrokerState may still create PENDING (not approved). Host must
+    # revalidate with a known/fresh read before any place_equity_order.
     log_path = Path(source.get("ROBINHOOD_HOST_HANDOFF_LOG") or "logs/robinhood_host_handoff.jsonl")
     audit = HostAuditLog(log_path)
     for leg in result.legs:

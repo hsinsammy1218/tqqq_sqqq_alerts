@@ -48,6 +48,7 @@ class RobinhoodHostLimits:
     live_submission_flag: bool
     allow_fractional: bool
     block_borrowed_funds: bool
+    max_slippage_bps: float = 25.0
 
 
 def _as_utc(ts: datetime | None) -> datetime | None:
@@ -106,8 +107,14 @@ def host_arming_block_reason(
     submission_implemented: bool,
     host_executor: bool,
     execution_broker: str | None = None,
+    require_new_entries: bool = False,
 ) -> str | None:
-    """Return a block reason unless every host-pilot arming key is true.
+    """Return a block reason unless host-pilot arming keys are true.
+
+    ``ROBINHOOD_HOST_NEW_ENTRIES_ENABLED`` is **not** required for arming by
+    default: when false it blocks BUY exposure in ``check_host_new_exposure``
+    but still allows risk-reducing SELL. Pass ``require_new_entries=True`` only
+    when the caller is specifically gating a new-entry path before risk.
 
     Render handoff never calls this with host_executor=True. Case C unattended
     paths must stay blocked even if env flags are mistakenly set.
@@ -125,7 +132,7 @@ def host_arming_block_reason(
         return "ROBINHOOD_HOST_SUBMISSION_IMPLEMENTED is false; refusing place_equity_order"
     if not _flag(source.get("ROBINHOOD_HOST_ENABLED")):
         return "ROBINHOOD_HOST_ENABLED is not true"
-    if not _flag(source.get("ROBINHOOD_HOST_NEW_ENTRIES_ENABLED")):
+    if require_new_entries and not _flag(source.get("ROBINHOOD_HOST_NEW_ENTRIES_ENABLED")):
         return "ROBINHOOD_HOST_NEW_ENTRIES_ENABLED is not true"
     if not _flag(source.get("ROBINHOOD_HOST_LIVE_SUBMISSION")):
         return "ROBINHOOD_HOST_LIVE_SUBMISSION is not true"
@@ -172,6 +179,7 @@ def host_limits_from_env(env: dict[str, str] | None = None) -> RobinhoodHostLimi
         live_submission_flag=_flag(source.get("ROBINHOOD_HOST_LIVE_SUBMISSION")),
         allow_fractional=_flag(source.get("ROBINHOOD_HOST_ALLOW_FRACTIONAL")),
         block_borrowed_funds=True,
+        max_slippage_bps=float(source.get("ROBINHOOD_HOST_MAX_SLIPPAGE_BPS", "25") or "25"),
     )
 
 
@@ -198,12 +206,50 @@ def _loss_pct(start: float | None, equity: float | None) -> float | None:
     return max(0.0, (start - equity) / start)
 
 
+def check_handoff_prevalidation(
+    intent: TradeIntent,
+    *,
+    action: str,
+) -> tuple[bool, str, tuple[tuple[str, str], ...]]:
+    """Render pre-handoff checks. Does **not** require known broker state.
+
+    PENDING persistence is not execution approval. Host must still run
+    ``check_host_new_exposure`` (BUY) or sell sizing against a fresh read.
+    """
+    checks: list[tuple[str, str]] = []
+
+    def add(name: str, ok: bool) -> None:
+        checks.append((name, "PASS" if ok else "FAIL"))
+
+    symbol_reason = execution_symbol_block_reason(intent.execution_symbol)
+    action_reason = action_block_reason(action)
+    add("Symbol", symbol_reason is None)
+    add("Action", action_reason is None)
+    if symbol_reason or action_reason:
+        return False, symbol_reason or action_reason or "rejected", tuple(checks)
+    if intent.signal_symbol.strip().upper() != "QQQ":
+        add("Signal", False)
+        return False, "signal symbol must be QQQ", tuple(checks)
+    add("Signal", True)
+    if intent.strategy_version.strip() == "":
+        add("Strategy version", False)
+        return False, "strategy version is unknown", tuple(checks)
+    add("Strategy version", True)
+    add("Broker state", True)  # unknown is OK for PENDING; host revalidates
+    add("Pending≠approved", True)
+    return True, "pre-handoff ok; host must revalidate before place", tuple(checks)
+
+
 def check_host_new_exposure(
     intent: TradeIntent,
     state: BrokerState,
     limits: RobinhoodHostLimits,
 ) -> tuple[bool, str, tuple[tuple[str, str], ...]]:
-    """BUY fails closed. Equity above capital ceiling blocks (no silent size-down)."""
+    """BUY fails closed. Equity above capital ceiling blocks (no silent size-down).
+
+    Requires known/fresh broker state. Render PENDING creation must use
+    ``check_handoff_prevalidation`` instead — PENDING ≠ approved.
+    """
     checks: list[tuple[str, str]] = []
 
     def add(name: str, ok: bool) -> None:
@@ -455,6 +501,7 @@ __all__ = [
     "QuoteView",
     "RobinhoodHostLimits",
     "action_block_reason",
+    "check_handoff_prevalidation",
     "check_host_new_exposure",
     "execution_symbol_block_reason",
     "host_arming_block_reason",
