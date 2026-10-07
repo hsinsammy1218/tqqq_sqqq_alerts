@@ -2,7 +2,7 @@
 
 **Repo:** `hsinsammy1218/tqqq_sqqq_alerts`  
 **Main tip audited:** `86f16bcd8871781451f91490cd4f5fd87ec62923`  
-**Branch (artifacts):** `cursor/phase-5r2-supabase-842a`  
+**Branch (artifacts):** `cursor/phase-5r2-supabase-842a` @ `62dfe0a72cf7144492fca0fe9893fb83206779f2`  
 **Money:** $0.00 · **Orders:** 0 · **DRY RUN:** yes (no production DDL applied)
 
 ## Verdict: **B — APPLY_READY**
