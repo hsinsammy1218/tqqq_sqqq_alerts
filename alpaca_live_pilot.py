@@ -24,6 +24,13 @@ from alpaca_live_circuit import (
     trip_from_risk_reason,
 )
 from alpaca_live_credentials import load_live_credentials
+from alpaca_live_entry_reservation import (
+    EntryReservationStore,
+    InMemoryEntryReservationStore,
+    reservation_store_for_pilot,
+    reserve_daily_entry,
+)
+from alpaca_live_flip_refresh import require_post_sell_flat_for_flip
 from alpaca_live_reconcile import reconcile_live_books
 from alpaca_live_risk import (
     AlpacaLiveLimits,
@@ -65,7 +72,7 @@ from brokers.types import (
     TradeIntent,
 )
 from robinhood_audit import redact
-from robinhood_flip import advance_flip, recovery_block_reason
+from robinhood_flip import recovery_block_reason
 from strategy_params import STRATEGY_VERSION
 from strategy_types import AlertDecision, PositionState
 
@@ -214,13 +221,16 @@ def evaluate_pilot_leg(
     armed: bool,
     claim_store: ClaimStore,
     circuit: CircuitStore,
+    reservation_store: EntryReservationStore,
     executor: AlpacaLiveExecutor | None = None,
     reader: AlpacaLiveReadClient | None = None,
     exit_status: str | None = None,
     exit_qty_remaining: float | None = None,
+    exit_symbol: str | None = None,
     buy_block_reason: str | None = None,
     now: datetime | None = None,
     data_bar_start: datetime | None = None,
+    flip_refresh_error: str | None = None,
 ) -> LivePilotLeg:
     clock = now or datetime.now(timezone.utc)
     symbol_reason = execution_symbol_block_reason(symbol)
@@ -262,16 +272,25 @@ def evaluate_pilot_leg(
     )
 
     if purpose == "flip_entry":
-        flip = advance_flip(
+        # Never assume flat from the SELL response alone — mandatory broker refresh.
+        gate = require_post_sell_flat_for_flip(
             exit_status=exit_status,
-            exit_qty_remaining=exit_qty_remaining,
-            broker_state_known=state.known,
+            exit_symbol=exit_symbol or "",
+            entry_symbol=symbol,
+            refreshed_state=state,
+            refresh_error=flip_refresh_error,
+            limits=limits,
+            reader_present=reader is not None,
         )
-        if not flip.entry_validation_allowed:
+        if not gate.allowed:
             intent = _draft_intent(
                 alert, symbol=symbol, action="BUY", purpose=purpose, price=price, quantity=0
             )
-            return _blocked(intent, flip.reason, (("Flip exit", "FAIL"),), armed=armed)
+            return _blocked(intent, gate.reason, gate.checks or (("Flip refresh", "FAIL"),), armed=armed)
+        if gate.refreshed_state is not None:
+            state = gate.refreshed_state
+            price = _price_for("BUY", quote_for(state, symbol), symbol)
+        exit_qty_remaining = gate.exit_qty_remaining
 
     if action == "SELL":
         held = 0.0
@@ -336,10 +355,10 @@ def evaluate_pilot_leg(
 
     # BUY path — new exposure
     circuit_state = circuit.load()
-    max_entries = limits.max_orders_per_day or 1
-    # Pilot: at most one new entry per day (durable), even if max_orders_per_day is higher.
-    entry_cap = 1
-    circuit_block = circuit_state.blocks_new_entry(today=clock.date(), max_entries_per_day=entry_cap)
+    # Kill / loss / drawdown only. Daily slot is atomic reservation (not entries_today).
+    circuit_block = circuit_state.blocks_new_entry(
+        today=clock.date(), max_entries_per_day=1, enforce_entries_today=False
+    )
     if circuit_block:
         intent = _draft_intent(
             alert, symbol=symbol, action="BUY", purpose=purpose, price=price, quantity=0
@@ -359,7 +378,8 @@ def evaluate_pilot_leg(
         return _blocked(draft, recovery, (("Recovery", "FAIL"),), armed=armed)
 
     # Fresh preflight refresh before BUY when a reader is available.
-    if reader is not None:
+    # For flip_entry the mandatory post-SELL refresh already ran above.
+    if reader is not None and purpose != "flip_entry":
         state = _refresh_state(reader, now=clock, data_bar_start=data_bar_start)
         book = reconcile_live_books(None, state)
         if book.blocks_new_exposure:
@@ -377,6 +397,28 @@ def evaluate_pilot_leg(
         return _blocked(draft, "sized zero shares", checks + (("Size", "FAIL"),), armed=armed)
     intent = replace(draft, quantity=quantity, estimated_price=price, estimated_notional=notional)
 
+    # Atomic daily entry reservation BEFORE claim / real BUY.
+    # Exits and FLIP SELL do not reach this path. Crash after reserve: do not auto-free.
+    reservation = reserve_daily_entry(
+        reservation_store,
+        now=clock,
+        meta={
+            "action": "BUY",
+            "symbol": symbol,
+            "purpose": purpose,
+            "client_order_id": intent.client_order_id,
+            "signal_id": intent.signal_id,
+            "execution_mode": "live_pilot",
+        },
+    )
+    if not reservation.reserved:
+        return _blocked(
+            intent,
+            reservation.reason,
+            checks + (("Daily entry reservation", "FAIL"),),
+            armed=armed,
+        )
+
     claim = claim_store.claim(
         intent.client_order_id,
         meta={
@@ -387,46 +429,45 @@ def evaluate_pilot_leg(
         },
     )
     if not claim.claimed:
-        return _blocked(intent, claim.reason, checks + (("Claim", "FAIL"),), armed=armed)
+        return _blocked(
+            intent,
+            claim.reason,
+            checks + (("Daily entry reservation", "PASS"), ("Claim", "FAIL")),
+            armed=armed,
+        )
 
     if not armed:
         leg = LivePilotLeg(
             intent=intent,
             risk_status="PASS",
             risk_reason="risk passed but multi-key arming incomplete; not submitted",
-            checks=checks + (("Claim", "PASS"), ("Arming", "FAIL")),
+            checks=checks
+            + (("Daily entry reservation", "PASS"), ("Claim", "PASS"), ("Arming", "FAIL")),
             execution_status=EXECUTION_NOT_SUBMITTED,
             text="",
         )
         return replace(leg, text=_format_leg(leg, armed=armed))
 
     status, submit, detail = _maybe_submit(intent, state=state, executor=executor, armed=armed)
-    if submit is not None and status not in {ORDER_UNKNOWN}:
-        # Count durable entry when broker accepted/acknowledged the order.
-        record_new_entry(circuit, today=clock.date())
-    elif status == ORDER_UNKNOWN and submit is None:
-        # Ambiguous — do not open more exposure; leave circuit alone.
-        pass
-    else:
-        record_new_entry(circuit, today=clock.date())
+    # Best-effort audit counter only — UNIQUE reservation is the concurrency authority.
+    if status != ORDER_UNKNOWN or submit is not None:
+        try:
+            record_new_entry(circuit, today=clock.date())
+        except Exception:  # noqa: BLE001
+            pass
 
     leg = LivePilotLeg(
         intent=intent,
         risk_status="PASS",
         risk_reason=detail or reason,
-        checks=checks + (("Claim", "PASS"), ("Arming", "PASS")),
+        checks=checks
+        + (("Daily entry reservation", "PASS"), ("Claim", "PASS"), ("Arming", "PASS")),
         execution_status=status,
         text="",
         submit=submit,
         broker_order_id=submit.broker_order_id if submit else None,
     )
-    # Silence unused max_entries for lint clarity when operators set higher caps.
-    _ = max_entries
     return replace(leg, text=_format_leg(leg, armed=armed))
-
-
-def _qty_remaining(state: BrokerState, symbol: str) -> float:
-    return sum(row.qty for row in state.positions if row.symbol.upper() == symbol.upper())
 
 
 def run_alpaca_live_pilot(
@@ -438,6 +479,7 @@ def run_alpaca_live_pilot(
     armed: bool,
     claim_store: ClaimStore,
     circuit: CircuitStore,
+    reservation_store: EntryReservationStore | None = None,
     executor: AlpacaLiveExecutor | None = None,
     reader: AlpacaLiveReadClient | None = None,
     buy_block_reason: str | None = None,
@@ -451,7 +493,9 @@ def run_alpaca_live_pilot(
     legs: list[LivePilotLeg] = []
     exit_status: str | None = None
     exit_qty_remaining: float | None = None
+    exit_symbol: str | None = None
     posts_before = executor.post_attempts if executor is not None else 0
+    reservations: EntryReservationStore = reservation_store or InMemoryEntryReservationStore()
 
     if alert_type in {"BUY", "SELL", "FLIP"} and not order_intents:
         legs.append(
@@ -465,6 +509,7 @@ def run_alpaca_live_pilot(
                 armed=armed,
                 claim_store=claim_store,
                 circuit=circuit,
+                reservation_store=reservations,
                 executor=executor,
                 reader=reader,
                 buy_block_reason=buy_block_reason,
@@ -476,21 +521,23 @@ def run_alpaca_live_pilot(
     for intent in order_intents:
         action = "BUY" if intent.side == "buy" else "SELL"
         if intent.purpose == "flip_entry":
-            # FLIP: sell must be filled + flat before opposite buy.
+            # FLIP: mandatory post-SELL broker refresh before opposite BUY.
             if exit_status is None:
-                # No exit leg ran — block.
                 exit_status = ORDER_UNKNOWN
                 exit_qty_remaining = None
-            # Refresh broker before evaluating the entry.
-            if reader is not None:
-                state = _refresh_state(reader, now=clock, data_bar_start=data_bar_start)
-                if exit_status == ORDER_FILLED:
-                    # Confirm flat on the exit symbol from prior leg.
-                    prior_symbol = next(
-                        (leg.intent.execution_symbol for leg in legs if leg.intent.action == "SELL"),
-                        "",
-                    )
-                    exit_qty_remaining = _qty_remaining(state, prior_symbol) if prior_symbol else None
+            prior_symbol = exit_symbol or next(
+                (leg.intent.execution_symbol for leg in legs if leg.intent.action == "SELL"),
+                "",
+            )
+            refresh_error: str | None = None
+            if reader is None:
+                refresh_error = "reader missing; cannot confirm flat after SELL"
+            else:
+                try:
+                    state = _refresh_state(reader, now=clock, data_bar_start=data_bar_start)
+                except Exception as exc:  # noqa: BLE001
+                    refresh_error = str(exc)
+                    state = BrokerState(known=False, detail=f"flip refresh failed: {exc}")
             leg = evaluate_pilot_leg(
                 alert,
                 symbol=intent.symbol,
@@ -501,13 +548,16 @@ def run_alpaca_live_pilot(
                 armed=armed,
                 claim_store=claim_store,
                 circuit=circuit,
+                reservation_store=reservations,
                 executor=executor,
                 reader=reader,
                 exit_status=exit_status,
                 exit_qty_remaining=exit_qty_remaining,
+                exit_symbol=prior_symbol,
                 buy_block_reason=buy_block_reason,
                 now=clock,
                 data_bar_start=data_bar_start,
+                flip_refresh_error=refresh_error,
             )
             legs.append(leg)
             continue
@@ -522,6 +572,7 @@ def run_alpaca_live_pilot(
             armed=armed,
             claim_store=claim_store,
             circuit=circuit,
+            reservation_store=reservations,
             executor=executor,
             reader=reader,
             buy_block_reason=buy_block_reason,
@@ -531,6 +582,7 @@ def run_alpaca_live_pilot(
         legs.append(leg)
         if intent.purpose in {"flip_exit", "exit"} and action == "SELL":
             exit_status = leg.execution_status
+            exit_symbol = leg.intent.execution_symbol
             if leg.submit is not None and leg.execution_status == ORDER_FILLED:
                 # Partial fills are authoritative — remaining qty must be zero.
                 remaining = max(0.0, float(leg.intent.quantity) - float(leg.submit.filled_qty))
@@ -543,6 +595,7 @@ def run_alpaca_live_pilot(
                 exit_qty_remaining = 0.0
             else:
                 # Any sell ambiguity blocks the opposite buy.
+                # Do NOT treat SELL response alone as flat — refresh gate will re-check.
                 exit_qty_remaining = None
 
     posts = (executor.post_attempts if executor is not None else 0) - posts_before
@@ -613,6 +666,7 @@ def run_alpaca_live_pilot_after_strategy(
     transport=None,
     claim_store: ClaimStore | None = None,
     circuit: CircuitStore | None = None,
+    reservation_store: EntryReservationStore | None = None,
     executor: AlpacaLiveExecutor | None = None,
 ) -> LivePilotRun | None:
     """Hook used by main. Submits only when fully armed and not dry_run."""
@@ -645,25 +699,19 @@ def run_alpaca_live_pilot_after_strategy(
     state = load_live_state(reader, now=clock, data_bar_start=data_bar_start)
     limits = live_limits_from_env(source)
 
-    try:
-        claims: ClaimStore = claim_store or claim_store_for_pilot(source)
-    except Exception as exc:  # noqa: BLE001
-        # Supabase required for pilot — fail closed.
-        audit = LivePilotAuditLog(Path(source.get("ALPACA_LIVE_PILOT_LOG", "logs/alpaca_live_pilot.jsonl")))
+    def _fail_closed(purpose: str, reason: str, check_name: str) -> LivePilotRun:
+        audit = LivePilotAuditLog(
+            Path(source.get("ALPACA_LIVE_PILOT_LOG", "logs/alpaca_live_pilot.jsonl"))
+        )
         intent = _draft_intent(
             alert,
             symbol=(alert.symbol or "TQQQ").upper(),
             action="BUY",
-            purpose="claim_unavailable",
+            purpose=purpose,
             price=None,
             quantity=0,
         )
-        leg = _blocked(
-            intent,
-            f"atomic claim store unavailable; new exposure blocked ({exc})",
-            (("Claim store", "FAIL"),),
-            armed=False,
-        )
+        leg = _blocked(intent, reason, ((check_name, "FAIL"),), armed=False)
         audit.append(leg.audit_row(broker_state="unknown"))
         _post_discord(webhook_url, leg.text, dry_run=dry_run)
         print(leg.text)
@@ -675,6 +723,26 @@ def run_alpaca_live_pilot_after_strategy(
             blocked=1,
             submitted=0,
             armed=False,
+        )
+
+    try:
+        claims: ClaimStore = claim_store or claim_store_for_pilot(source)
+    except Exception as exc:  # noqa: BLE001
+        return _fail_closed(
+            "claim_unavailable",
+            f"atomic claim store unavailable; new exposure blocked ({exc})",
+            "Claim store",
+        )
+
+    try:
+        reservations: EntryReservationStore = reservation_store or reservation_store_for_pilot(
+            source
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _fail_closed(
+            "reservation_unavailable",
+            f"atomic daily entry reservation unavailable; new exposure blocked ({exc})",
+            "Daily entry reservation",
         )
 
     circuit_store: CircuitStore = circuit or InMemoryCircuitStore()
@@ -744,6 +812,7 @@ def run_alpaca_live_pilot_after_strategy(
         armed=armed,
         claim_store=claims,
         circuit=circuit_store,
+        reservation_store=reservations,
         executor=live_executor,
         reader=reader,
         buy_block_reason=buy_block or (arming_reason if arming_reason and not dry_run else None),

@@ -41,6 +41,8 @@ def advance_flip(
         return FlipAdvance(False, "exit has not been sent; second leg blocked", "need_exit")
     if status == ORDER_ACCEPTED:
         return FlipAdvance(False, "accepted sell is not a fill; second leg blocked", "wait_fill")
+    if status == "SUBMITTED":
+        return FlipAdvance(False, "submitted sell is not a fill; second leg blocked", "wait_fill")
     if status == ORDER_PARTIALLY_FILLED:
         return FlipAdvance(False, "partial fill does not permit the second leg", "wait_fill")
     if status == ORDER_REJECTED:
