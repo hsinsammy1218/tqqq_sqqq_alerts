@@ -25,3 +25,4 @@ logs/
 reports/*.csv
 reports/*.json
 reports/*.md
+agent-tools/

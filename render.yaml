@@ -16,7 +16,11 @@
 # alpaca_live_shadow is read-only (NOT_SUBMITTED). alpaca_live_pilot requires
 # multi-key arming and is not armed here. Bare alpaca_live is rejected.
 # robinhood_shadow and robinhood_connected_shadow only log a would-be order and
-# never submit. robinhood_live is rejected.
+# never submit. robinhood_live is rejected. robinhood_host_handoff may persist
+# PENDING intents only (Case C); Render must never place Robinhood orders.
+# Do not set EXECUTION_BROKER=robinhood_host_handoff or ROBINHOOD_HOST_* arming
+# flags on this cron unless Hemman explicitly asks. Host execution uses
+# scripts/robinhood_execute_pending.py inside an authenticated MCP host.
 #
 # Apply SQL migrations in Supabase before first cron:
 #   dashboard/supabase/migrations/20260714180000_bot_position_state.sql

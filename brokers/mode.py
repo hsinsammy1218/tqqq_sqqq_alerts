@@ -12,6 +12,7 @@ ALPACA_LIVE_SHADOW = "alpaca_live_shadow"
 ALPACA_LIVE_PILOT = "alpaca_live_pilot"
 ROBINHOOD_SHADOW = "robinhood_shadow"
 ROBINHOOD_CONNECTED_SHADOW = "robinhood_connected_shadow"
+ROBINHOOD_HOST_HANDOFF = "robinhood_host_handoff"
 _ALLOWED = frozenset(
     {
         ALPACA_PAPER,
@@ -19,6 +20,7 @@ _ALLOWED = frozenset(
         ALPACA_LIVE_PILOT,
         ROBINHOOD_SHADOW,
         ROBINHOOD_CONNECTED_SHADOW,
+        ROBINHOOD_HOST_HANDOFF,
     }
 )
 _LIVE_NAMES = frozenset(
@@ -55,7 +57,8 @@ def parse_execution_broker(raw: str | None) -> str:
     raise UnsafeBrokerConfiguration(
         f"EXECUTION_BROKER={text!r} is not supported. "
         f"Use {ALPACA_PAPER!r}, {ALPACA_LIVE_SHADOW!r}, {ALPACA_LIVE_PILOT!r}, "
-        f"{ROBINHOOD_SHADOW!r}, or {ROBINHOOD_CONNECTED_SHADOW!r}."
+        f"{ROBINHOOD_SHADOW!r}, {ROBINHOOD_CONNECTED_SHADOW!r}, "
+        f"or {ROBINHOOD_HOST_HANDOFF!r}."
     )
 
 

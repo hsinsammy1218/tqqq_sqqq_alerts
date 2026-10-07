@@ -1,0 +1,391 @@
+"""Render-safe Robinhood host handoff: create PENDING intents only.
+
+Case C: this process never opens a Robinhood write transport and never calls
+place_equity_order / review_equity_order / cancel_equity_order.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from alpaca_paper import build_order_intents
+from brokers.mode import ROBINHOOD_HOST_HANDOFF, execution_broker_from_environ
+from brokers.robinhood_agentic import LIVE_SUBMISSION_IMPLEMENTED, RobinhoodAgenticBroker
+from brokers.types import EXECUTION_NOT_SUBMITTED, BrokerState, TradeIntent
+from robinhood_flip import advance_flip, recovery_block_reason
+from robinhood_host_audit import HostAuditLog, post_host_discord
+from robinhood_host_entry import InMemoryRhEntryReservationStore, reserve_rh_daily_entry
+from robinhood_host_risk import (
+    check_host_new_exposure,
+    host_limits_from_env,
+    quote_for,
+    sell_qty_allowed,
+    size_host_buy,
+)
+from robinhood_intent import DEFAULT_INTENT_TTL_SECONDS, wrap_intent
+from robinhood_intent_store import InMemoryIntentStore, IntentStore, StoreResult
+from robinhood_shadow import _draft_intent
+from strategy_params import STRATEGY_VERSION
+from strategy_types import AlertDecision, PositionState
+
+# Hard barrier: handoff never submits.
+HANDOFF_SUBMISSION_IMPLEMENTED = False
+
+
+@dataclass(frozen=True)
+class HandoffLeg:
+    intent: TradeIntent
+    risk_status: str
+    risk_reason: str
+    checks: tuple[tuple[str, str], ...]
+    execution_status: str
+    text: str
+    persisted: bool = False
+
+    def audit_row(self) -> dict[str, Any]:
+        row = self.intent.as_audit()
+        row.update(
+            {
+                "broker": "robinhood",
+                "execution_mode": "host_handoff",
+                "risk_status": self.risk_status,
+                "risk_reason": self.risk_reason,
+                "execution_status": self.execution_status,
+                "persisted": self.persisted,
+                "real_money": False,
+                "auth_case": "C",
+            }
+        )
+        return row
+
+
+@dataclass(frozen=True)
+class HandoffRun:
+    legs: tuple[HandoffLeg, ...]
+    text: str
+    submission_attempts: int
+    pending_created: int = 0
+    blocked: int = 0
+
+
+def _format_leg(leg: HandoffLeg) -> str:
+    price = leg.intent.estimated_price
+    notional = leg.intent.estimated_notional
+    price_txt = f"${price:.2f}" if price is not None else "n/a"
+    notional_txt = f"${notional:.2f}" if notional is not None else "n/a"
+    check_lines = "\n".join(f"{name}: {status}" for name, status in leg.checks) or "none"
+    return "\n".join(
+        (
+            "ROBINHOOD HOST HANDOFF — PENDING INTENT ONLY",
+            "",
+            f"Strategy: {leg.intent.strategy_version}",
+            f"Signal: {leg.intent.signal_symbol}",
+            f"Action: {leg.intent.action} {leg.intent.execution_symbol}",
+            f"Confidence: {leg.intent.confidence}%",
+            f"Regime: {leg.intent.regime or 'n/a'}",
+            "",
+            f"Quantity: {leg.intent.quantity}",
+            f"Estimated Price: {price_txt}",
+            f"Estimated Value: {notional_txt}",
+            f"Client order id: {leg.intent.client_order_id}",
+            "",
+            "Risk Checks:",
+            check_lines,
+            f"Risk: {leg.risk_status} — {leg.risk_reason}",
+            "",
+            "Execution:",
+            "HOST HANDOFF MODE (CASE C)",
+            "NO ROBINHOOD ORDER SUBMITTED BY RENDER",
+            f"LIVE_SUBMISSION_IMPLEMENTED: {LIVE_SUBMISSION_IMPLEMENTED}",
+            f"HANDOFF_SUBMISSION_IMPLEMENTED: {HANDOFF_SUBMISSION_IMPLEMENTED}",
+            f"execution_status: {leg.execution_status}",
+            f"persisted: {str(leg.persisted).lower()}",
+        )
+    )
+
+
+def _blocked(
+    intent: TradeIntent,
+    reason: str,
+    checks: tuple[tuple[str, str], ...] = (),
+    *,
+    status: str = "BLOCKED",
+) -> HandoffLeg:
+    leg = HandoffLeg(
+        intent=intent,
+        risk_status="BLOCKED",
+        risk_reason=reason,
+        checks=checks,
+        execution_status=status,
+        text="",
+        persisted=False,
+    )
+    return replace(leg, text=_format_leg(leg))
+
+
+def _price_for(state: BrokerState, symbol: str, action: str) -> float | None:
+    quote = quote_for(state, symbol)
+    if quote is None:
+        return None
+    if action == "BUY":
+        return float(quote.ask) if quote.ask is not None else None
+    return float(quote.bid) if quote.bid is not None else None
+
+
+def evaluate_handoff_leg(
+    alert: AlertDecision,
+    *,
+    symbol: str,
+    action: str,
+    purpose: str,
+    state: BrokerState,
+    limits,
+    store: IntentStore,
+    reservation_store: Any | None,
+    now: datetime,
+    ttl_seconds: int,
+) -> HandoffLeg:
+    price = _price_for(state, symbol, action)
+    checks: tuple[tuple[str, str], ...] = ()
+    if action == "BUY":
+        quantity = 0
+        if price is not None:
+            quantity, _ = size_host_buy(price, state, limits)
+        intent = _draft_intent(
+            alert,
+            symbol=symbol,
+            action=action,
+            purpose=purpose,
+            price=price,
+            quantity=quantity,
+        )
+        allowed, reason, checks = check_host_new_exposure(intent, state, limits)
+        if not allowed:
+            return _blocked(intent, reason, checks)
+        sized_qty, notional = size_host_buy(float(price or 0), state, limits)
+        intent = replace(intent, quantity=sized_qty, estimated_price=price, estimated_notional=notional)
+        if reservation_store is not None:
+            reserved = reserve_rh_daily_entry(
+                reservation_store,
+                now=now,
+                meta={
+                    "client_order_id": intent.client_order_id,
+                    "purpose": purpose,
+                    "execution_symbol": symbol,
+                    "signal_id": intent.signal_id,
+                },
+            )
+            if not reserved.reserved:
+                return _blocked(intent, reserved.reason, checks)
+    else:
+        qty, sell_reason = sell_qty_allowed(state, symbol, requested=10**9)
+        intent = _draft_intent(
+            alert,
+            symbol=symbol,
+            action=action,
+            purpose=purpose,
+            price=price,
+            quantity=qty,
+        )
+        checks = (("Action", "PASS"), ("Symbol", "PASS"))
+        if sell_reason:
+            return _blocked(intent, sell_reason, checks)
+
+    dup = recovery_block_reason(
+        open_order_count=len(state.open_orders),
+        proposed_client_order_id=intent.client_order_id,
+        known_client_order_ids=state.known_client_order_ids,
+        broker_state_known=state.known,
+    )
+    if dup:
+        return _blocked(intent, dup, checks if action == "BUY" else (("Recovery", "FAIL"),))
+
+    durable = wrap_intent(intent, now=now, ttl_seconds=ttl_seconds, status="PENDING")
+    created: StoreResult = store.create_pending(
+        durable,
+        meta={"handoff": True, "auth_case": "C", "strategy_version": STRATEGY_VERSION},
+    )
+    if not created.ok:
+        return _blocked(intent, created.reason, checks if action == "BUY" else ())
+
+    leg = HandoffLeg(
+        intent=intent,
+        risk_status="PASS",
+        risk_reason="pending intent persisted for host executor",
+        checks=checks if action == "BUY" else (("Sell", "PASS"),),
+        execution_status="PENDING",
+        text="",
+        persisted=True,
+    )
+    return replace(leg, text=_format_leg(leg))
+
+
+def run_robinhood_host_handoff(
+    alert: AlertDecision,
+    position_before: PositionState | None,
+    state: BrokerState,
+    limits,
+    *,
+    store: IntentStore,
+    reservation_store: Any | None = None,
+    now: datetime | None = None,
+    ttl_seconds: int = DEFAULT_INTENT_TTL_SECONDS,
+    broker: RobinhoodAgenticBroker | None = None,
+) -> HandoffRun:
+    """Draft and persist PENDING intents. Never calls submit_order."""
+    del broker  # handoff never submits; accept for API symmetry
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+
+    paper_intents = build_order_intents(alert, position_before)
+    legs: list[HandoffLeg] = []
+
+    # FLIP: persist sell only; buy waits until host verifies flat (no simulated fill).
+    alert_type = (alert.alert_type or "").upper()
+    if alert_type == "FLIP":
+        sell_legs = [i for i in paper_intents if i.side.lower() == "sell"]
+        buy_legs = [i for i in paper_intents if i.side.lower() == "buy"]
+        if sell_legs:
+            s = sell_legs[0]
+            legs.append(
+                evaluate_handoff_leg(
+                    alert,
+                    symbol=s.symbol,
+                    action="SELL",
+                    purpose=s.purpose or "flip_exit",
+                    state=state,
+                    limits=limits,
+                    store=store,
+                    reservation_store=None,
+                    now=clock,
+                    ttl_seconds=ttl_seconds,
+                )
+            )
+        # Document blocked flip entry until exit verified by host.
+        flip = advance_flip(
+            exit_status=EXECUTION_NOT_SUBMITTED,
+            exit_qty_remaining=None,
+            broker_state_known=state.known,
+        )
+        if buy_legs:
+            b = buy_legs[0]
+            draft = _draft_intent(
+                alert,
+                symbol=b.symbol,
+                action="BUY",
+                purpose=b.purpose or "flip_entry",
+                price=_price_for(state, b.symbol, "BUY"),
+                quantity=0,
+            )
+            legs.append(_blocked(draft, flip.reason, (("FLIP", "FAIL"),), status="BLOCKED"))
+    else:
+        for paper in paper_intents:
+            action = paper.side.upper()
+            if action not in {"BUY", "SELL"}:
+                continue
+            legs.append(
+                evaluate_handoff_leg(
+                    alert,
+                    symbol=paper.symbol,
+                    action=action,
+                    purpose=paper.purpose or ("entry" if action == "BUY" else "exit"),
+                    state=state,
+                    limits=limits,
+                    store=store,
+                    reservation_store=reservation_store if action == "BUY" else None,
+                    now=clock,
+                    ttl_seconds=ttl_seconds,
+                )
+            )
+
+    if not legs:
+        empty = HandoffRun((), "ROBINHOOD HOST HANDOFF — no actionable legs", 0)
+        return empty
+
+    text = "\n\n".join(leg.text for leg in legs)
+    pending_created = sum(1 for leg in legs if leg.persisted)
+    blocked = sum(1 for leg in legs if leg.risk_status == "BLOCKED")
+    return HandoffRun(
+        legs=tuple(legs),
+        text=text,
+        submission_attempts=0,
+        pending_created=pending_created,
+        blocked=blocked,
+    )
+
+
+def run_robinhood_host_handoff_after_strategy(
+    alert: AlertDecision,
+    position: PositionState | None,
+    *,
+    dry_run: bool,
+    webhook_url: str,
+    data_bar_start: datetime | None,
+    now: datetime,
+    env: Mapping[str, str] | None = None,
+    store: IntentStore | None = None,
+) -> HandoffRun:
+    source = dict(os.environ if env is None else env)
+    if execution_broker_from_environ(source) != ROBINHOOD_HOST_HANDOFF:
+        raise RuntimeError("EXECUTION_BROKER is not robinhood_host_handoff")
+
+    # Handoff does not read Robinhood on Render (Case C). Broker state unknown
+    # unless a test injects a known state via store-only path — we use unknown
+    # by default so sells that need broker qty block, and buys that need
+    # account block unless tests pass a store + use run_robinhood_host_handoff
+    # directly with a known state.
+    state = BrokerState(
+        known=False,
+        detail="Case C handoff: Render does not read Robinhood MCP; host must execute",
+        data_bar_start=data_bar_start,
+        now=now,
+        order_history_complete=False,
+    )
+    limits = host_limits_from_env(source)
+    intent_store: IntentStore = store or InMemoryIntentStore()
+    # Without Supabase on Render, persistence should fail closed for production.
+    # Tests inject InMemoryIntentStore. Production callers should pass AtomicIntentStore
+    # or set SUPABASE_* and use intent_store_from_env.
+    if store is None:
+        try:
+            from robinhood_intent_store import intent_store_from_env
+
+            intent_store = intent_store_from_env(source)
+        except RuntimeError:
+            # Fail closed: create in-memory only for dry_run local rehearsal.
+            if not dry_run:
+                raise
+            intent_store = InMemoryIntentStore()
+
+    reservation_store = InMemoryRhEntryReservationStore()
+    result = run_robinhood_host_handoff(
+        alert,
+        position,
+        state,
+        limits,
+        store=intent_store,
+        reservation_store=reservation_store,
+        now=now,
+    )
+    # Under default unknown state, buys/sells block — that is correct for Case C
+    # Render without a host. Discord still reports the blocked handoff.
+    log_path = Path(source.get("ROBINHOOD_HOST_HANDOFF_LOG") or "logs/robinhood_host_handoff.jsonl")
+    audit = HostAuditLog(log_path)
+    for leg in result.legs:
+        audit.append(leg.audit_row())
+    post_host_discord(
+        webhook_url,
+        result.text,
+        dry_run=dry_run,
+        title="Robinhood host handoff",
+        banner="ROBINHOOD HOST HANDOFF — NO REAL MONEY TRADED ON RENDER (CASE C)",
+        color=0x6B7280,
+    )
+    print(result.text)
+    return result
