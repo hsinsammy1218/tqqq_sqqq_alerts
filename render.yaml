@@ -9,8 +9,11 @@
 # Paper learning: ALPACA_PAPER_TRADING=true + DRY_RUN=false submits to paper-api only.
 # Live Alpaca trading host is blocked in config.py (never set ALPACA_TRADING_BASE_URL
 # to https://api.alpaca.markets). EXECUTION_BROKER is unset here, so the cron stays
-# on Alpaca paper. robinhood_shadow and robinhood_connected_shadow only log a
-# would-be order and never submit. robinhood_live is rejected.
+# on Alpaca paper. Do not set EXECUTION_BROKER=alpaca_live_shadow or ALPACA_LIVE_*
+# keys on this cron unless Hemman explicitly asks later. alpaca_live_shadow is
+# read-only (NOT_SUBMITTED); alpaca_live is rejected. robinhood_shadow and
+# robinhood_connected_shadow only log a would-be order and never submit.
+# robinhood_live is rejected.
 #
 # Apply SQL migrations in Supabase before first cron:
 #   dashboard/supabase/migrations/20260714180000_bot_position_state.sql

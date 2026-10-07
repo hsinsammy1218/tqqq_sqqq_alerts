@@ -131,7 +131,7 @@ def _run(payloads: dict, alert: AlertDecision | None = None, position: PositionS
 
 def test_mode_accepts_connected_shadow_and_still_rejects_live():
     assert parse_execution_broker("robinhood_connected_shadow") == ROBINHOOD_CONNECTED_SHADOW
-    for raw in ("robinhood_live", "live", "robinhood_connected_shadow_live"):
+    for raw in ("robinhood_live", "live", "robinhood_connected_shadow_live", "alpaca_live"):
         with pytest.raises(UnsafeBrokerConfiguration):
             parse_execution_broker(raw)
 

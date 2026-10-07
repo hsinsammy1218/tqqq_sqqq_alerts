@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from alerts import format_alert_message, send_discord
+from alpaca_live_shadow import run_alpaca_live_shadow_after_strategy
 from brokers.mode import (
+    ALPACA_LIVE_SHADOW,
     ROBINHOOD_CONNECTED_SHADOW,
     ROBINHOOD_SHADOW,
     UnsafeBrokerConfiguration,
@@ -1179,6 +1181,20 @@ def run() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[robinhood-connected] Connected shadow failed: {exc}")
             log_event(logger, logging.ERROR, "Robinhood connected shadow failed", error=str(exc))
+    elif execution_broker == ALPACA_LIVE_SHADOW:
+        try:
+            intraday = getattr(candles, "latest_intraday", None)
+            run_alpaca_live_shadow_after_strategy(
+                alert,
+                position,
+                dry_run=settings.dry_run,
+                webhook_url=settings.discord_webhook_url,
+                data_bar_start=intraday.to_pydatetime() if intraday is not None else None,
+                now=now_utc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[alpaca-live-shadow] Live shadow failed: {exc}")
+            log_event(logger, logging.ERROR, "Alpaca live shadow failed", error=str(exc))
 
     broker_check_failed = False
     if submit_orders:

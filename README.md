@@ -149,6 +149,10 @@ Preview a live Discord embed (posts one message; **no** market fetch, **no** pap
 python main.py --discord-test
 ```
 
+### Optional Alpaca live shadow (read-only)
+
+`EXECUTION_BROKER=alpaca_live_shadow` reads a real Alpaca **live** account (separate `ALPACA_LIVE_*` keys + exact `https://api.alpaca.markets` host), runs live risk, and writes a would-be intent with `execution_status=NOT_SUBMITTED`. It **never** posts, cancels, or replaces live orders. `alpaca_live` is rejected. Env flags such as `ALPACA_LIVE_ENABLED=true` cannot unlock submission — `ALPACA_LIVE_SUBMISSION_IMPLEMENTED` stays `False` in code. Default cron remains Alpaca paper; do not set live shadow or live keys on Render unless explicitly requested.
+
 ### Optional Alpaca paper orders
 
 Default is alerts-only. To rehearse execution on Alpaca **paper** (not live, not Robinhood):

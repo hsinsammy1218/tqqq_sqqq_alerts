@@ -8,11 +8,20 @@ from collections.abc import Mapping
 from brokers.types import UnsafeBrokerConfiguration
 
 ALPACA_PAPER = "alpaca_paper"
+ALPACA_LIVE_SHADOW = "alpaca_live_shadow"
 ROBINHOOD_SHADOW = "robinhood_shadow"
 ROBINHOOD_CONNECTED_SHADOW = "robinhood_connected_shadow"
-_ALLOWED = frozenset({ALPACA_PAPER, ROBINHOOD_SHADOW, ROBINHOOD_CONNECTED_SHADOW})
+_ALLOWED = frozenset(
+    {
+        ALPACA_PAPER,
+        ALPACA_LIVE_SHADOW,
+        ROBINHOOD_SHADOW,
+        ROBINHOOD_CONNECTED_SHADOW,
+    }
+)
 _LIVE_NAMES = frozenset(
     {
+        "alpaca_live",
         "robinhood_live",
         "robinhood",
         "live",
@@ -33,18 +42,19 @@ def parse_execution_broker(raw: str | None) -> str:
         raise UnsafeBrokerConfiguration(
             "EXECUTION_BROKER is blank. Refusing to guess a broker."
         )
+    if text in _ALLOWED:
+        return text
     if text in _LIVE_NAMES or "live" in text:
         raise UnsafeBrokerConfiguration(
             f"EXECUTION_BROKER={text!r} is not available. "
-            "Real-money Robinhood execution is not implemented."
+            "Real-money execution is not implemented. "
+            f"Use {ALPACA_LIVE_SHADOW!r} for Alpaca live reads only."
         )
-    if text not in _ALLOWED:
-        raise UnsafeBrokerConfiguration(
-            f"EXECUTION_BROKER={text!r} is not supported. "
-            f"Use {ALPACA_PAPER!r}, {ROBINHOOD_SHADOW!r}, "
-            f"or {ROBINHOOD_CONNECTED_SHADOW!r}."
-        )
-    return text
+    raise UnsafeBrokerConfiguration(
+        f"EXECUTION_BROKER={text!r} is not supported. "
+        f"Use {ALPACA_PAPER!r}, {ALPACA_LIVE_SHADOW!r}, "
+        f"{ROBINHOOD_SHADOW!r}, or {ROBINHOOD_CONNECTED_SHADOW!r}."
+    )
 
 
 def execution_broker_from_environ(env: Mapping[str, str] | None = None) -> str:
