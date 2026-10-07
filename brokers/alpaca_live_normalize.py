@@ -79,6 +79,11 @@ def _map_status(raw: Any) -> str:
     return _STATUS_MAP.get(key, ORDER_UNKNOWN)
 
 
+def map_order_status(raw: Any) -> str:
+    """Public alias used by the live pilot executor."""
+    return _map_status(raw)
+
+
 def _parse_account(raw: Any) -> AccountView | None:
     if not isinstance(raw, dict):
         return None
