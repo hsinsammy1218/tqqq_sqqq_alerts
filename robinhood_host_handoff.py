@@ -391,6 +391,8 @@ def run_robinhood_host_handoff_after_strategy(
 
     # No reservation on Render. Authoritative daily entry reservation is at the
     # host BUY boundary after claim + full risk revalidation.
+    # Pass ``env=source`` so Agentic account isolation stamps/validates
+    # ROBINHOOD_AGENTIC_ACCOUNT_NUMBER on every PENDING handoff leg.
     result = run_robinhood_host_handoff(
         alert,
         position,
@@ -399,6 +401,7 @@ def run_robinhood_host_handoff_after_strategy(
         store=intent_store,
         reservation_store=None,
         now=now,
+        env=source,
     )
     # Unknown BrokerState may still create PENDING (not approved). Host must
     # revalidate with a known/fresh read before any place_equity_order.

@@ -392,6 +392,7 @@ def test_06_after_strategy_unknown_path_creates_pending(tmp_path: Path):
         env={
             "EXECUTION_BROKER": "robinhood_host_handoff",
             "ROBINHOOD_HOST_HANDOFF_LOG": str(tmp_path / "h.jsonl"),
+            "ROBINHOOD_AGENTIC_ACCOUNT_NUMBER": "TESTAGT6650",
             **{k: v for k, v in _armed_env().items() if k.startswith("ROBINHOOD_HOST_MAX")},
             "ROBINHOOD_HOST_CAPITAL_CEILING": "100",
             "ROBINHOOD_HOST_MAX_POSITION_PCT": "1.0",
@@ -407,6 +408,41 @@ def test_06_after_strategy_unknown_path_creates_pending(tmp_path: Path):
     )
     assert result.pending_created >= 1
     assert result.submission_attempts == 0
+    # Isolation must stamp the bound Agentic id into PENDING meta.
+    pending_rows = [r for r in store.rows.values() if r.get("status") == "PENDING"]
+    assert pending_rows
+    assert pending_rows[0]["meta"]["account_number"] == "TESTAGT6650"
+    assert pending_rows[0]["meta"]["account_number_masked"] == "••••6650"
+
+
+def test_06b_after_strategy_refuses_without_agentic_account(tmp_path: Path):
+    """Regression: production entry must pass env into handoff (fail closed)."""
+    store = InMemoryIntentStore()
+    result = run_robinhood_host_handoff_after_strategy(
+        _alert(),
+        None,
+        dry_run=True,
+        webhook_url="",
+        data_bar_start=NOW - timedelta(minutes=5),
+        now=NOW,
+        env={
+            "EXECUTION_BROKER": "robinhood_host_handoff",
+            "ROBINHOOD_HOST_HANDOFF_LOG": str(tmp_path / "h2.jsonl"),
+            "ROBINHOOD_HOST_CAPITAL_CEILING": "100",
+            "ROBINHOOD_HOST_MAX_POSITION_PCT": "1.0",
+            "ROBINHOOD_HOST_MAX_ORDER_NOTIONAL": "100",
+            "ROBINHOOD_HOST_MAX_DAILY_LOSS_PCT": "0.05",
+            "ROBINHOOD_HOST_MAX_WEEKLY_LOSS_PCT": "0.10",
+            "ROBINHOOD_HOST_MAX_DRAWDOWN_PCT": "0.15",
+            "ROBINHOOD_HOST_MAX_ORDERS_PER_DAY": "3",
+            "ROBINHOOD_HOST_NEW_ENTRIES_ENABLED": "true",
+            "ROBINHOOD_HOST_ENABLED": "true",
+        },
+        store=store,
+    )
+    assert result.pending_created == 0
+    assert result.blocked >= 1
+    assert store.rows == {}
 
 
 def test_07_handoff_prevalidation_vs_host_exposure():

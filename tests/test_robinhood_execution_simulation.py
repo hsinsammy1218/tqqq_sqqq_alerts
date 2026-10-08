@@ -943,3 +943,65 @@ def test_21_normalize_preserves_account_status_after_orders() -> None:
     assert state.account is not None
     assert state.account.status.lower() == "active"
     assert state.order_history_complete is True
+
+
+def test_22_normalize_prefers_agentic_over_first_protected_row() -> None:
+    """Regression: get_accounts[0] is often protected margin — prefer Agentic."""
+    from brokers.robinhood_normalize import normalize_snapshot
+
+    raw = {
+        "get_accounts": {
+            "accounts": [
+                {
+                    "account_number": "TESTMRG9384",
+                    "nickname": "Margin",
+                    "agentic_allowed": False,
+                    "type": "margin",
+                    "brokerage_account_type": "individual",
+                    "status": "restricted",
+                },
+                {
+                    "account_number": "TESTIRA5767",
+                    "nickname": "Roth",
+                    "agentic_allowed": False,
+                    "type": "cash",
+                    "brokerage_account_type": "ira_roth",
+                    "status": "active",
+                },
+                {
+                    "account_number": DEFAULT_AGENTIC_ACCOUNT,
+                    "nickname": "Agentic",
+                    "agentic_allowed": True,
+                    "type": "cash",
+                    "brokerage_account_type": "individual",
+                    "status": "active",
+                },
+            ]
+        },
+        "get_portfolio": {
+            "equity": 100.0,
+            "buying_power": 100.0,
+            "cash": 100.0,
+            "day_start_equity": 100.0,
+            "week_start_equity": 100.0,
+            "peak_equity": 100.0,
+        },
+        "get_equity_positions": {"positions": []},
+        "get_equity_quotes": {
+            "quotes": [
+                {
+                    "symbol": "TQQQ",
+                    "bid": 50.0,
+                    "ask": 50.1,
+                    "last": 50.05,
+                    "timestamp": NOW.isoformat(),
+                }
+            ]
+        },
+        "get_equity_orders": {"orders": []},
+    }
+    state = normalize_snapshot(raw, now=NOW, data_bar_start=NOW - timedelta(minutes=5))
+    assert state.known is True
+    assert state.account is not None
+    # Must not inherit protected margin status "restricted".
+    assert state.account.status.lower() == "active"
