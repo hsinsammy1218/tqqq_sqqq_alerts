@@ -752,7 +752,7 @@ def test_15_restart_recovery_blocks_duplicate_place() -> None:
     assert reclaim.ok is False
     assert eng.place_attempts == places_before
 
-    # Ambiguous network → UNKNOWN, no resubmit.
+    # Ambiguous network → RECONCILIATION_REQUIRED, no resubmit.
     eng2 = MockRobinhoodExecutionEngine()
     eng2.enqueue_outcome(SimOutcome.NETWORK_ERROR)
     store2 = InMemoryIntentStore()
@@ -767,9 +767,9 @@ def test_15_restart_recovery_blocks_duplicate_place() -> None:
         reservation_store=InMemoryRhEntryReservationStore(),
         equity_store=InMemoryEquityBaselineStore(),
     )
-    assert run2.legs[0].execution_status == "UNKNOWN"
+    assert run2.legs[0].execution_status == "RECONCILIATION_REQUIRED"
     row2 = store2.get("sim-timeout-1")
-    assert row2 is not None and row2["status"] == "UNKNOWN"
+    assert row2 is not None and row2["status"] == "RECONCILIATION_REQUIRED"
     reclaim2 = store2.claim_by_client_order_id("sim-timeout-1", claimed_by="w2", now=NOW)
     assert reclaim2.ok is False
 

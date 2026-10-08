@@ -240,7 +240,7 @@ class FakeHostTransport:
         if name in self.snapshot:
             return self.snapshot[name]
         if name == "review_equity_order":
-            return {"ok": True, "warnings": []}
+            return {"ok": True, "decision": "APPROVED", "status": "APPROVED", "warnings": []}
         if name == "place_equity_order":
             if self.place_error is not None:
                 raise self.place_error
@@ -519,7 +519,8 @@ def test_12_unknown_place_does_not_resubmit(tmp_path: Path):
         client_order_id=intent.client_order_id,
         reservation_store=res,
     )
-    assert result.legs[0].execution_status == "UNKNOWN"
+    # H3: ambiguous post-place → RECONCILIATION_REQUIRED (no auto resubmit).
+    assert result.legs[0].execution_status == "RECONCILIATION_REQUIRED"
     assert len([c for c in transport.calls if c[0] == "place_equity_order"]) == 1
     again = run_host_executor_once(
         transport=transport,
@@ -549,8 +550,8 @@ def test_13_timeout_place_marks_unknown_no_resubmit(tmp_path: Path):
         client_order_id=intent.client_order_id,
         reservation_store=res,
     )
-    assert result.legs[0].execution_status == "UNKNOWN"
-    assert store.get(intent.client_order_id)["status"] == "UNKNOWN"
+    assert result.legs[0].execution_status == "RECONCILIATION_REQUIRED"
+    assert store.get(intent.client_order_id)["status"] == "RECONCILIATION_REQUIRED"
     again = run_host_executor_once(
         transport=FakeHostTransport(),
         store=store,
@@ -577,7 +578,7 @@ def test_14_malformed_place_marks_unknown(tmp_path: Path):
         client_order_id=intent.client_order_id,
         reservation_store=InMemoryRhEntryReservationStore(),
     )
-    assert result.legs[0].execution_status == "UNKNOWN"
+    assert result.legs[0].execution_status == "RECONCILIATION_REQUIRED"
     assert len([c for c in transport.calls if c[0] == "place_equity_order"]) == 1
 
 
@@ -751,7 +752,8 @@ def test_23_concurrent_hosts_one_entry_per_day():
 # --- 24–26 FLIP ------------------------------------------------------------
 
 
-def test_24_handoff_flip_blocks_second_leg_without_fill():
+def test_24_handoff_flip_persists_linked_entry_pending():
+    """H2: both FLIP legs persist; host gates entry (not handoff permanent BLOCK)."""
     store = InMemoryIntentStore()
     result = run_robinhood_host_handoff(
         _alert(alert_type="FLIP", symbol="SQQQ"),
@@ -760,10 +762,15 @@ def test_24_handoff_flip_blocks_second_leg_without_fill():
         _limits(),
         store=store,
         now=NOW,
+        env={"ROBINHOOD_AGENTIC_ACCOUNT_NUMBER": "TESTAGT6650"},
     )
     assert any(leg.intent.action == "SELL" and leg.persisted for leg in result.legs)
     buys = [leg for leg in result.legs if leg.intent.action == "BUY"]
-    assert buys and buys[0].risk_status == "BLOCKED"
+    assert buys and buys[0].persisted and buys[0].execution_status == "PENDING"
+    exit_rows = [r for r in store.rows.values() if r.get("purpose") == "flip_exit"]
+    entry_rows = [r for r in store.rows.values() if r.get("purpose") == "flip_entry"]
+    assert exit_rows and entry_rows
+    assert entry_rows[0]["meta"]["flip_exit_client_order_id"] == exit_rows[0]["client_order_id"]
 
 
 def test_25_flip_gate_partial_and_unknown_block():

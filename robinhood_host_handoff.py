@@ -16,14 +16,19 @@ from typing import Any
 from alpaca_paper import build_order_intents
 from brokers.mode import ROBINHOOD_HOST_HANDOFF, execution_broker_from_environ
 from brokers.robinhood_agentic import LIVE_SUBMISSION_IMPLEMENTED, RobinhoodAgenticBroker
-from brokers.types import EXECUTION_NOT_SUBMITTED, BrokerState, TradeIntent
-from robinhood_flip import advance_flip, recovery_block_reason
+from brokers.types import BrokerState, TradeIntent
+from robinhood_flip import (
+    flip_entry_meta,
+    flip_exit_meta,
+    new_flip_pair_id,
+    recovery_block_reason,
+)
 from robinhood_host_audit import HostAuditLog, post_host_discord
 from robinhood_account_isolation import (
     AccountIsolationError,
     ENV_BOUND_ACCOUNT,
+    env_account_pin,
     mask_account_number,
-    require_bound_account,
 )
 from robinhood_host_risk import (
     check_handoff_prevalidation,
@@ -155,6 +160,7 @@ def evaluate_handoff_leg(
     now: datetime,
     ttl_seconds: int,
     env: Mapping[str, str] | None = None,
+    extra_meta: Mapping[str, Any] | None = None,
 ) -> HandoffLeg:
     """Persist PENDING only. Pre-handoff ≠ host execution risk.
 
@@ -216,11 +222,16 @@ def evaluate_handoff_leg(
     }
     if env is not None and str(env.get(ENV_BOUND_ACCOUNT) or "").strip():
         try:
-            bound = require_bound_account(env=env)
+            pin = env_account_pin(env)
         except AccountIsolationError as exc:
             return _blocked(intent, str(exc), checks + (("Agentic account", "FAIL"),))
-        meta["account_number"] = bound.account_number
-        meta["account_number_masked"] = mask_account_number(bound.account_number)
+        if pin:
+            # Unverified pin for routing hint — host must live-resolve before place.
+            meta["account_number"] = pin
+            meta["account_number_masked"] = mask_account_number(pin)
+            meta["account_pin_unverified"] = True
+    if extra_meta:
+        meta.update(dict(extra_meta))
 
     durable = wrap_intent(intent, now=now, ttl_seconds=ttl_seconds, status="PENDING")
     created: StoreResult = store.create_pending(
@@ -270,45 +281,71 @@ def run_robinhood_host_handoff(
     paper_intents = build_order_intents(alert, position_before)
     legs: list[HandoffLeg] = []
 
-    # FLIP: persist sell only; buy waits until host verifies flat (no simulated fill).
+    # FLIP: persist both legs with durable pair meta. Host gates entry via
+    # advance_flip after exit FILLED + flat — never place entry blindly.
     alert_type = (alert.alert_type or "").upper()
     if alert_type == "FLIP":
         sell_legs = [i for i in paper_intents if i.side.lower() == "sell"]
         buy_legs = [i for i in paper_intents if i.side.lower() == "buy"]
+        pair_id = new_flip_pair_id()
+        exit_leg: HandoffLeg | None = None
         if sell_legs:
             s = sell_legs[0]
-            legs.append(
-                evaluate_handoff_leg(
-                    alert,
-                    symbol=s.symbol,
-                    action="SELL",
-                    purpose=s.purpose or "flip_exit",
-                    state=state,
-                    limits=limits,
-                    store=store,
-                    reservation_store=None,
-                    now=clock,
-                    ttl_seconds=ttl_seconds,
-                    env=source,
-                )
+            exit_leg = evaluate_handoff_leg(
+                alert,
+                symbol=s.symbol,
+                action="SELL",
+                purpose=s.purpose or "flip_exit",
+                state=state,
+                limits=limits,
+                store=store,
+                reservation_store=None,
+                now=clock,
+                ttl_seconds=ttl_seconds,
+                env=source,
+                extra_meta=flip_exit_meta(pair_id=pair_id, exit_symbol=s.symbol),
             )
-        # Document blocked flip entry until exit verified by host.
-        flip = advance_flip(
-            exit_status=EXECUTION_NOT_SUBMITTED,
-            exit_qty_remaining=None,
-            broker_state_known=state.known,
-        )
+            legs.append(exit_leg)
         if buy_legs:
             b = buy_legs[0]
-            draft = _draft_intent(
-                alert,
-                symbol=b.symbol,
-                action="BUY",
-                purpose=b.purpose or "flip_entry",
-                price=_price_for(state, b.symbol, "BUY"),
-                quantity=0,
-            )
-            legs.append(_blocked(draft, flip.reason, (("FLIP", "FAIL"),), status="BLOCKED"))
+            if exit_leg is None or not exit_leg.persisted:
+                draft = _draft_intent(
+                    alert,
+                    symbol=b.symbol,
+                    action="BUY",
+                    purpose=b.purpose or "flip_entry",
+                    price=_price_for(state, b.symbol, "BUY"),
+                    quantity=0,
+                )
+                legs.append(
+                    _blocked(
+                        draft,
+                        "flip exit not persisted; entry blocked",
+                        (("FLIP", "FAIL"),),
+                        status="BLOCKED",
+                    )
+                )
+            else:
+                legs.append(
+                    evaluate_handoff_leg(
+                        alert,
+                        symbol=b.symbol,
+                        action="BUY",
+                        purpose=b.purpose or "flip_entry",
+                        state=state,
+                        limits=limits,
+                        store=store,
+                        reservation_store=None,
+                        now=clock,
+                        ttl_seconds=ttl_seconds,
+                        env=source,
+                        extra_meta=flip_entry_meta(
+                            pair_id=pair_id,
+                            exit_client_order_id=exit_leg.intent.client_order_id,
+                            exit_symbol=exit_leg.intent.execution_symbol,
+                        ),
+                    )
+                )
     else:
         for paper in paper_intents:
             action = paper.side.upper()

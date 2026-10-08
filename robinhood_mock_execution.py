@@ -165,6 +165,7 @@ class MockRobinhoodExecutionEngine:
         self.real_rh_place_attempts = 0  # must always stay 0
         self.outcome_queue: list[SimOutcome] = []
         self.force_stale_quotes = False
+        self.force_review_decision = ""
         self.network_fail_next_n = 0
         self._seen_place_fingerprints: set[str] = set()
         self.duplicate_place_rejections = 0
@@ -413,8 +414,23 @@ class MockRobinhoodExecutionEngine:
             warnings.append(f"unsupported side {side}")
         if not self.book.market_open:
             warnings.append("market closed")
+        # Optional forced review outcome for H4 tests (fixture schema only).
+        forced = str(getattr(self, "force_review_decision", "") or "").strip().upper()
+        if forced in {"REJECTED", "PENDING", "EXPIRED", "UNKNOWN", "APPROVED"}:
+            ok = forced == "APPROVED"
+            return {
+                "ok": ok,
+                "decision": forced,
+                "status": forced,
+                "warnings": warnings if not ok else [],
+                "simulation": True,
+                "fill_source": FILL_SOURCE_SIMULATED,
+            }
+        ok = len(warnings) == 0
         return {
-            "ok": len(warnings) == 0,
+            "ok": ok,
+            "decision": "APPROVED" if ok else "REJECTED",
+            "status": "APPROVED" if ok else "REJECTED",
             "warnings": warnings,
             "simulation": True,
             "fill_source": FILL_SOURCE_SIMULATED,

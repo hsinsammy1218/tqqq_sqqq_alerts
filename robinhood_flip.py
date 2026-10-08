@@ -2,11 +2,17 @@
 
 This module never calls a broker. It only says whether a second leg may be
 validated after an exit. Validation is not submission.
+
+Durable flip pairs are linked via intent meta (restart-safe):
+``flip_pair_id``, ``flip_role`` (exit|entry), ``flip_exit_client_order_id``,
+``flip_exit_symbol``.
 """
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 from brokers.types import (
     ORDER_ACCEPTED,
@@ -18,6 +24,13 @@ from brokers.types import (
     ORDER_REJECTED,
     ORDER_UNKNOWN,
 )
+
+FLIP_META_PAIR_ID = "flip_pair_id"
+FLIP_META_ROLE = "flip_role"
+FLIP_META_EXIT_CID = "flip_exit_client_order_id"
+FLIP_META_EXIT_SYMBOL = "flip_exit_symbol"
+FLIP_ROLE_EXIT = "exit"
+FLIP_ROLE_ENTRY = "entry"
 
 
 @dataclass(frozen=True)
@@ -83,3 +96,82 @@ def recovery_block_reason(
     if proposed_client_order_id in known_client_order_ids:
         return "duplicate client_order_id already known; not creating another order"
     return None
+
+
+def new_flip_pair_id() -> str:
+    return f"flip-{uuid.uuid4().hex[:16]}"
+
+
+def flip_exit_meta(*, pair_id: str, exit_symbol: str) -> dict[str, Any]:
+    return {
+        FLIP_META_PAIR_ID: pair_id,
+        FLIP_META_ROLE: FLIP_ROLE_EXIT,
+        FLIP_META_EXIT_SYMBOL: (exit_symbol or "").strip().upper(),
+    }
+
+
+def flip_entry_meta(
+    *,
+    pair_id: str,
+    exit_client_order_id: str,
+    exit_symbol: str,
+) -> dict[str, Any]:
+    return {
+        FLIP_META_PAIR_ID: pair_id,
+        FLIP_META_ROLE: FLIP_ROLE_ENTRY,
+        FLIP_META_EXIT_CID: (exit_client_order_id or "").strip(),
+        FLIP_META_EXIT_SYMBOL: (exit_symbol or "").strip().upper(),
+    }
+
+
+def is_flip_entry_purpose(purpose: str | None) -> bool:
+    return (purpose or "").strip().lower() == "flip_entry"
+
+
+def is_flip_exit_purpose(purpose: str | None) -> bool:
+    return (purpose or "").strip().lower() == "flip_exit"
+
+
+@dataclass(frozen=True)
+class FlipEntryGateResult:
+    allowed: bool
+    reason: str
+    terminal_status: str | None  # BLOCKED / RECONCILIATION_REQUIRED / None if ok
+    exit_status: str | None
+
+
+def gate_flip_entry_from_exit_row(
+    *,
+    exit_row: Mapping[str, Any] | None,
+    exit_qty_remaining: float | None,
+    broker_state_known: bool,
+) -> FlipEntryGateResult:
+    """Restart-safe second-leg gate using durable exit intent row + broker flatness."""
+    if exit_row is None:
+        return FlipEntryGateResult(
+            False,
+            "flip exit intent missing; second leg blocked",
+            "BLOCKED",
+            None,
+        )
+    exit_status = str(exit_row.get("status") or "").strip().upper()
+    if exit_status in {"UNKNOWN", "RECONCILIATION_REQUIRED"}:
+        return FlipEntryGateResult(
+            False,
+            f"flip exit status {exit_status}; reconciliation required before entry",
+            "RECONCILIATION_REQUIRED",
+            exit_status,
+        )
+    gate = advance_flip(
+        exit_status=exit_status,
+        exit_qty_remaining=exit_qty_remaining,
+        broker_state_known=broker_state_known,
+    )
+    if not gate.entry_validation_allowed:
+        return FlipEntryGateResult(
+            False,
+            gate.reason,
+            "BLOCKED",
+            exit_status,
+        )
+    return FlipEntryGateResult(True, gate.reason, None, exit_status)

@@ -236,8 +236,13 @@ def resolve_agentic_account(get_accounts_payload: Any) -> BoundAgenticAccount:
     )
 
 
-def bound_account_from_env(env: Mapping[str, str] | None = None) -> BoundAgenticAccount | None:
-    """Load a previously bound full account_number from env (no nickname/last4 alone)."""
+def env_account_pin(env: Mapping[str, str] | None = None) -> str | None:
+    """Validate env full account_number pin (format / last4 / protected).
+
+    This is **not** authoritative Agentic proof — no ``agentic_allowed`` or
+    live nickname check. Host place/read must call ``require_bound_account``
+    with a live ``get_accounts`` payload.
+    """
     source = os.environ if env is None else env
     raw = str(source.get(ENV_BOUND_ACCOUNT) or "").strip()
     if not raw:
@@ -256,13 +261,24 @@ def bound_account_from_env(env: Mapping[str, str] | None = None) -> BoundAgentic
             f"{ENV_BOUND_ACCOUNT} last4 {last4_of(raw)!r} does not match operator "
             f"intent {OPERATOR_LAST4!r}; refusing"
         )
+    return raw
+
+
+def bound_account_from_env(env: Mapping[str, str] | None = None) -> BoundAgenticAccount | None:
+    """Unverified env pin as BoundAgenticAccount (handoff meta only).
+
+    Source is ``env_pin_unverified``. Must not be used as host place authority.
+    """
+    pin = env_account_pin(env)
+    if pin is None:
+        return None
     return BoundAgenticAccount(
-        account_number=raw,
+        account_number=pin,
         nickname=OPERATOR_NICKNAME,
-        last4=last4_of(raw),
+        last4=last4_of(pin),
         brokerage_account_type=OPERATOR_BROKERAGE_ACCOUNT_TYPE,
         account_type=OPERATOR_TYPE,
-        source="env",
+        source="env_pin_unverified",
     )
 
 
@@ -270,22 +286,41 @@ def require_bound_account(
     *,
     get_accounts_payload: Any | None = None,
     env: Mapping[str, str] | None = None,
+    allow_unverified_env_pin: bool = False,
 ) -> BoundAgenticAccount:
-    """Resolve from get_accounts when provided; else require env bind. Fail closed."""
-    env_bound = bound_account_from_env(env)
+    """Authoritative bind via live ``get_accounts`` resolve.
+
+    Env pin (when set) only cross-checks identity against the live resolve.
+    Env-alone bind is refused unless ``allow_unverified_env_pin`` (Case C
+    handoff meta stamping). Host executor must never set that flag.
+    """
+    env_pin = env_account_pin(env)
     if get_accounts_payload is not None:
         resolved = resolve_agentic_account(get_accounts_payload)
-        if env_bound is not None and env_bound.account_number != resolved.account_number:
+        if env_pin is not None and env_pin != resolved.account_number:
             raise AccountIsolationError(
                 "identity change: env-bound account "
-                f"{env_bound.masked()} != resolved {resolved.masked()}; refusing"
+                f"{mask_account_number(env_pin)} != resolved {resolved.masked()}; "
+                "refusing"
             )
         return resolved
-    if env_bound is None:
+    if not allow_unverified_env_pin:
+        raise AccountIsolationError(
+            "live get_accounts resolve required for Agentic bind; "
+            f"{ENV_BOUND_ACCOUNT} pin alone is not authority"
+        )
+    if env_pin is None:
         raise AccountIsolationError(
             f"{ENV_BOUND_ACCOUNT} unset and no get_accounts payload; refusing"
         )
-    return env_bound
+    return BoundAgenticAccount(
+        account_number=env_pin,
+        nickname=OPERATOR_NICKNAME,
+        last4=last4_of(env_pin),
+        brokerage_account_type=OPERATOR_BROKERAGE_ACCOUNT_TYPE,
+        account_type=OPERATOR_TYPE,
+        source="env_pin_unverified",
+    )
 
 
 def assert_account_allowed(
@@ -372,6 +407,7 @@ __all__ = [
     "assert_account_allowed",
     "bound_account_from_env",
     "enforce_tool_account_arg",
+    "env_account_pin",
     "filter_accounts_payload_for_report",
     "is_protected_account_number",
     "last4_of",
