@@ -22,6 +22,14 @@ from brokers.robinhood_reader import (
     RobinhoodToolRejected,
     assert_read_only,
 )
+from robinhood_account_isolation import (
+    AccountIsolationError,
+    BoundAgenticAccount,
+    assert_account_allowed,
+    bound_account_from_env,
+    enforce_tool_account_arg,
+    require_bound_account,
+)
 from brokers.types import (
     ORDER_FILLED,
     ORDER_PARTIALLY_FILLED,
@@ -144,29 +152,67 @@ def assert_host_tool(name: str, *, allow_writes: bool) -> str:
 
 
 class HostMediatedClient:
-    """Read + optional write through an injected authenticated host transport."""
+    """Read + optional write through an injected authenticated host transport.
 
-    def __init__(self, transport: HostTransport, *, allow_writes: bool) -> None:
+    All account-scoped tools are pinned to the bound Agentic account.
+    """
+
+    def __init__(
+        self,
+        transport: HostTransport,
+        *,
+        allow_writes: bool,
+        bound: BoundAgenticAccount | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
         self._transport = transport
         self.allow_writes = allow_writes
+        self.bound = bound
+        self._env = env
         self.invocations: list[str] = []
         self.place_attempts = 0
 
     def call(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
         tool = assert_host_tool(name, allow_writes=self.allow_writes)
+        try:
+            if self.bound is None and self._env is not None:
+                self.bound = bound_account_from_env(self._env)
+            args = enforce_tool_account_arg(tool, arguments, self.bound)
+        except AccountIsolationError as exc:
+            raise RobinhoodToolRejected(str(exc)) from exc
         self.invocations.append(tool)
         if tool == "place_equity_order":
             self.place_attempts += 1
         try:
-            return self._transport(tool, dict(arguments or {}))
+            return self._transport(tool, dict(args))
         except (RobinhoodToolRejected, RobinhoodReadError, HostTransportError, HostOrderAmbiguous):
             raise
         except Exception as exc:  # noqa: BLE001
             raise HostTransportError(f"{tool} failed: {exc}") from None
 
     def read_snapshot(self, symbols: tuple[str, ...] = ("TQQQ", "SQQQ")) -> dict[str, Any]:
-        reader = RobinhoodReadClient(self.call)
-        return reader.read_snapshot(symbols)
+        # Bind Agentic before account-scoped tools. Do not delegate to
+        # RobinhoodReadClient.read_snapshot here — that would re-enter
+        # host.call before ``self.bound`` is set.
+        if len(symbols) > 20:
+            raise RobinhoodReadError("get_equity_quotes accepts at most 20 symbols")
+        accounts = self.call("get_accounts", {})
+        try:
+            self.bound = require_bound_account(
+                get_accounts_payload=accounts,
+                env=self._env,
+            )
+        except AccountIsolationError as exc:
+            raise RobinhoodReadError(str(exc)) from exc
+        return {
+            "get_accounts": accounts,
+            "get_portfolio": self.call("get_portfolio", {}),
+            "get_equity_positions": self.call("get_equity_positions", {}),
+            "get_equity_quotes": self.call(
+                "get_equity_quotes", {"symbols": list(symbols)}
+            ),
+            "get_equity_orders": self.call("get_equity_orders", {}),
+        }
 
 
 def place_args_for_intent(
@@ -175,12 +221,14 @@ def place_args_for_intent(
     quote: QuoteView | None = None,
     capabilities: HostMcpCapabilities | None = None,
     slippage_bps: float = 25.0,
+    bound: BoundAgenticAccount | None = None,
 ) -> dict[str, Any]:
     """Allowlisted place/review args. Never invents ``client_order_id``.
 
     Uses marketable LIMIT when capabilities confirm limit support; otherwise
     fail closed (no silent market fallback). Internal UNIQUE ``client_order_id``
-    stays in Supabase for idempotency — it is not sent to MCP.
+    stays in Supabase for idempotency — it is not sent to MCP. Requires bound
+    Agentic ``account_number``.
     """
     caps = capabilities or docs_confirmed_capabilities()
     return build_place_args(
@@ -188,6 +236,7 @@ def place_args_for_intent(
         quote=quote,
         capabilities=caps,
         slippage_bps=slippage_bps,
+        bound=bound,
     )
 
 
@@ -556,11 +605,16 @@ def execute_claimed_intent(
 
     try:
         assert_capabilities_ready(caps)
+        if client.bound is None:
+            raise UnsafeBrokerConfiguration(
+                "Agentic account not bound after host read; refusing place"
+            )
         args = place_args_for_intent(
             intent,
             quote=quote,
             capabilities=caps,
             slippage_bps=float(limits.max_slippage_bps),
+            bound=client.bound,
         )
         if "client_order_id" in args:
             raise UnsafeBrokerConfiguration(
@@ -706,7 +760,11 @@ def run_host_executor_once(
         require_new_entries=False,
     )
     armed = armed_reason is None and not dry_run
-    client = HostMediatedClient(transport, allow_writes=allow_writes and armed and not dry_run)
+    client = HostMediatedClient(
+        transport,
+        allow_writes=allow_writes and armed and not dry_run,
+        env=source,
+    )
     res_store = reservation_store if reservation_store is not None else InMemoryRhEntryReservationStore()
     eq_store = equity_store if equity_store is not None else InMemoryEquityBaselineStore()
     caps = capabilities or docs_confirmed_capabilities()

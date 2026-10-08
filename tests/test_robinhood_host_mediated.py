@@ -182,7 +182,19 @@ def _snapshot_payload(*, include_baselines: bool = True) -> dict[str, Any]:
             }
         )
     return {
-        "get_accounts": {"accounts": [{"status": "active", "account_number": "mcp1"}]},
+        "get_accounts": {
+            "accounts": [
+                {
+                    "account_number": "TESTAGT6650",
+                    "nickname": "Agentic",
+                    "type": "cash",
+                    "brokerage_account_type": "individual",
+                    "agentic_allowed": True,
+                    "state": "active",
+                    "status": "active",
+                }
+            ]
+        },
         "get_portfolio": portfolio,
         "get_equity_positions": {"positions": []},
         "get_equity_quotes": {
@@ -409,12 +421,26 @@ def test_07_handoff_prevalidation_vs_host_exposure():
 # --- 8–11 schema allowlist -------------------------------------------------
 
 
+def _bound_agentic():
+    from robinhood_account_isolation import BoundAgenticAccount
+
+    return BoundAgenticAccount(
+        account_number="TESTAGT6650",
+        nickname="Agentic",
+        last4="6650",
+        brokerage_account_type="individual",
+        account_type="cash",
+        source="test",
+    )
+
+
 def test_08_place_args_omit_client_order_id_and_use_limit():
     intent = _buy_intent(2)
     quote = QuoteView("TQQQ", 50.0, 50.10, NOW)
-    args = place_args_for_intent(intent, quote=quote, slippage_bps=25)
+    args = place_args_for_intent(intent, quote=quote, slippage_bps=25, bound=_bound_agentic())
     assert "client_order_id" not in args
     assert args["order_type"] == "limit"
+    assert args["account_number"] == "TESTAGT6650"
     assert args["symbol"] == "TQQQ"
     assert args["side"] == "buy"
     assert float(args["limit_price"]) >= 50.10
@@ -568,6 +594,7 @@ def test_17_limit_capability_missing_fail_closed():
             _buy_intent(),
             quote=QuoteView("TQQQ", 50.0, 50.10, NOW),
             capabilities=caps,
+            bound=_bound_agentic(),
         )
 
 
@@ -576,6 +603,7 @@ def test_18_slippage_bps_applied_to_limit():
         _buy_intent(),
         quote=QuoteView("TQQQ", 50.0, 50.0, NOW),
         slippage_bps=100,  # 1%
+        bound=_bound_agentic(),
     )
     assert float(args["limit_price"]) == pytest.approx(50.50, abs=0.01)
 

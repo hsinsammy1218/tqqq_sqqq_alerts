@@ -1,0 +1,30 @@
+{
+  "note": "Synthetic fixture account numbers for offline isolation tests. Last4 fingerprints match operator intent / protected suffixes. Not production OAuth secrets.",
+  "agentic": {
+    "account_number": "TESTAGT6650",
+    "nickname": "Agentic",
+    "type": "cash",
+    "brokerage_account_type": "individual",
+    "agentic_allowed": true,
+    "state": "active",
+    "status": "active"
+  },
+  "protected_margin": {
+    "account_number": "TESTMRG9384",
+    "nickname": "Primary",
+    "type": "margin",
+    "brokerage_account_type": "individual",
+    "agentic_allowed": false,
+    "state": "active",
+    "status": "active"
+  },
+  "protected_roth": {
+    "account_number": "TESTIRA5767",
+    "nickname": "Roth",
+    "type": "cash",
+    "brokerage_account_type": "ira_roth",
+    "agentic_allowed": false,
+    "state": "active",
+    "status": "active"
+  }
+}

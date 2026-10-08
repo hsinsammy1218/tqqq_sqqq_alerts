@@ -19,6 +19,12 @@ from brokers.robinhood_agentic import LIVE_SUBMISSION_IMPLEMENTED, RobinhoodAgen
 from brokers.types import EXECUTION_NOT_SUBMITTED, BrokerState, TradeIntent
 from robinhood_flip import advance_flip, recovery_block_reason
 from robinhood_host_audit import HostAuditLog, post_host_discord
+from robinhood_account_isolation import (
+    AccountIsolationError,
+    ENV_BOUND_ACCOUNT,
+    mask_account_number,
+    require_bound_account,
+)
 from robinhood_host_risk import (
     check_handoff_prevalidation,
     host_limits_from_env,
@@ -148,12 +154,15 @@ def evaluate_handoff_leg(
     reservation_store: Any | None,
     now: datetime,
     ttl_seconds: int,
+    env: Mapping[str, str] | None = None,
 ) -> HandoffLeg:
     """Persist PENDING only. Pre-handoff ≠ host execution risk.
 
     Reservation is intentionally ignored here — authoritative daily entry
     reservation happens at the host BUY boundary after claim + risk.
     ``reservation_store`` is accepted for API compatibility and unused.
+    When ``env`` includes ``ROBINHOOD_AGENTIC_ACCOUNT_NUMBER``, stamp it into
+    intent meta (full ID for routing; masked for logs).
     """
     del reservation_store  # host BUY boundary owns reservation
     price = _price_for(state, symbol, action)
@@ -180,7 +189,9 @@ def evaluate_handoff_leg(
     if notional is not None:
         intent = replace(intent, estimated_notional=notional)
 
-    allowed, reason, checks = check_handoff_prevalidation(intent, action=action)
+    allowed, reason, checks = check_handoff_prevalidation(
+        intent, action=action, env=env
+    )
     if not allowed:
         return _blocked(intent, reason, checks)
 
@@ -196,16 +207,25 @@ def evaluate_handoff_leg(
         if dup:
             return _blocked(intent, dup, checks + (("Recovery", "FAIL"),))
 
+    meta: dict[str, Any] = {
+        "handoff": True,
+        "auth_case": "C",
+        "strategy_version": STRATEGY_VERSION,
+        "pending_not_approved": True,
+        "broker_state_known_at_handoff": state.known,
+    }
+    if env is not None and str(env.get(ENV_BOUND_ACCOUNT) or "").strip():
+        try:
+            bound = require_bound_account(env=env)
+        except AccountIsolationError as exc:
+            return _blocked(intent, str(exc), checks + (("Agentic account", "FAIL"),))
+        meta["account_number"] = bound.account_number
+        meta["account_number_masked"] = mask_account_number(bound.account_number)
+
     durable = wrap_intent(intent, now=now, ttl_seconds=ttl_seconds, status="PENDING")
     created: StoreResult = store.create_pending(
         durable,
-        meta={
-            "handoff": True,
-            "auth_case": "C",
-            "strategy_version": STRATEGY_VERSION,
-            "pending_not_approved": True,
-            "broker_state_known_at_handoff": state.known,
-        },
+        meta=meta,
     )
     if not created.ok:
         # Failed intent insert must not consume a daily entry slot (we never
@@ -238,12 +258,14 @@ def run_robinhood_host_handoff(
     now: datetime | None = None,
     ttl_seconds: int = DEFAULT_INTENT_TTL_SECONDS,
     broker: RobinhoodAgenticBroker | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> HandoffRun:
     """Draft and persist PENDING intents. Never calls submit_order."""
     del broker  # handoff never submits; accept for API symmetry
     clock = now or datetime.now(timezone.utc)
     if clock.tzinfo is None:
         clock = clock.replace(tzinfo=timezone.utc)
+    source = env
 
     paper_intents = build_order_intents(alert, position_before)
     legs: list[HandoffLeg] = []
@@ -267,6 +289,7 @@ def run_robinhood_host_handoff(
                     reservation_store=None,
                     now=clock,
                     ttl_seconds=ttl_seconds,
+                    env=source,
                 )
             )
         # Document blocked flip entry until exit verified by host.
@@ -303,6 +326,7 @@ def run_robinhood_host_handoff(
                     reservation_store=reservation_store if action == "BUY" else None,
                     now=clock,
                     ttl_seconds=ttl_seconds,
+                    env=source,
                 )
             )
 
