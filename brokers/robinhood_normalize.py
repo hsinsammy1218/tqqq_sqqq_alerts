@@ -239,7 +239,8 @@ def normalize_snapshot(
     else:
         for row in order_rows:
             symbol = _text(row, "symbol", "ticker", "instrument").upper()
-            status = _map_status(_text(row, "status", "state"))
+            # Do not reuse account ``status`` — order status must stay local.
+            order_status = _map_status(_text(row, "status", "state"))
             side = _text(row, "side", "action").lower()
             qty = _num(row, "quantity", "qty", "shares")
             for key in ("client_order_id", "clientOrderId", "ref_id", "id", "order_id", "orderId"):
@@ -247,13 +248,13 @@ def normalize_snapshot(
                 if found:
                     known_ids.add(found)
             client_id = _text(row, "client_order_id", "clientOrderId", "ref_id")
-            if symbol in {"TQQQ", "SQQQ"} and status in _OPEN:
+            if symbol in {"TQQQ", "SQQQ"} and order_status in _OPEN:
                 open_orders.append(
                     OpenOrderView(
                         client_order_id=client_id,
                         symbol=symbol,
                         side=side,
-                        status=status,
+                        status=order_status,
                         qty=qty,
                     )
                 )
