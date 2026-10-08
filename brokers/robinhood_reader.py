@@ -22,6 +22,13 @@ import json
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from robinhood_account_isolation import (
+    AccountIsolationError,
+    BoundAgenticAccount,
+    enforce_tool_account_arg,
+    require_bound_account,
+)
+
 # Official auth cannot support this runtime. See the module docstring.
 AUTH_CASE = "C"
 UNATTENDED_AUTH_SUPPORTED = False
@@ -90,17 +97,40 @@ def unwrap_mcp(payload: Any) -> Any:
 
 
 class RobinhoodReadClient:
-    """Calls allowlisted read tools through an injected transport."""
+    """Calls allowlisted read tools through an injected transport.
 
-    def __init__(self, transport: Transport) -> None:
+    Account-scoped tools require a bound Agentic ``account_number`` (Phase 5R.2
+    isolation). ``read_snapshot`` resolves via ``get_accounts`` first.
+    """
+
+    def __init__(
+        self,
+        transport: Transport,
+        *,
+        bound: BoundAgenticAccount | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
         self._transport = transport
+        self.bound = bound
+        self._env = env
         self.invocations: list[str] = []
+
+    def bind_from_accounts(self, get_accounts_payload: Any) -> BoundAgenticAccount:
+        self.bound = require_bound_account(
+            get_accounts_payload=get_accounts_payload,
+            env=self._env,
+        )
+        return self.bound
 
     def call(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
         tool = assert_read_only(name)
+        try:
+            args = enforce_tool_account_arg(tool, arguments, self.bound)
+        except AccountIsolationError as exc:
+            raise RobinhoodToolRejected(str(exc)) from exc
         self.invocations.append(tool)
         try:
-            raw = self._transport(tool, dict(arguments or {}))
+            raw = self._transport(tool, dict(args))
         except (RobinhoodToolRejected, RobinhoodReadError):
             raise
         except Exception:
@@ -108,11 +138,21 @@ class RobinhoodReadClient:
         return unwrap_mcp(raw)
 
     def read_snapshot(self, symbols: tuple[str, ...] = ("TQQQ", "SQQQ")) -> dict[str, Any]:
-        """Read the five snapshots a connected-shadow decision is allowed to use."""
+        """Read the five snapshots a connected-shadow decision is allowed to use.
+
+        Resolves/binds the Agentic account from ``get_accounts`` before any
+        account-scoped portfolio/positions/orders call. Quotes are market-data
+        (no account_number) but still go through the read-only gate.
+        """
         if len(symbols) > 20:
             raise RobinhoodReadError("get_equity_quotes accepts at most 20 symbols")
+        accounts = self.call("get_accounts", {})
+        try:
+            self.bind_from_accounts(accounts)
+        except AccountIsolationError as exc:
+            raise RobinhoodReadError(str(exc)) from exc
         return {
-            "get_accounts": self.call("get_accounts", {}),
+            "get_accounts": accounts,
             "get_portfolio": self.call("get_portfolio", {}),
             "get_equity_positions": self.call("get_equity_positions", {}),
             "get_equity_quotes": self.call("get_equity_quotes", {"symbols": list(symbols)}),

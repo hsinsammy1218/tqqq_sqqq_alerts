@@ -67,10 +67,21 @@ def _alert(**kwargs: object) -> AlertDecision:
     return AlertDecision(**defaults)  # type: ignore[arg-type]
 
 
+_AGENTIC_ACCOUNT = {
+    "account_number": "TESTAGT6650",
+    "nickname": "Agentic",
+    "type": "cash",
+    "brokerage_account_type": "individual",
+    "agentic_allowed": True,
+    "state": "active",
+    "status": "active",
+}
+
+
 def _payloads(**overrides: object) -> dict:
     quote_time = NOW.isoformat()
     raw = {
-        "get_accounts": {"accounts": [{"status": "active"}]},
+        "get_accounts": {"accounts": [dict(_AGENTIC_ACCOUNT)]},
         "get_portfolio": {
             "equity": 10_000.0,
             "buying_power": 10_000.0,
@@ -97,6 +108,8 @@ def _transport(payloads: dict, calls: list[str]):
             raise AssertionError(f"transport saw {name}")
         if name == "get_equity_quotes":
             assert arguments.get("symbols") == ["TQQQ", "SQQQ"]
+        if name in {"get_portfolio", "get_equity_positions", "get_equity_orders"}:
+            assert arguments.get("account_number") == _AGENTIC_ACCOUNT["account_number"]
         return payloads[name]
 
     return _call

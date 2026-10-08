@@ -20,6 +20,12 @@ from brokers.types import (
     UnsafeBrokerConfiguration,
 )
 from market_data_gate import assess_intraday_freshness
+from robinhood_account_isolation import (
+    AccountIsolationError,
+    BoundAgenticAccount,
+    ENV_BOUND_ACCOUNT,
+    require_bound_account,
+)
 from robinhood_risk import (
     ALLOWED_ACTIONS,
     ALLOWED_SYMBOLS,
@@ -206,15 +212,32 @@ def _loss_pct(start: float | None, equity: float | None) -> float | None:
     return max(0.0, (start - equity) / start)
 
 
+def require_agentic_bound(
+    env: Mapping[str, str] | None = None,
+    *,
+    get_accounts_payload: object | None = None,
+) -> BoundAgenticAccount:
+    """Fail closed unless the Agentic account is bound (env and/or get_accounts)."""
+    try:
+        return require_bound_account(
+            get_accounts_payload=get_accounts_payload,
+            env=env,
+        )
+    except AccountIsolationError as exc:
+        raise UnsafeBrokerConfiguration(str(exc)) from exc
+
+
 def check_handoff_prevalidation(
     intent: TradeIntent,
     *,
     action: str,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[bool, str, tuple[tuple[str, str], ...]]:
     """Render pre-handoff checks. Does **not** require known broker state.
 
     PENDING persistence is not execution approval. Host must still run
     ``check_host_new_exposure`` (BUY) or sell sizing against a fresh read.
+    When ``env`` is provided, also require ``ROBINHOOD_AGENTIC_ACCOUNT_NUMBER``.
     """
     checks: list[tuple[str, str]] = []
 
@@ -235,6 +258,16 @@ def check_handoff_prevalidation(
         add("Strategy version", False)
         return False, "strategy version is unknown", tuple(checks)
     add("Strategy version", True)
+    if env is not None:
+        if not str(env.get(ENV_BOUND_ACCOUNT) or "").strip():
+            add("Agentic account", False)
+            return False, f"{ENV_BOUND_ACCOUNT} unset; refusing handoff", tuple(checks)
+        try:
+            require_agentic_bound(env)
+        except UnsafeBrokerConfiguration as exc:
+            add("Agentic account", False)
+            return False, str(exc), tuple(checks)
+        add("Agentic account", True)
     add("Broker state", True)  # unknown is OK for PENDING; host revalidates
     add("Pending≠approved", True)
     return True, "pre-handoff ok; host must revalidate before place", tuple(checks)

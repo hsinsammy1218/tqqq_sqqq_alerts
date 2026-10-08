@@ -17,6 +17,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from brokers.types import QuoteView, TradeIntent, UnsafeBrokerConfiguration
+from robinhood_account_isolation import (
+    AccountIsolationError,
+    BoundAgenticAccount,
+    assert_account_allowed,
+)
 
 # Confirmed from official docs — not from guessing tools/list JSON.
 DOCS_CONFIRMED_LIMIT_ORDERS = True
@@ -28,9 +33,11 @@ OPTIONAL_WRITE_TOOLS = frozenset({"cancel_equity_order"})
 # Keys we may send on place/review. Anything else is stripped / rejected.
 PLACE_ARG_ALLOWLIST = frozenset(
     {
+        "account_number",
         "symbol",
         "side",
         "order_type",
+        "type",
         "quantity",
         "limit_price",
         "time_in_force",
@@ -190,9 +197,21 @@ def build_place_args(
     quote: QuoteView | None,
     capabilities: HostMcpCapabilities,
     slippage_bps: float,
+    bound: BoundAgenticAccount | None = None,
 ) -> dict[str, Any]:
-    """Build allowlisted place/review args. Never includes client_order_id."""
+    """Build allowlisted place/review args. Never includes client_order_id.
+
+    Requires a bound Agentic ``account_number`` (fail closed).
+    """
     assert_capabilities_ready(capabilities)
+    if bound is None:
+        raise UnsafeBrokerConfiguration(
+            "Agentic account not bound; refusing place/review args"
+        )
+    try:
+        account_number = assert_account_allowed(bound.account_number, bound)
+    except AccountIsolationError as exc:
+        raise UnsafeBrokerConfiguration(str(exc)) from exc
     if capabilities.client_order_id_param:
         # Even if tools/list someday shows it, pilot still keeps internal id only
         # until a dedicated confirmation + reconcile design lands. Fail closed
@@ -214,9 +233,11 @@ def build_place_args(
         slippage_bps=slippage_bps,
     )
     args: dict[str, Any] = {
+        "account_number": account_number,
         "symbol": intent.execution_symbol.upper(),
         "side": side,
         "order_type": "limit",
+        "type": "limit",
         "time_in_force": "gfd",
         "limit_price": limit,
     }

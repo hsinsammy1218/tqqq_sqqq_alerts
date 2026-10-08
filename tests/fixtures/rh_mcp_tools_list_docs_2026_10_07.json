@@ -1,0 +1,126 @@
+{
+  "source": "Robinhood support article Trading with your agent (2026-10-07)",
+  "endpoint": "https://agent.robinhood.com/mcp/trading",
+  "note": "Public docs catalog — not a live authenticated tools/list snapshot. Input schemas are unpublished; properties here are conservative stubs for offline tests only.",
+  "tools": [
+    {
+      "name": "get_accounts",
+      "description": "View all your Robinhood accounts",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "get_portfolio",
+      "description": "Get a snapshot of your portfolio",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "get_equity_positions",
+      "description": "View open equity positions with quantity and cost basis",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "get_equity_quotes",
+      "description": "Get real-time equity quotes and prior close for up to 20 symbols",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "symbols": { "type": "array", "items": { "type": "string" } } },
+        "required": ["symbols"]
+      }
+    },
+    {
+      "name": "get_equity_orders",
+      "description": "Get equity order status history",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "get_trade_approval_setting",
+      "description": "Get the current trade approval setting",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "get_equity_tradability",
+      "description": "Check if a symbol can be traded",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "symbol": { "type": "string" } }
+      }
+    },
+    {
+      "name": "get_indexes",
+      "description": "Look up market indexes by symbol",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "symbols": { "type": "array", "items": { "type": "string" } } }
+      }
+    },
+    {
+      "name": "get_index_quotes",
+      "description": "Get real-time index values",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "symbols": { "type": "array", "items": { "type": "string" } } }
+      }
+    },
+    {
+      "name": "get_realized_pnl",
+      "description": "View realized profit and loss",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "review_equity_order",
+      "description": "Simulate an equity order and get pre-trade warnings",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "side": { "type": "string" },
+          "order_type": { "type": "string" },
+          "quantity": { "type": "number" },
+          "limit_price": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "place_equity_order",
+      "description": "Place an equity order",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "side": { "type": "string" },
+          "order_type": { "type": "string" },
+          "quantity": { "type": "number" },
+          "limit_price": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "cancel_equity_order",
+      "description": "Cancel an open equity order",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "order_id": { "type": "string" } }
+      }
+    },
+    {
+      "name": "place_option_order",
+      "description": "Place a real options order",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "place_crypto_order",
+      "description": "Place a real crypto order",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "decline_trade_approval",
+      "description": "Decline a pending trade approval request",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "create_alert",
+      "description": "Set a price or indicator alert",
+      "inputSchema": { "type": "object", "properties": {} }
+    }
+  ]
+}
