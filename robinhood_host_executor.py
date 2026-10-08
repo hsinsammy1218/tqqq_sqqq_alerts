@@ -26,7 +26,6 @@ from robinhood_account_isolation import (
     AccountIsolationError,
     BoundAgenticAccount,
     assert_account_allowed,
-    bound_account_from_env,
     enforce_tool_account_arg,
     require_bound_account,
 )
@@ -39,7 +38,13 @@ from brokers.types import (
     TradeIntent,
     UnsafeBrokerConfiguration,
 )
-from robinhood_flip import advance_flip
+from robinhood_flip import (
+    FLIP_META_EXIT_CID,
+    FLIP_META_EXIT_SYMBOL,
+    advance_flip,
+    gate_flip_entry_from_exit_row,
+    is_flip_entry_purpose,
+)
 from robinhood_host_audit import HostAuditLog, post_host_discord
 from robinhood_host_entry import (
     InMemoryRhEntryReservationStore,
@@ -175,8 +180,11 @@ class HostMediatedClient:
     def call(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
         tool = assert_host_tool(name, allow_writes=self.allow_writes)
         try:
-            if self.bound is None and self._env is not None:
-                self.bound = bound_account_from_env(self._env)
+            # H1: never lazy-bind from env pin alone — live resolve via read_snapshot.
+            if tool != "get_accounts" and self.bound is None:
+                raise AccountIsolationError(
+                    f"refusing {tool}: Agentic not live-resolved; call read_snapshot first"
+                )
             args = enforce_tool_account_arg(tool, arguments, self.bound)
         except AccountIsolationError as exc:
             raise RobinhoodToolRejected(str(exc)) from exc
@@ -238,6 +246,59 @@ def place_args_for_intent(
         slippage_bps=slippage_bps,
         bound=bound,
     )
+
+
+# Review decisions honored before place (H4). Mock/fixture schemas only.
+REVIEW_APPROVED = "APPROVED"
+REVIEW_REJECTED = "REJECTED"
+REVIEW_PENDING = "PENDING"
+REVIEW_EXPIRED = "EXPIRED"
+REVIEW_UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class ReviewDecision:
+    decision: str
+    detail: str
+
+
+def parse_review_decision(payload: Any) -> ReviewDecision:
+    """Map review_equity_order payload → APPROVED|REJECTED|PENDING|EXPIRED|UNKNOWN."""
+    if payload is None:
+        return ReviewDecision(REVIEW_UNKNOWN, "review returned empty payload")
+    if not isinstance(payload, dict):
+        return ReviewDecision(REVIEW_UNKNOWN, "review returned non-object")
+    raw = (
+        payload.get("decision")
+        or payload.get("status")
+        or payload.get("review_status")
+        or payload.get("state")
+        or ""
+    )
+    text = str(raw).strip().upper()
+    if text in {REVIEW_APPROVED, "OK", "PASS", "PASSED", "ALLOW", "ALLOWED"}:
+        return ReviewDecision(REVIEW_APPROVED, "review approved")
+    if text in {REVIEW_REJECTED, "DENY", "DENIED", "BLOCK", "BLOCKED", "FAIL", "FAILED"}:
+        return ReviewDecision(REVIEW_REJECTED, "review rejected")
+    if text in {REVIEW_PENDING, "QUEUED", "AWAITING", "AWAITING_APPROVAL"}:
+        return ReviewDecision(REVIEW_PENDING, "review pending")
+    if text in {REVIEW_EXPIRED, "TIMEOUT"}:
+        return ReviewDecision(REVIEW_EXPIRED, "review expired")
+    if text in {REVIEW_UNKNOWN, "AMBIGUOUS"}:
+        return ReviewDecision(REVIEW_UNKNOWN, "review unknown")
+    # Fixture/mock ok boolean (Phase 5R.3 engine).
+    if "ok" in payload:
+        if payload.get("ok") is True:
+            return ReviewDecision(REVIEW_APPROVED, "review ok=true")
+        if payload.get("ok") is False:
+            warnings = payload.get("warnings") or []
+            detail = "review ok=false"
+            if warnings:
+                detail = f"review rejected: {warnings}"
+            return ReviewDecision(REVIEW_REJECTED, detail)
+    if text:
+        return ReviewDecision(REVIEW_UNKNOWN, f"unrecognized review status {text!r}")
+    return ReviewDecision(REVIEW_UNKNOWN, "review missing decision/status/ok")
 
 
 def _normalize_place_status(payload: Any) -> HostSubmitResult:
@@ -459,6 +520,43 @@ def execute_claimed_intent(
 
     quote = quote_for(state, intent.execution_symbol)
     checks: tuple[tuple[str, str], ...] = ()
+    row_meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+
+    # H2: flip_entry requires confirmed exit close (durable store + broker flat).
+    if is_flip_entry_purpose(intent.purpose):
+        exit_cid = str(row_meta.get(FLIP_META_EXIT_CID) or "").strip()
+        exit_symbol = str(
+            row_meta.get(FLIP_META_EXIT_SYMBOL) or ""
+        ).strip().upper()
+        exit_row = store.get(exit_cid) if exit_cid else None
+        exit_qty_remaining: float | None = None
+        if state.known and exit_symbol:
+            held = 0.0
+            for pos in state.positions:
+                if pos.symbol.upper() == exit_symbol:
+                    held += float(pos.qty)
+            exit_qty_remaining = held
+        flip_gate = gate_flip_entry_from_exit_row(
+            exit_row=exit_row,
+            exit_qty_remaining=exit_qty_remaining,
+            broker_state_known=state.known,
+        )
+        if not flip_gate.allowed:
+            to_status = flip_gate.terminal_status or "BLOCKED"
+            store.update_status(
+                intent.client_order_id,
+                from_statuses={"CLAIMED"},
+                to_status=to_status,
+                fields={"detail": flip_gate.reason},
+            )
+            return _blocked(
+                intent,
+                flip_gate.reason,
+                (("FLIP", "FAIL"),),
+                armed=armed,
+                status=to_status,
+            )
+        checks = checks + (("FLIP", "PASS"),)
 
     if intent.action == "BUY":
         # Cannot execute without known/fresh state — PENDING ≠ approved.
@@ -475,7 +573,8 @@ def execute_claimed_intent(
                 (("Broker state", "FAIL"), ("Pending≠approved", "PASS")),
                 armed=armed,
             )
-        allowed, reason, checks = check_host_new_exposure(intent, state, limits)
+        allowed, reason, exposure_checks = check_host_new_exposure(intent, state, limits)
+        checks = checks + exposure_checks
         if allowed:
             ask = float(quote.ask) if quote and quote.ask is not None else None
             fresh_qty, fresh_notional = size_host_buy(ask or 0.0, state, limits)
@@ -514,6 +613,16 @@ def execute_claimed_intent(
                 fields={"risk_status": "BLOCKED", "risk_reason": reason},
             )
             return _blocked(intent, reason, checks, armed=armed)
+
+        # H5: arming gate BEFORE daily reservation — disarmed must not burn slots.
+        if not armed:
+            store.update_status(
+                intent.client_order_id,
+                from_statuses={"CLAIMED"},
+                to_status="BLOCKED",
+                fields={"detail": armed_reason},
+            )
+            return _blocked(intent, armed_reason or "not armed", checks, armed=False)
 
         # Authoritative daily entry reservation at host BUY boundary (not Render).
         res_store = reservation_store or InMemoryRhEntryReservationStore()
@@ -584,15 +693,15 @@ def execute_claimed_intent(
             purpose=intent.purpose,
             client_order_id=intent.client_order_id,
         )
-
-    if not armed:
-        store.update_status(
-            intent.client_order_id,
-            from_statuses={"CLAIMED"},
-            to_status="BLOCKED",
-            fields={"detail": armed_reason},
-        )
-        return _blocked(intent, armed_reason or "not armed", armed=False)
+        # H5: arming before any place (SELL has no reservation).
+        if not armed:
+            store.update_status(
+                intent.client_order_id,
+                from_statuses={"CLAIMED"},
+                to_status="BLOCKED",
+                fields={"detail": armed_reason},
+            )
+            return _blocked(intent, armed_reason or "not armed", checks, armed=False)
 
     if not client.allow_writes:
         store.update_status(
@@ -662,28 +771,65 @@ def execute_claimed_intent(
         )
         return replace(leg, text=_format_leg(leg, armed=armed))
 
+    # H4: honor review decision before place (mock/fixture schemas only).
+    place_started = False
     try:
-        client.call("review_equity_order", args)
+        review_raw = client.call("review_equity_order", args)
+        review = parse_review_decision(review_raw)
+        if review.decision != REVIEW_APPROVED:
+            if review.decision == REVIEW_REJECTED:
+                to = "REJECTED"
+            elif review.decision in {REVIEW_PENDING, REVIEW_EXPIRED}:
+                to = "BLOCKED"
+            else:
+                to = "UNKNOWN"
+            store.update_status(
+                intent.client_order_id,
+                from_statuses={"CLAIMED"},
+                to_status=to,
+                fields={"detail": review.detail},
+            )
+            return _blocked(
+                intent,
+                review.detail,
+                checks + (("Review", "FAIL"),),
+                armed=armed,
+                status=to,
+            )
+        checks = checks + (("Review", "PASS"),)
+        place_started = True
         raw = client.call("place_equity_order", args)
         submit = _normalize_place_status(raw)
     except HostOrderAmbiguous as exc:
+        # Ambiguous place outcome → reconciliation, never auto-resubmit.
+        to = "RECONCILIATION_REQUIRED" if place_started else "UNKNOWN"
         store.update_status(
             intent.client_order_id,
             from_statuses={"CLAIMED", "SUBMITTED"},
-            to_status="UNKNOWN",
+            to_status=to,
             fields={"detail": str(exc)},
         )
-        return _blocked(intent, str(exc), armed=armed, status="UNKNOWN")
-    except (HostTransportError, RobinhoodToolRejected, RobinhoodReadError) as exc:
-        # Transport timeout / malformed after a possible accept → UNKNOWN, not
-        # REJECTED, when the error is ambiguous. Explicit tool rejection stays
-        # REJECTED (safe to not resubmit either way).
+        return _blocked(intent, str(exc), armed=armed, status=to)
+    except RobinhoodToolRejected as exc:
+        # Explicit tool rejection before/without successful place accept.
         detail = str(exc)
-        ambiguous = any(
-            marker in detail.lower()
-            for marker in ("timeout", "timed out", "malformed", "ambiguous", "connection reset")
+        to = "RECONCILIATION_REQUIRED" if place_started else "REJECTED"
+        store.update_status(
+            intent.client_order_id,
+            from_statuses={"CLAIMED"},
+            to_status=to,
+            fields={"detail": detail},
         )
-        to = "UNKNOWN" if ambiguous else "REJECTED"
+        return _blocked(intent, detail, armed=armed, status=to)
+    except (HostTransportError, RobinhoodReadError) as exc:
+        # H3: any transport/read error after place is invoked → UNKNOWN /
+        # RECONCILIATION_REQUIRED (never REJECTED). Pre-place transport errors
+        # during review also stay non-REJECTED when ambiguous.
+        detail = str(exc)
+        if place_started:
+            to = "RECONCILIATION_REQUIRED"
+        else:
+            to = "UNKNOWN"
         store.update_status(
             intent.client_order_id,
             from_statuses={"CLAIMED"},
@@ -693,7 +839,14 @@ def execute_claimed_intent(
         return _blocked(intent, detail, armed=armed, status=to)
 
     to_status = submit.status if submit.status in {
-        "SUBMITTED", "FILLED", "PARTIALLY_FILLED", "REJECTED", "CANCELLED", "EXPIRED", "UNKNOWN"
+        "SUBMITTED",
+        "FILLED",
+        "PARTIALLY_FILLED",
+        "REJECTED",
+        "CANCELLED",
+        "EXPIRED",
+        "UNKNOWN",
+        "RECONCILIATION_REQUIRED",
     } else "SUBMITTED"
     store.update_status(
         intent.client_order_id,

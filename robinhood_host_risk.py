@@ -24,6 +24,7 @@ from robinhood_account_isolation import (
     AccountIsolationError,
     BoundAgenticAccount,
     ENV_BOUND_ACCOUNT,
+    env_account_pin,
     require_bound_account,
 )
 from robinhood_risk import (
@@ -216,12 +217,14 @@ def require_agentic_bound(
     env: Mapping[str, str] | None = None,
     *,
     get_accounts_payload: object | None = None,
+    allow_unverified_env_pin: bool = False,
 ) -> BoundAgenticAccount:
-    """Fail closed unless the Agentic account is bound (env and/or get_accounts)."""
+    """Fail closed unless Agentic is live-resolved (or unverified pin if allowed)."""
     try:
         return require_bound_account(
             get_accounts_payload=get_accounts_payload,
             env=env,
+            allow_unverified_env_pin=allow_unverified_env_pin,
         )
     except AccountIsolationError as exc:
         raise UnsafeBrokerConfiguration(str(exc)) from exc
@@ -263,8 +266,9 @@ def check_handoff_prevalidation(
             add("Agentic account", False)
             return False, f"{ENV_BOUND_ACCOUNT} unset; refusing handoff", tuple(checks)
         try:
-            require_agentic_bound(env)
-        except UnsafeBrokerConfiguration as exc:
+            # Case C: validate env pin shape only — host must live-resolve before place.
+            env_account_pin(env)
+        except AccountIsolationError as exc:
             add("Agentic account", False)
             return False, str(exc), tuple(checks)
         add("Agentic account", True)

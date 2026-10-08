@@ -240,7 +240,7 @@ class FakeHostTransport:
         if name in self.snapshot:
             return self.snapshot[name]
         if name == "review_equity_order":
-            return {"ok": True, "warnings": []}
+            return {"ok": True, "decision": "APPROVED", "status": "APPROVED", "warnings": []}
         if name == "place_equity_order":
             if self.place_error is not None:
                 raise self.place_error
@@ -392,6 +392,7 @@ def test_06_after_strategy_unknown_path_creates_pending(tmp_path: Path):
         env={
             "EXECUTION_BROKER": "robinhood_host_handoff",
             "ROBINHOOD_HOST_HANDOFF_LOG": str(tmp_path / "h.jsonl"),
+            "ROBINHOOD_AGENTIC_ACCOUNT_NUMBER": "TESTAGT6650",
             **{k: v for k, v in _armed_env().items() if k.startswith("ROBINHOOD_HOST_MAX")},
             "ROBINHOOD_HOST_CAPITAL_CEILING": "100",
             "ROBINHOOD_HOST_MAX_POSITION_PCT": "1.0",
@@ -407,6 +408,41 @@ def test_06_after_strategy_unknown_path_creates_pending(tmp_path: Path):
     )
     assert result.pending_created >= 1
     assert result.submission_attempts == 0
+    # Isolation must stamp the bound Agentic id into PENDING meta.
+    pending_rows = [r for r in store.rows.values() if r.get("status") == "PENDING"]
+    assert pending_rows
+    assert pending_rows[0]["meta"]["account_number"] == "TESTAGT6650"
+    assert pending_rows[0]["meta"]["account_number_masked"] == "••••6650"
+
+
+def test_06b_after_strategy_refuses_without_agentic_account(tmp_path: Path):
+    """Regression: production entry must pass env into handoff (fail closed)."""
+    store = InMemoryIntentStore()
+    result = run_robinhood_host_handoff_after_strategy(
+        _alert(),
+        None,
+        dry_run=True,
+        webhook_url="",
+        data_bar_start=NOW - timedelta(minutes=5),
+        now=NOW,
+        env={
+            "EXECUTION_BROKER": "robinhood_host_handoff",
+            "ROBINHOOD_HOST_HANDOFF_LOG": str(tmp_path / "h2.jsonl"),
+            "ROBINHOOD_HOST_CAPITAL_CEILING": "100",
+            "ROBINHOOD_HOST_MAX_POSITION_PCT": "1.0",
+            "ROBINHOOD_HOST_MAX_ORDER_NOTIONAL": "100",
+            "ROBINHOOD_HOST_MAX_DAILY_LOSS_PCT": "0.05",
+            "ROBINHOOD_HOST_MAX_WEEKLY_LOSS_PCT": "0.10",
+            "ROBINHOOD_HOST_MAX_DRAWDOWN_PCT": "0.15",
+            "ROBINHOOD_HOST_MAX_ORDERS_PER_DAY": "3",
+            "ROBINHOOD_HOST_NEW_ENTRIES_ENABLED": "true",
+            "ROBINHOOD_HOST_ENABLED": "true",
+        },
+        store=store,
+    )
+    assert result.pending_created == 0
+    assert result.blocked >= 1
+    assert store.rows == {}
 
 
 def test_07_handoff_prevalidation_vs_host_exposure():
@@ -483,7 +519,8 @@ def test_12_unknown_place_does_not_resubmit(tmp_path: Path):
         client_order_id=intent.client_order_id,
         reservation_store=res,
     )
-    assert result.legs[0].execution_status == "UNKNOWN"
+    # H3: ambiguous post-place → RECONCILIATION_REQUIRED (no auto resubmit).
+    assert result.legs[0].execution_status == "RECONCILIATION_REQUIRED"
     assert len([c for c in transport.calls if c[0] == "place_equity_order"]) == 1
     again = run_host_executor_once(
         transport=transport,
@@ -513,8 +550,8 @@ def test_13_timeout_place_marks_unknown_no_resubmit(tmp_path: Path):
         client_order_id=intent.client_order_id,
         reservation_store=res,
     )
-    assert result.legs[0].execution_status == "UNKNOWN"
-    assert store.get(intent.client_order_id)["status"] == "UNKNOWN"
+    assert result.legs[0].execution_status == "RECONCILIATION_REQUIRED"
+    assert store.get(intent.client_order_id)["status"] == "RECONCILIATION_REQUIRED"
     again = run_host_executor_once(
         transport=FakeHostTransport(),
         store=store,
@@ -541,7 +578,7 @@ def test_14_malformed_place_marks_unknown(tmp_path: Path):
         client_order_id=intent.client_order_id,
         reservation_store=InMemoryRhEntryReservationStore(),
     )
-    assert result.legs[0].execution_status == "UNKNOWN"
+    assert result.legs[0].execution_status == "RECONCILIATION_REQUIRED"
     assert len([c for c in transport.calls if c[0] == "place_equity_order"]) == 1
 
 
@@ -715,7 +752,8 @@ def test_23_concurrent_hosts_one_entry_per_day():
 # --- 24–26 FLIP ------------------------------------------------------------
 
 
-def test_24_handoff_flip_blocks_second_leg_without_fill():
+def test_24_handoff_flip_persists_linked_entry_pending():
+    """H2: both FLIP legs persist; host gates entry (not handoff permanent BLOCK)."""
     store = InMemoryIntentStore()
     result = run_robinhood_host_handoff(
         _alert(alert_type="FLIP", symbol="SQQQ"),
@@ -724,10 +762,15 @@ def test_24_handoff_flip_blocks_second_leg_without_fill():
         _limits(),
         store=store,
         now=NOW,
+        env={"ROBINHOOD_AGENTIC_ACCOUNT_NUMBER": "TESTAGT6650"},
     )
     assert any(leg.intent.action == "SELL" and leg.persisted for leg in result.legs)
     buys = [leg for leg in result.legs if leg.intent.action == "BUY"]
-    assert buys and buys[0].risk_status == "BLOCKED"
+    assert buys and buys[0].persisted and buys[0].execution_status == "PENDING"
+    exit_rows = [r for r in store.rows.values() if r.get("purpose") == "flip_exit"]
+    entry_rows = [r for r in store.rows.values() if r.get("purpose") == "flip_entry"]
+    assert exit_rows and entry_rows
+    assert entry_rows[0]["meta"]["flip_exit_client_order_id"] == exit_rows[0]["client_order_id"]
 
 
 def test_25_flip_gate_partial_and_unknown_block():

@@ -112,6 +112,20 @@ def test_06_env_bind_rejects_protected_and_wrong_last4(margin_row: dict) -> None
         bound_account_from_env({ENV_BOUND_ACCOUNT: "ABCDEF9999"})
 
 
+def test_06b_env_pin_alone_not_host_authority(agentic_row: dict) -> None:
+    """H1: env last4 pin is not Agentic authority without live get_accounts."""
+    with pytest.raises(AccountIsolationError, match="live get_accounts|not authority"):
+        require_bound_account(env={ENV_BOUND_ACCOUNT: "EVILACC6650"})
+    with pytest.raises(AccountIsolationError, match="live get_accounts|not authority"):
+        require_bound_account(env={ENV_BOUND_ACCOUNT: agentic_row["account_number"]})
+    # Explicit handoff-only escape hatch remains unverified.
+    pin = require_bound_account(
+        env={ENV_BOUND_ACCOUNT: agentic_row["account_number"]},
+        allow_unverified_env_pin=True,
+    )
+    assert pin.source == "env_pin_unverified"
+
+
 def test_07_identity_change_detected(get_accounts_payload: dict, agentic_row: dict) -> None:
     with pytest.raises(AccountIsolationError, match="identity change"):
         require_bound_account(

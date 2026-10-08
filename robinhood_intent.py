@@ -25,6 +25,7 @@ INTENT_STATUSES = frozenset(
         "CANCELLED",
         "EXPIRED",
         "UNKNOWN",
+        "RECONCILIATION_REQUIRED",
         "BLOCKED",
         "EXPIRED_INTENT",
         "SUPERSEDED",

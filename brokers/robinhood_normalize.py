@@ -126,12 +126,66 @@ def _rows(payload: Any, wrappers: tuple[str, ...], hints: tuple[str, ...]) -> tu
     return [], False
 
 
+def _truthy_flag(value: Any) -> bool:
+    if value is True:
+        return True
+    if value is False or value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _account_number_last4(row: dict[str, Any]) -> str:
+    number = str(row.get("account_number") or row.get("accountNumber") or "").strip()
+    return number[-4:] if len(number) >= 4 else number
+
+
+def _prefer_agentic_account_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Prefer Agentic row over list order (first row is often a protected account)."""
+    if not rows:
+        return {}
+    agentic = [r for r in rows if _truthy_flag(r.get("agentic_allowed"))]
+    if len(agentic) == 1:
+        return agentic[0]
+    fingerprint = [
+        r
+        for r in rows
+        if str(r.get("nickname") or r.get("display_name") or "").strip().casefold()
+        == "agentic"
+        and _account_number_last4(r) == "6650"
+    ]
+    if len(fingerprint) == 1:
+        return fingerprint[0]
+    # Never prefer protected suffixes when a non-protected alternative exists.
+    non_protected = [
+        r for r in rows if _account_number_last4(r) not in {"9384", "5767"}
+    ]
+    if len(non_protected) == 1:
+        return non_protected[0]
+    return rows[0]
+
+
 def _first_mapping(payload: Any, wrappers: tuple[str, ...]) -> tuple[dict[str, Any], bool]:
     rows, ok = _rows(payload, wrappers, ("status", "account_status", "buying_power", "buyingPower", "equity"))
     if not ok:
         return {}, False
     if rows:
         return rows[0], True
+    if isinstance(payload, dict):
+        return payload, True
+    return {}, True
+
+
+def _accounts_mapping(payload: Any) -> tuple[dict[str, Any], bool]:
+    """Like ``_first_mapping`` but prefers the Agentic account when listed."""
+    rows, ok = _rows(
+        payload,
+        ("accounts", "results", "items", "data"),
+        ("status", "account_status", "buying_power", "buyingPower", "equity", "account_number"),
+    )
+    if not ok:
+        return {}, False
+    if rows:
+        return _prefer_agentic_account_row(rows), True
     if isinstance(payload, dict):
         return payload, True
     return {}, True
@@ -153,10 +207,7 @@ def normalize_snapshot(
 ) -> BrokerState:
     """Build a BrokerState. ``known=False`` when equity, buying power, or a book is unreadable."""
     problems: list[str] = []
-    account_row, account_ok = _first_mapping(
-        payloads.get("get_accounts"),
-        ("accounts", "results", "items", "data"),
-    )
+    account_row, account_ok = _accounts_mapping(payloads.get("get_accounts"))
     portfolio_row, portfolio_ok = _first_mapping(
         payloads.get("get_portfolio"),
         ("portfolio", "results", "data"),
@@ -239,7 +290,8 @@ def normalize_snapshot(
     else:
         for row in order_rows:
             symbol = _text(row, "symbol", "ticker", "instrument").upper()
-            status = _map_status(_text(row, "status", "state"))
+            # Do not reuse account ``status`` — order status must stay local.
+            order_status = _map_status(_text(row, "status", "state"))
             side = _text(row, "side", "action").lower()
             qty = _num(row, "quantity", "qty", "shares")
             for key in ("client_order_id", "clientOrderId", "ref_id", "id", "order_id", "orderId"):
@@ -247,13 +299,13 @@ def normalize_snapshot(
                 if found:
                     known_ids.add(found)
             client_id = _text(row, "client_order_id", "clientOrderId", "ref_id")
-            if symbol in {"TQQQ", "SQQQ"} and status in _OPEN:
+            if symbol in {"TQQQ", "SQQQ"} and order_status in _OPEN:
                 open_orders.append(
                     OpenOrderView(
                         client_order_id=client_id,
                         symbol=symbol,
                         side=side,
-                        status=status,
+                        status=order_status,
                         qty=qty,
                     )
                 )
